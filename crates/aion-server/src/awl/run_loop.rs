@@ -124,15 +124,10 @@ pub fn emit(
     }
     let document = aion_awl::parse(&request.source)
         .map_err(|error| RunLoopError::CheckRefused(error.message))?;
-    let root = request
-        .path
-        .as_deref()
-        .and_then(|path| Path::new(path).parent());
-    let artifact = root
-        .map_or_else(
-            || aion_awl::emit_artifact(&document),
-            |root| aion_awl::emit_artifact_in(&document, root),
-        )
+    // `/awl/emit` accepts unsaved source, so request.path is a display label,
+    // never ambient filesystem authority. Imported schemas intentionally refuse
+    // here; saved-document deploy stages them through the workspace capability.
+    let artifact = aion_awl::emit_artifact(&document)
         .map_err(|error| RunLoopError::EmitRefused(error.message))?;
     let synthesized_workflows = artifact
         .synthesized_workflows
@@ -171,9 +166,24 @@ pub async fn deploy(
         });
     }
     let revision = revisions::store(root, &saved.source).await?;
-    let document_path = root.join(&request.path);
-    let schema_root = document_path.parent().map_or(root, |parent| parent);
-    let prepared = compile_and_assemble_awl(&revision.source, schema_root)?;
+    let workspace_root = root.to_owned();
+    let document_path = request.path.clone();
+    let revision_source = revision.source.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        let (_staging, schema_root) = super::handlers::stage_schema_imports(
+            &workspace_root,
+            &document_path,
+            &revision_source,
+        )
+        .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
+        compile_and_assemble_awl(&revision_source, &schema_root).map_err(RunLoopError::from)
+    })
+    .await
+    .map_err(|error| {
+        RunLoopError::Revision(RevisionError::InvalidRecord(format!(
+            "AWL compile task failed: {error}"
+        )))
+    })??;
     let task_queue = match &prepared.compiled.first_worker {
         Some(worker) => worker.clone(),
         None => DEFAULT_TASK_QUEUE.to_owned(),

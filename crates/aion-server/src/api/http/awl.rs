@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use super::auth::HttpCaller;
 use super::authoring::AuthoringHttpError;
+use super::error::HttpWireError;
 use crate::ServerState;
 use crate::awl::{
     self, CheckRequest, CheckResponse, CreateDocumentRequest, CreateDocumentResponse, Diagnostic,
@@ -16,82 +17,109 @@ use crate::awl::{
     PutDocumentRequest,
 };
 
-pub(crate) async fn check(Json(request): Json<CheckRequest>) -> Json<CheckResponse> {
-    Json(awl::check_source(&request))
+pub(crate) async fn check(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<CheckRequest>,
+) -> Result<Json<CheckResponse>, Response> {
+    require_authenticated(&caller)?;
+    let root = workspace(&state).map_err(IntoResponse::into_response)?;
+    awl::check_source_in_workspace(&root, &request)
+        .await
+        .map(Json)
+        .map_err(|error| DocumentHttpError(error).into_response())
 }
 
-pub(crate) async fn edit(Json(request): Json<EditRequest>) -> Json<EditResponse> {
-    Json(awl::edit_source(&request))
+pub(crate) async fn edit(
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<EditRequest>,
+) -> Result<Json<EditResponse>, Response> {
+    require_authenticated(&caller)?;
+    Ok(Json(awl::edit_source(&request)))
 }
 
 pub(crate) async fn scaffold(
+    HttpCaller(caller): HttpCaller,
     Json(request): Json<awl::scaffold::ScaffoldRequest>,
-) -> Json<awl::scaffold::ScaffoldResponse> {
-    Json(awl::scaffold::scaffold(&request))
+) -> Result<Json<awl::scaffold::ScaffoldResponse>, Response> {
+    require_authenticated(&caller)?;
+    Ok(Json(awl::scaffold::scaffold(&request)))
 }
 
 pub(crate) async fn format(
+    HttpCaller(caller): HttpCaller,
     Json(request): Json<FormatRequest>,
-) -> Result<Json<FormatResponse>, FormatHttpError> {
+) -> Result<Json<FormatResponse>, Response> {
+    require_authenticated(&caller)?;
     awl::format_source(&request)
         .map(Json)
-        .map_err(|diagnostic| FormatHttpError { diagnostic })
+        .map_err(|diagnostic| FormatHttpError { diagnostic }.into_response())
 }
 
 pub(crate) async fn list_documents(
     State(state): State<ServerState>,
-) -> Result<Json<Vec<DocumentEntry>>, DocumentHttpError> {
-    let root = workspace(&state)?;
+    HttpCaller(caller): HttpCaller,
+) -> Result<Json<Vec<DocumentEntry>>, Response> {
+    require_authenticated(&caller)?;
+    let root = workspace(&state).map_err(IntoResponse::into_response)?;
     awl::documents::list(&root)
         .await
         .map(Json)
-        .map_err(DocumentHttpError)
+        .map_err(|error| DocumentHttpError(error).into_response())
 }
 
 pub(crate) async fn create_document(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Json(request): Json<CreateDocumentRequest>,
-) -> Result<(StatusCode, Json<CreateDocumentResponse>), DocumentHttpError> {
-    let root = workspace(&state)?;
+) -> Result<(StatusCode, Json<CreateDocumentResponse>), Response> {
+    require_mutation(&state, &caller)?;
+    let root = workspace(&state).map_err(IntoResponse::into_response)?;
     awl::documents::create(&root, request)
         .await
         .map(|response| (StatusCode::CREATED, Json(response)))
-        .map_err(DocumentHttpError)
+        .map_err(|error| DocumentHttpError(error).into_response())
 }
 
 pub(crate) async fn get_document(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Path(path): Path<String>,
-) -> Result<Json<DocumentResponse>, DocumentHttpError> {
-    let root = workspace(&state)?;
+) -> Result<Json<DocumentResponse>, Response> {
+    require_authenticated(&caller)?;
+    let root = workspace(&state).map_err(IntoResponse::into_response)?;
     awl::documents::read(&root, &path)
         .await
         .map(Json)
-        .map_err(DocumentHttpError)
+        .map_err(|error| DocumentHttpError(error).into_response())
 }
 
 pub(crate) async fn put_document(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Path(path): Path<String>,
     Json(request): Json<PutDocumentRequest>,
-) -> Result<Json<DocumentResponse>, DocumentHttpError> {
-    let root = workspace(&state)?;
+) -> Result<Json<DocumentResponse>, Response> {
+    require_mutation(&state, &caller)?;
+    let root = workspace(&state).map_err(IntoResponse::into_response)?;
     awl::documents::write(&root, &path, request)
         .await
         .map(Json)
-        .map_err(DocumentHttpError)
+        .map_err(|error| DocumentHttpError(error).into_response())
 }
 
 pub(crate) async fn get_layout(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
     Path(path): Path<String>,
-) -> Result<Json<awl::layout::LayoutRecord>, LayoutHttpError> {
-    let root = workspace(&state).map_err(|error| LayoutHttpError::not_configured(&error.0))?;
+) -> Result<Json<awl::layout::LayoutRecord>, Response> {
+    require_authenticated(&caller)?;
+    let root = workspace(&state)
+        .map_err(|error| LayoutHttpError::not_configured(&error.0).into_response())?;
     awl::layout::read(&root, &path, caller.subject())
         .await
         .map(Json)
-        .map_err(LayoutHttpError)
+        .map_err(|error| LayoutHttpError(error).into_response())
 }
 
 pub(crate) async fn put_layout(
@@ -99,12 +127,14 @@ pub(crate) async fn put_layout(
     HttpCaller(caller): HttpCaller,
     Path(path): Path<String>,
     Json(request): Json<awl::layout::LayoutRecord>,
-) -> Result<Json<awl::layout::LayoutRecord>, LayoutHttpError> {
-    let root = workspace(&state).map_err(|error| LayoutHttpError::not_configured(&error.0))?;
+) -> Result<Json<awl::layout::LayoutRecord>, Response> {
+    require_mutation(&state, &caller)?;
+    let root = workspace(&state)
+        .map_err(|error| LayoutHttpError::not_configured(&error.0).into_response())?;
     awl::layout::write(&root, &path, caller.subject(), request)
         .await
         .map(Json)
-        .map_err(LayoutHttpError)
+        .map_err(|error| LayoutHttpError(error).into_response())
 }
 
 pub(crate) async fn emit(
@@ -131,45 +161,56 @@ pub(crate) async fn deploy_authoring(
 
 pub(crate) async fn get_revision(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Path(hash): Path<String>,
-) -> Result<Json<awl::revisions::Revision>, RunLoopHttpError> {
-    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+) -> Result<Json<awl::revisions::Revision>, Response> {
+    require_authenticated(&caller)?;
+    let root =
+        workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0).into_response())?;
     awl::revisions::fetch(&root, &hash)
         .await
         .map(Json)
-        .map_err(|error| RunLoopHttpError::RunLoop(error.into()))
+        .map_err(|error| RunLoopHttpError::RunLoop(error.into()).into_response())
 }
 
 pub(crate) async fn get_run_status(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Path(deployment_id): Path<String>,
-) -> Result<Json<awl::run_loop::RunStatusResponse>, RunLoopHttpError> {
-    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+) -> Result<Json<awl::run_loop::RunStatusResponse>, Response> {
+    require_authenticated(&caller)?;
+    let root =
+        workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0).into_response())?;
     awl::run_loop::status(&root, &deployment_id)
         .await
         .map(Json)
-        .map_err(RunLoopHttpError::RunLoop)
+        .map_err(|error| RunLoopHttpError::RunLoop(error).into_response())
 }
 
 pub(crate) async fn bind_run(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Path(deployment_id): Path<String>,
     Json(request): Json<awl::run_loop::BindRunRequest>,
-) -> Result<Json<awl::revisions::DeploymentRecord>, RunLoopHttpError> {
-    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+) -> Result<Json<awl::revisions::DeploymentRecord>, Response> {
+    require_mutation(&state, &caller)?;
+    let root =
+        workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0).into_response())?;
     awl::revisions::bind_run(&root, &deployment_id, request.workflow_id, request.run_id)
         .await
         .map(Json)
-        .map_err(|error| RunLoopHttpError::RunLoop(error.into()))
+        .map_err(|error| RunLoopHttpError::RunLoop(error.into()).into_response())
 }
 
 pub(crate) async fn worker_availability(
     State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
     Json(request): Json<awl::run_loop::WorkerAvailabilityRequest>,
-) -> Result<Json<awl::run_loop::WorkerAvailabilityResponse>, RunLoopHttpError> {
+) -> Result<Json<awl::run_loop::WorkerAvailabilityResponse>, Response> {
+    require_authenticated(&caller)?;
     awl::run_loop::worker_availability(&state, request)
         .map(Json)
-        .map_err(RunLoopHttpError::RunLoop)
+        .map_err(|error| RunLoopHttpError::RunLoop(error).into_response())
 }
 
 pub(crate) enum RunLoopHttpError {
@@ -195,6 +236,33 @@ impl IntoResponse for RunLoopHttpError {
             }
         }
     }
+}
+
+struct AwlAuthorizationError(WireError);
+
+impl From<AwlAuthorizationError> for Response {
+    fn from(error: AwlAuthorizationError) -> Self {
+        HttpWireError(error.0).into_response()
+    }
+}
+
+fn require_authenticated(caller: &crate::CallerIdentity) -> Result<(), AwlAuthorizationError> {
+    if let Some(reason) = caller.denial_reason() {
+        return Err(AwlAuthorizationError(WireError::namespace_denied(format!(
+            "AWL studio requires an authenticated caller: {reason}"
+        ))));
+    }
+    Ok(())
+}
+
+fn require_mutation(
+    state: &ServerState,
+    caller: &crate::CallerIdentity,
+) -> Result<(), AwlAuthorizationError> {
+    state
+        .deploy_guard()
+        .authorize(caller)
+        .map_err(|error| AwlAuthorizationError(error.to_wire_error()))
 }
 
 fn workspace(state: &ServerState) -> Result<std::path::PathBuf, DocumentHttpError> {

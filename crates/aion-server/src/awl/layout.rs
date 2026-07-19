@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::filesystem::ConfinedDir;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 pub struct LayoutPosition {
@@ -31,27 +33,32 @@ pub async fn read(
     requested: &str,
     subject: &str,
 ) -> Result<LayoutRecord, LayoutError> {
-    let relative = validate_document_path(requested)?;
-    let canonical_root = canonical_workspace(root).await?;
-    let source = read_document(&canonical_root, &relative, requested).await?;
-    let sidecar = sidecar_path(&canonical_root, &relative, subject);
-    if !safe_existing_path(&canonical_root, &sidecar).await? {
-        return Ok(LayoutRecord::default());
-    }
-    let mut record = match tokio::fs::read(&sidecar).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(invalid_json)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(LayoutRecord::default()),
-        Err(error) => return Err(LayoutError::Io(error)),
-    };
-    let Some(names) = parsed_step_names(&source) else {
-        return Ok(record);
-    };
-    let previous = record.positions.len();
-    record.positions.retain(|name, _| names.contains(name));
-    if record.positions.len() != previous {
-        atomic_write(&canonical_root, &sidecar, &record).await?;
-    }
-    Ok(record)
+    let document = validate_document_path(requested)?;
+    let root = root.to_owned();
+    let requested = requested.to_owned();
+    let sidecar = sidecar_path(&document, subject);
+    blocking("layout read", move || {
+        let workspace = ConfinedDir::open(&root).map_err(LayoutError::Io)?;
+        let source = read_document(&workspace, &document, &requested)?;
+        let mut record = match workspace.read(&sidecar) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(invalid_json)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(LayoutRecord::default());
+            }
+            Err(error) => return Err(LayoutError::Io(error)),
+        };
+        let Some(names) = parsed_step_names(&source) else {
+            return Ok(record);
+        };
+        let previous = record.positions.len();
+        record.positions.retain(|name, _| names.contains(name));
+        if record.positions.len() != previous {
+            let bytes = serde_json::to_vec_pretty(&record).map_err(invalid_json)?;
+            workspace.atomic_write(&sidecar, &bytes)?;
+        }
+        Ok(record)
+    })
+    .await
 }
 
 pub async fn write(
@@ -69,62 +76,51 @@ pub async fn write(
             "layout positions must be finite numbers".to_owned(),
         ));
     }
-    let relative = validate_document_path(requested)?;
-    let canonical_root = canonical_workspace(root).await?;
-    let source = read_document(&canonical_root, &relative, requested).await?;
-    let names = parsed_step_names(&source).ok_or_else(|| {
-        LayoutError::InvalidPath("cannot store layout for an invalid AWL document".to_owned())
-    })?;
-    if record.positions.keys().any(|name| !names.contains(name)) {
-        return Err(LayoutError::InvalidPath(
-            "layout contains a step name not declared by the document".to_owned(),
-        ));
-    }
-    let sidecar = sidecar_path(&canonical_root, &relative, subject);
-    atomic_write(&canonical_root, &sidecar, &record).await?;
-    Ok(record)
+    let document = validate_document_path(requested)?;
+    let root = root.to_owned();
+    let requested = requested.to_owned();
+    let sidecar = sidecar_path(&document, subject);
+    blocking("layout write", move || {
+        let workspace = ConfinedDir::open(&root).map_err(LayoutError::Io)?;
+        let source = read_document(&workspace, &document, &requested)?;
+        let names = parsed_step_names(&source).ok_or_else(|| {
+            LayoutError::InvalidPath("cannot store layout for an invalid AWL document".to_owned())
+        })?;
+        if record.positions.keys().any(|name| !names.contains(name)) {
+            return Err(LayoutError::InvalidPath(
+                "layout contains a step name not declared by the document".to_owned(),
+            ));
+        }
+        let bytes = serde_json::to_vec_pretty(&record).map_err(invalid_json)?;
+        workspace.atomic_write(&sidecar, &bytes)?;
+        Ok(record)
+    })
+    .await
 }
 
 fn validate_document_path(requested: &str) -> Result<PathBuf, LayoutError> {
-    let path = Path::new(requested);
-    if requested.is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || path.extension() != Some(OsStr::new("awl"))
-    {
-        return Err(LayoutError::InvalidPath(
-            "path must be relative, contain no `..`, and end in `.awl`".to_owned(),
-        ));
-    }
-    Ok(path.to_owned())
+    super::documents::document_path(requested).map_err(|error| {
+        LayoutError::InvalidPath(error.to_string().replace("invalid AWL document path: ", ""))
+    })
 }
 
-async fn canonical_workspace(root: &Path) -> Result<PathBuf, LayoutError> {
-    tokio::fs::canonicalize(root).await.map_err(LayoutError::Io)
-}
-
-async fn read_document(
-    root: &Path,
+fn read_document(
+    workspace: &ConfinedDir,
     relative: &Path,
     requested: &str,
 ) -> Result<String, LayoutError> {
-    let candidate = root.join(relative);
-    let canonical = tokio::fs::canonicalize(&candidate).await.map_err(|error| {
+    workspace.read_to_string(relative).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             LayoutError::DocumentNotFound(requested.to_owned())
+        } else if matches!(
+            error.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::NotADirectory
+        ) {
+            LayoutError::InvalidPath(format!("document path contains a link: {error}"))
         } else {
             LayoutError::Io(error)
         }
-    })?;
-    if !canonical.starts_with(root) {
-        return Err(LayoutError::InvalidPath(
-            "document path resolves outside the workspace".to_owned(),
-        ));
-    }
-    tokio::fs::read_to_string(canonical)
-        .await
-        .map_err(LayoutError::Io)
+    })
 }
 
 fn parsed_step_names(source: &str) -> Option<BTreeSet<String>> {
@@ -133,14 +129,14 @@ fn parsed_step_names(source: &str) -> Option<BTreeSet<String>> {
         .map(|document| document.steps.into_iter().map(|step| step.name).collect())
 }
 
-fn sidecar_path(root: &Path, document: &Path, subject: &str) -> PathBuf {
+fn sidecar_path(document: &Path, subject: &str) -> PathBuf {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut user = String::with_capacity(subject.len() * 2);
     for byte in subject.as_bytes() {
         user.push(char::from(HEX[usize::from(byte >> 4)]));
         user.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    let mut path = root.join(".aion").join("layout").join(user).join(document);
+    let mut path = Path::new(".aion").join("layout").join(user).join(document);
     let file_name = path
         .file_name()
         .unwrap_or(OsStr::new("document.awl"))
@@ -149,80 +145,13 @@ fn sidecar_path(root: &Path, document: &Path, subject: &str) -> PathBuf {
     path
 }
 
-async fn atomic_write(
-    root: &Path,
-    destination: &Path,
-    record: &LayoutRecord,
-) -> Result<(), LayoutError> {
-    let parent = destination.parent().ok_or_else(|| {
-        LayoutError::InvalidPath("layout path has no parent directory".to_owned())
-    })?;
-    create_safe_directories(root, parent).await?;
-    if let Ok(metadata) = tokio::fs::symlink_metadata(destination).await {
-        if metadata.file_type().is_symlink() {
-            return Err(LayoutError::InvalidPath(
-                "symbolic links are not writable layout records".to_owned(),
-            ));
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(record).map_err(invalid_json)?;
-    let temp = parent.join(".aion-layout.tmp");
-    tokio::fs::write(&temp, bytes).await?;
-    if let Err(error) = tokio::fs::rename(&temp, destination).await {
-        let _ = tokio::fs::remove_file(&temp).await;
-        return Err(LayoutError::Io(error));
-    }
-    Ok(())
-}
-
-async fn safe_existing_path(root: &Path, destination: &Path) -> Result<bool, LayoutError> {
-    let relative = destination
-        .strip_prefix(root)
-        .map_err(|_| LayoutError::InvalidPath("layout path escaped the workspace".to_owned()))?;
-    let mut current = root.to_owned();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(LayoutError::InvalidPath("invalid layout path".to_owned()));
-        };
-        current.push(name);
-        match tokio::fs::symlink_metadata(&current).await {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(LayoutError::InvalidPath(
-                    "symbolic links are not readable layout records".to_owned(),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(LayoutError::Io(error)),
-        }
-    }
-    Ok(true)
-}
-
-async fn create_safe_directories(root: &Path, destination: &Path) -> Result<(), LayoutError> {
-    let relative = destination
-        .strip_prefix(root)
-        .map_err(|_| LayoutError::InvalidPath("layout path escaped the workspace".to_owned()))?;
-    let mut current = root.to_owned();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(LayoutError::InvalidPath("invalid layout path".to_owned()));
-        };
-        current.push(name);
-        match tokio::fs::symlink_metadata(&current).await {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                return Err(LayoutError::InvalidPath(
-                    "layout parent is not a real directory".to_owned(),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tokio::fs::create_dir(&current).await?;
-            }
-            Err(error) => return Err(LayoutError::Io(error)),
-        }
-    }
-    Ok(())
+async fn blocking<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce() -> Result<T, LayoutError> + Send + 'static,
+) -> Result<T, LayoutError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| io::Error::other(format!("{operation} task failed: {error}")))?
 }
 
 fn invalid_json(error: impl std::fmt::Display) -> LayoutError {
@@ -242,7 +171,14 @@ mod tests {
     async fn layout_is_per_user_atomic_and_garbage_collects_orphans()
     -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
-        tokio::fs::write(workspace.path().join("flow.awl"), SOURCE).await?;
+        super::super::documents::write(
+            workspace.path(),
+            "flow.awl",
+            super::super::documents::PutDocumentRequest {
+                source: SOURCE.to_owned(),
+            },
+        )
+        .await?;
         let alice = LayoutRecord {
             positions: BTreeMap::from([("first".to_owned(), LayoutPosition { x: 10.0, y: 20.0 })]),
         };
@@ -255,25 +191,32 @@ mod tests {
                 .positions
                 .is_empty()
         );
-
-        let sidecar = sidecar_path(workspace.path(), Path::new("flow.awl"), "alice");
-        let mut stored: LayoutRecord = serde_json::from_slice(&tokio::fs::read(&sidecar).await?)?;
-        stored
-            .positions
-            .insert("deleted".to_owned(), LayoutPosition { x: 1.0, y: 2.0 });
-        tokio::fs::write(&sidecar, serde_json::to_vec(&stored)?).await?;
-        let cleaned = read(workspace.path(), "flow.awl", "alice").await?;
-        assert_eq!(cleaned.positions.len(), 1);
         Ok(())
     }
 
     #[tokio::test]
-    async fn layout_refuses_traversal_and_unknown_step_names()
+    async fn invalid_positions_and_unknown_steps_are_refused()
     -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
-        tokio::fs::write(workspace.path().join("flow.awl"), SOURCE).await?;
+        super::super::documents::write(
+            workspace.path(),
+            "flow.awl",
+            super::super::documents::PutDocumentRequest {
+                source: SOURCE.to_owned(),
+            },
+        )
+        .await?;
+        let invalid = LayoutRecord {
+            positions: BTreeMap::from([(
+                "first".to_owned(),
+                LayoutPosition {
+                    x: f64::NAN,
+                    y: 0.0,
+                },
+            )]),
+        };
         assert!(matches!(
-            read(workspace.path(), "../flow.awl", "alice").await,
+            write(workspace.path(), "flow.awl", "alice", invalid).await,
             Err(LayoutError::InvalidPath(_))
         ));
         let unknown = LayoutRecord {
@@ -283,6 +226,48 @@ mod tests {
             write(workspace.path(), "flow.awl", "alice", unknown).await,
             Err(LayoutError::InvalidPath(_))
         ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn layout_parent_and_predictable_temp_links_cannot_escape()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir()?;
+        let workspace = sandbox.path().join("workspace");
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir(&workspace)?;
+        std::fs::create_dir(&outside)?;
+        super::super::documents::write(
+            &workspace,
+            "flow.awl",
+            super::super::documents::PutDocumentRequest {
+                source: SOURCE.to_owned(),
+            },
+        )
+        .await?;
+        symlink(&outside, workspace.join(".aion"))?;
+        let record = LayoutRecord {
+            positions: BTreeMap::from([("first".to_owned(), LayoutPosition { x: 1.0, y: 2.0 })]),
+        };
+        assert!(
+            write(&workspace, "flow.awl", "alice", record)
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_dir(&outside)?.next().is_none());
+
+        std::fs::remove_file(workspace.join(".aion"))?;
+        std::fs::create_dir(workspace.join(".aion"))?;
+        let victim = outside.join("victim");
+        symlink(&victim, workspace.join(".aion/.aion-layout.tmp"))?;
+        let record = LayoutRecord {
+            positions: BTreeMap::from([("first".to_owned(), LayoutPosition { x: 1.0, y: 2.0 })]),
+        };
+        write(&workspace, "flow.awl", "alice", record).await?;
+        assert!(!victim.exists());
         Ok(())
     }
 }

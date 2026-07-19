@@ -36,17 +36,30 @@ pub(super) fn discover(
         return read(path, ConfigSource::Explicit(path.to_owned()));
     }
     let project = working_dir.join(PROJECT_CONFIG_FILE);
-    if project.exists() {
+    if is_present(&project)? {
         return read(&project, ConfigSource::ProjectLocal(project.clone()));
     }
     let user = home.join(HOME_CONFIG_FILE);
-    if user.exists() {
+    if is_present(&user)? {
         return read(&user, ConfigSource::AionHome(user.clone()));
     }
     Ok(DiscoveredFile {
         bytes: None,
         source: ConfigSource::BuiltInDefaults,
     })
+}
+
+fn is_present(path: &Path) -> Result<bool, ServerError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ServerError::Config {
+            message: format!(
+                "failed to inspect config path `{}`: {error}",
+                path.display()
+            ),
+        }),
+    }
 }
 
 fn read(path: &Path, source: ConfigSource) -> Result<DiscoveredFile, ServerError> {
@@ -73,4 +86,74 @@ pub fn load_required(path: &Path) -> Result<ServerConfig, ServerError> {
     ServerConfig::from_slice(&bytes).map_err(|error| ServerError::Config {
         message: format!("failed to load config `{}`: {error}", path.display()),
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    use super::*;
+
+    #[test]
+    fn dangling_project_config_is_loud_and_home_is_not_read()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let working = sandbox.path().join("working");
+        let home = sandbox.path().join("home");
+        fs::create_dir(&working)?;
+        fs::create_dir(&home)?;
+        fs::write(home.join(HOME_CONFIG_FILE), b"not valid toml =")?;
+        symlink(
+            sandbox.path().join("missing"),
+            working.join(PROJECT_CONFIG_FILE),
+        )?;
+
+        let error = discover(None, &home, &working)
+            .err()
+            .ok_or("expected failure")?;
+        assert!(error.to_string().contains(PROJECT_CONFIG_FILE));
+        assert!(!error.to_string().contains("parse"));
+        Ok(())
+    }
+
+    #[test]
+    fn dangling_home_config_is_loud_instead_of_defaults() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let sandbox = tempfile::tempdir()?;
+        let working = sandbox.path().join("working");
+        let home = sandbox.path().join("home");
+        fs::create_dir(&working)?;
+        fs::create_dir(&home)?;
+        symlink(sandbox.path().join("missing"), home.join(HOME_CONFIG_FILE))?;
+
+        let error = discover(None, &home, &working)
+            .err()
+            .ok_or("expected failure")?;
+        assert!(error.to_string().contains(HOME_CONFIG_FILE));
+        Ok(())
+    }
+
+    #[test]
+    fn unstatable_project_and_home_paths_are_loud() -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let working = sandbox.path().join("working");
+        let home = sandbox.path().join("home");
+        fs::create_dir(&working)?;
+        fs::create_dir(&home)?;
+        fs::write(home.join(HOME_CONFIG_FILE), b"lower layer must not win")?;
+
+        fs::set_permissions(&working, fs::Permissions::from_mode(0o000))?;
+        let project_result = discover(None, &home, &working);
+        fs::set_permissions(&working, fs::Permissions::from_mode(0o700))?;
+        assert!(
+            project_result.is_err(),
+            "project metadata failure was suppressed"
+        );
+
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o000))?;
+        let home_result = discover(None, &home, &working);
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
+        assert!(home_result.is_err(), "home metadata failure was suppressed");
+        Ok(())
+    }
 }

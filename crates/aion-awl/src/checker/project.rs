@@ -8,6 +8,7 @@
 //! the schema module, which never consults this projection).
 
 use std::fs;
+use std::path::{Component, Path};
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
@@ -126,6 +127,20 @@ pub(super) fn project_door(ctx: &mut Ctx<'_>, decl: &TypeDecl) -> Ty {
 }
 
 fn load_import(ctx: &mut Ctx<'_>, path: &str, span: Span) -> Option<Value> {
+    let import = Path::new(path);
+    if path.is_empty()
+        || import
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        ctx.error(
+            span,
+            format!(
+                "imported schema `{path}` must be a non-empty relative path with no `..` components"
+            ),
+        );
+        return None;
+    }
     let Some(root) = ctx.root else {
         ctx.error(
             span,

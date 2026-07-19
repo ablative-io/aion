@@ -75,6 +75,11 @@ toml = { workspace = true }
 prometheus = { workspace = true }
 async-trait.workspace = true
 base64 = { workspace = true }
+# Descriptor-relative no-follow access keeps all authoring reads and writes
+# beneath the selected workspace across component swaps on macOS and Linux.
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+tempfile.workspace = true
 # jsonwebtoken 10 panics at validation time unless exactly one crypto-provider
 # feature is selected; rust_crypto is the pure-Rust provider.
 jsonwebtoken = { workspace = true, optional = true }

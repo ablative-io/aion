@@ -14,7 +14,14 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
   `<AION_HOME>/authoring`. If the old CWD-relative `aion-data` or
   `aion-authoring` directory exists, the corresponding unconfigured default
   keeps using it and emits an unambiguous startup migration warning naming both
-  paths; explicitly configured paths never activate the guard.
+  paths; explicitly configured paths never activate the guard. Sensitive roots
+  are private by contract: on Unix Aion creates directories as `0700` and files
+  as `0600` independent of umask, and an existing permissive Aion home fails
+  startup with `chmod 700` remediation. Setting `AION_HOME` explicitly does not
+  opt into a shared-home mode; shared Aion homes are unsupported. On Windows,
+  Aion confines paths and inherits the pre-provisioned parent ACL because Rust
+  has no stable owner-only DACL creation API, so operators must provision a
+  private `AION_HOME` ACL before startup.
 - **AWL studio works out of the box.** A stock `aion server` exposes the full
   document, layout, check-backed editing, direct deploy, revision, run-status,
   and scaffold experience under the Aion-home authoring root, creating document

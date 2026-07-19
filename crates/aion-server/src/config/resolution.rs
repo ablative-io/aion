@@ -1,7 +1,7 @@
 //! Dynamic Aion-home defaults, legacy-directory migration guards, and startup provenance.
 
 use std::{
-    fmt,
+    fmt, io,
     path::{Path, PathBuf},
 };
 use tracing::{info, warn};
@@ -74,6 +74,14 @@ pub(crate) struct ConfigResolution {
 impl ConfigResolution {
     /// Emit config provenance, resolved roots, and any migration guards in the
     /// server's existing structured startup-log style.
+    pub(crate) fn validate_private_home(&self) -> Result<(), ServerError> {
+        crate::filesystem::validate_private_root(&self.home, "Aion home").map_err(|error| {
+            ServerError::Config {
+                message: format!("unsafe Aion home: {error}"),
+            }
+        })
+    }
+
     pub(crate) fn log_startup(&self) {
         for migration in &self.migrations {
             warn!(notice = %migration, "Aion home legacy-directory migration guard active");
@@ -112,7 +120,7 @@ pub(super) fn fill_home_defaults(
     if config.store.data_dir.is_none() {
         let home_default = home.join(DEFAULT_HAEMATITE_DATA_DIR);
         let legacy = working_dir.join(LEGACY_HAEMATITE_DATA_DIR);
-        let selected = select_default("store data", legacy, home_default, &mut migrations);
+        let selected = select_default("store data", legacy, home_default, &mut migrations)?;
         config.store.data_dir = Some(path_to_string(&selected, "store.data_dir")?);
     }
     if config.authoring.workspace_dir.is_none() {
@@ -123,7 +131,7 @@ pub(super) fn fill_home_defaults(
             legacy,
             home_default,
             &mut migrations,
-        ));
+        )?);
     }
     Ok(migrations)
 }
@@ -133,16 +141,28 @@ fn select_default(
     legacy: PathBuf,
     home_default: PathBuf,
     migrations: &mut Vec<MigrationNotice>,
-) -> PathBuf {
-    if legacy.is_dir() {
+) -> Result<PathBuf, ServerError> {
+    let is_real_directory = match std::fs::symlink_metadata(&legacy) {
+        Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(ServerError::Config {
+                message: format!(
+                    "failed to inspect legacy {kind} path `{}`: {error}",
+                    legacy.display()
+                ),
+            });
+        }
+    };
+    if is_real_directory {
         migrations.push(MigrationNotice {
             kind,
             legacy: legacy.clone(),
             home_default,
         });
-        legacy
+        Ok(legacy)
     } else {
-        home_default
+        Ok(home_default)
     }
 }
 

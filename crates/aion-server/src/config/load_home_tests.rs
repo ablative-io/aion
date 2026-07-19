@@ -211,6 +211,33 @@ fn legacy_directories_guard_only_unconfigured_defaults() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn legacy_symlink_directories_are_never_selected() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let scratch = tempfile::tempdir()?;
+    let home = scratch.path().join("home");
+    let working_dir = scratch.path().join("project");
+    let outside = scratch.path().join("outside");
+    fs::create_dir(&working_dir)?;
+    fs::create_dir(&outside)?;
+    symlink(&outside, working_dir.join("aion-data"))?;
+    symlink(&outside, working_dir.join("aion-authoring"))?;
+
+    let loaded = ServerConfig::load_for_test(&CliOverrides::default(), &home, &working_dir)?;
+    assert_eq!(
+        loaded.config.store.data_dir.as_deref(),
+        home.join("data").to_str()
+    );
+    assert_eq!(
+        loaded.config.authoring.workspace_dir.as_deref(),
+        Some(home.join("authoring").as_path())
+    );
+    assert!(loaded.resolution.migrations.is_empty());
+    Ok(())
+}
+
 #[test]
 fn aion_home_environment_override_is_respected_everywhere() -> Result<(), Box<dyn std::error::Error>>
 {

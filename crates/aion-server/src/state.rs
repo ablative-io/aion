@@ -1494,6 +1494,15 @@ fn build_haematite_store(
 > {
     use aion_store_haematite::{ClusterBootstrap, HaematiteStore};
 
+    // Materialize the data root through the same no-follow component walk used
+    // by authoring before the backend opens ambient paths. New components are
+    // 0700 on Unix and a permissive existing root is a loud startup failure.
+    let private_root = crate::filesystem::ConfinedDir::open_or_create(std::path::Path::new(
+        data_dir,
+    ))
+    .map_err(|error| ServerError::Config {
+        message: format!("unsafe store.data_dir `{data_dir}`: {error}"),
+    })?;
     let Some(cluster) = cluster else {
         // Single-node path: byte-identical to before.
         let path = std::path::Path::new(data_dir);
@@ -1502,6 +1511,13 @@ fn build_haematite_store(
         } else {
             HaematiteStore::create_with_shard_count(path, shard_count).map_err(ServerError::from)?
         };
+        private_root
+            .harden_tree()
+            .map_err(|error| ServerError::Config {
+                message: format!(
+                    "failed to apply private modes under store.data_dir `{data_dir}`: {error}"
+                ),
+            })?;
         return Ok((store, None));
     };
 
@@ -1519,6 +1535,13 @@ fn build_haematite_store(
     let (store, responder) =
         HaematiteStore::open_or_create_distributed(data_dir, shard_count, boot)
             .map_err(ServerError::from)?;
+    private_root
+        .harden_tree()
+        .map_err(|error| ServerError::Config {
+            message: format!(
+                "failed to apply private modes under store.data_dir `{data_dir}`: {error}"
+            ),
+        })?;
     Ok((store, Some(responder)))
 }
 

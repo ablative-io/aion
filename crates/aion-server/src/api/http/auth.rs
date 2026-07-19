@@ -269,6 +269,175 @@ mod tests {
         Ok(workflow_router(server_state(resolver, config).await?))
     }
 
+    #[tokio::test]
+    async fn awl_documents_revisions_and_runs_enforce_auth_on_every_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_workspace, router, endpoints) = awl_auth_fixture().await?;
+
+        for (method, uri, value) in &endpoints {
+            let missing = router
+                .clone()
+                .oneshot(awl_request(
+                    method,
+                    uri,
+                    value.as_ref(),
+                    AwlCredential::Missing,
+                )?)
+                .await?;
+            assert!(
+                matches!(
+                    missing.status(),
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                ),
+                "missing credentials reached {method} {uri}: {}",
+                missing.status()
+            );
+            let invalid = router
+                .clone()
+                .oneshot(awl_request(
+                    method,
+                    uri,
+                    value.as_ref(),
+                    AwlCredential::Invalid,
+                )?)
+                .await?;
+            assert!(
+                matches!(
+                    invalid.status(),
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                ),
+                "invalid credentials reached {method} {uri}: {}",
+                invalid.status()
+            );
+        }
+
+        for (method, uri, value) in &endpoints {
+            let valid = router
+                .clone()
+                .oneshot(awl_request(
+                    method,
+                    uri,
+                    value.as_ref(),
+                    AwlCredential::Valid,
+                )?)
+                .await?;
+            assert!(
+                valid.status().is_success(),
+                "valid credentials failed {method} {uri}: {}",
+                valid.status()
+            );
+        }
+        Ok(())
+    }
+
+    type AwlEndpoint = (axum::http::Method, String, Option<serde_json::Value>);
+
+    async fn awl_auth_fixture()
+    -> Result<(tempfile::TempDir, axum::Router, Vec<AwlEndpoint>), Box<dyn std::error::Error>> {
+        use axum::http::Method;
+        use serde_json::json;
+
+        let workspace = tempfile::tempdir()?;
+        crate::awl::documents::write(
+            workspace.path(),
+            "existing.awl",
+            crate::awl::documents::PutDocumentRequest {
+                source: "workflow existing\n".to_owned(),
+            },
+        )
+        .await?;
+        let revision =
+            crate::awl::revisions::store(workspace.path(), "workflow existing\n").await?;
+        crate::awl::revisions::record_deployment(
+            workspace.path(),
+            &crate::awl::revisions::DeploymentRecord {
+                deployment_id: "auth-deployment".to_owned(),
+                document_path: "existing.awl".to_owned(),
+                content_hash: revision.content_hash.clone(),
+                package_id: "package".to_owned(),
+                workflow_type: "existing".to_owned(),
+                task_queue: "worker".to_owned(),
+                workflow_id: None,
+                run_id: None,
+            },
+        )
+        .await?;
+        let mut config = runtime_config();
+        config.authoring.workspace_dir = Some(workspace.path().to_owned());
+        let router = router_with(config).await?;
+        let endpoints = vec![
+            (Method::GET, "/awl/documents".to_owned(), None),
+            (
+                Method::POST,
+                "/awl/documents".to_owned(),
+                Some(json!({ "name": "created" })),
+            ),
+            (Method::GET, "/awl/documents/existing.awl".to_owned(), None),
+            (
+                Method::PUT,
+                "/awl/documents/existing.awl".to_owned(),
+                Some(json!({ "source": "workflow existing\n" })),
+            ),
+            (
+                Method::GET,
+                format!("/awl/revisions/{}", revision.content_hash),
+                None,
+            ),
+            (Method::GET, "/awl/runs/auth-deployment".to_owned(), None),
+            (
+                Method::POST,
+                "/awl/runs/auth-deployment/binding".to_owned(),
+                Some(json!({ "workflow_id": "workflow-1", "run_id": "run-1" })),
+            ),
+        ];
+        Ok((workspace, router, endpoints))
+    }
+
+    #[derive(Clone, Copy)]
+    enum AwlCredential {
+        Missing,
+        Invalid,
+        Valid,
+    }
+
+    fn awl_request(
+        method: &axum::http::Method,
+        uri: &str,
+        value: Option<&serde_json::Value>,
+        credential: AwlCredential,
+    ) -> Result<Request<body::Body>, Box<dyn std::error::Error>> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if value.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        match credential {
+            AwlCredential::Missing => {}
+            AwlCredential::Invalid => {
+                builder = builder
+                    .header("authorization", "Bearer invalid")
+                    .header("x-aion-subject", "alice")
+                    .header("x-aion-deploy", "true");
+            }
+            AwlCredential::Valid => {
+                #[cfg(feature = "auth")]
+                let bearer =
+                    crate::auth::test_support::mint_token_with_deploy("alice", NAMESPACE, true)?;
+                #[cfg(not(feature = "auth"))]
+                let bearer = TOKEN.to_owned();
+                builder = builder
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .header("x-aion-subject", "alice")
+                    .header("x-aion-namespaces", NAMESPACE)
+                    .header("x-aion-deploy", "true");
+            }
+        }
+        let bytes = match value {
+            Some(value) => serde_json::to_vec(value)?,
+            None => Vec::new(),
+        };
+        Ok(builder.body(body::Body::from(bytes))?)
+    }
+
     /// Auth-off single-tenant operator mode: a caller with NO development
     /// headers at all is the operator and is authorized for an arbitrary
     /// namespace (cross-namespace access) AND holds the deploy grant. This is

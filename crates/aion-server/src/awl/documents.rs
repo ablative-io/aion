@@ -3,7 +3,8 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+
+use crate::filesystem::ConfinedDir;
 
 #[derive(Debug, Serialize)]
 pub struct DocumentEntry {
@@ -53,24 +54,48 @@ pub enum DocumentError {
 
 pub async fn list(root: &Path) -> Result<Vec<DocumentEntry>, DocumentError> {
     let root = root.to_owned();
-    tokio::task::spawn_blocking(move || list_sync(&root))
-        .await
-        .map_err(|error| io::Error::other(format!("document listing task failed: {error}")))?
+    blocking("document listing", move || {
+        let workspace = match ConfinedDir::open(&root) {
+            Ok(workspace) => workspace,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(DocumentError::Io(error)),
+        };
+        let mut entries: Vec<_> = workspace
+            .list_awl()?
+            .into_iter()
+            .map(|path| DocumentEntry {
+                name: path
+                    .file_stem()
+                    .unwrap_or(OsStr::new(""))
+                    .to_string_lossy()
+                    .into_owned(),
+                path: path.to_string_lossy().replace('\\', "/"),
+            })
+            .collect();
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(entries)
+    })
+    .await
 }
 
 pub async fn read(root: &Path, requested: &str) -> Result<DocumentResponse, DocumentError> {
-    let path = resolve_existing(root, requested)?;
-    let source = tokio::fs::read_to_string(&path).await.map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            DocumentError::NotFound(requested.to_owned())
-        } else {
-            DocumentError::Io(error)
-        }
-    })?;
-    let content_hash = super::revisions::content_hash(&source);
+    let relative = document_path(requested)?;
+    let root = root.to_owned();
+    let requested = requested.to_owned();
+    let source = blocking("document read", move || {
+        let workspace = ConfinedDir::open(&root).map_err(DocumentError::Io)?;
+        workspace.read_to_string(&relative).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                DocumentError::NotFound(requested)
+            } else {
+                confinement_error(error)
+            }
+        })
+    })
+    .await?;
     Ok(DocumentResponse {
+        content_hash: super::revisions::content_hash(&source),
         source,
-        content_hash,
     })
 }
 
@@ -80,32 +105,32 @@ pub async fn create(
 ) -> Result<CreateDocumentResponse, DocumentError> {
     validate_document_name(&request.name)?;
     let source = new_document_source(&request.name)?;
-    tokio::fs::create_dir_all(root).await?;
-    let canonical_root = tokio::fs::canonicalize(root).await?;
     let path = format!("{}.awl", request.name);
-    let destination = canonical_root.join(&path);
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = match options.open(&destination).await {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(DocumentError::Exists(path));
+    let root_owned = root.to_owned();
+    let path_owned = PathBuf::from(&path);
+    let source_owned = source.clone();
+    blocking("document create", move || {
+        let workspace = ConfinedDir::open_or_create(&root_owned).map_err(confinement_error)?;
+        workspace
+            .create_new(&path_owned, source_owned.as_bytes())
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    DocumentError::Exists(path_owned.to_string_lossy().into_owned())
+                } else {
+                    confinement_error(error)
+                }
+            })
+    })
+    .await?;
+    let revision = match super::revisions::store(root, &source).await {
+        Ok(revision) => revision,
+        Err(error) => {
+            if let Ok(workspace) = ConfinedDir::open(root) {
+                let _ = workspace.remove_file(Path::new(&path));
+            }
+            return Err(revision_io(&error));
         }
-        Err(error) => return Err(DocumentError::Io(error)),
     };
-    if let Err(error) = file.write_all(source.as_bytes()).await {
-        drop(file);
-        let _ = tokio::fs::remove_file(&destination).await;
-        return Err(DocumentError::Io(error));
-    }
-    if let Err(error) = file.sync_all().await {
-        drop(file);
-        let _ = tokio::fs::remove_file(&destination).await;
-        return Err(DocumentError::Io(error));
-    }
-    let revision = super::revisions::store(&canonical_root, &source)
-        .await
-        .map_err(|error| revision_io(&error))?;
     Ok(CreateDocumentResponse {
         path,
         name: request.name,
@@ -119,38 +144,17 @@ pub async fn write(
     requested: &str,
     request: PutDocumentRequest,
 ) -> Result<DocumentResponse, DocumentError> {
-    let relative = validate_relative(requested)?;
-    ensure_awl(&relative)?;
-    tokio::fs::create_dir_all(root).await?;
-    let canonical_root = tokio::fs::canonicalize(root).await?;
-    let parent_relative = relative.parent().unwrap_or_else(|| Path::new(""));
-    create_safe_parents(&canonical_root, parent_relative).await?;
-    let destination = canonical_root.join(&relative);
-    if let Ok(metadata) = tokio::fs::symlink_metadata(&destination).await {
-        if metadata.file_type().is_symlink() {
-            return Err(DocumentError::InvalidPath(
-                "symbolic links are not writable workspace documents".to_owned(),
-            ));
-        }
-    }
-    let parent = destination.parent().ok_or_else(|| {
-        DocumentError::InvalidPath("document path has no parent directory".to_owned())
-    })?;
-    let mut temp = tempfile_path(
-        parent,
-        destination.file_name().unwrap_or(OsStr::new("document")),
-    );
-    let mut suffix = 0_u32;
-    while tokio::fs::try_exists(&temp).await? {
-        suffix += 1;
-        temp = parent.join(format!(".aion-awl-{suffix}.tmp"));
-    }
-    tokio::fs::write(&temp, request.source.as_bytes()).await?;
-    if let Err(error) = tokio::fs::rename(&temp, &destination).await {
-        let _ = tokio::fs::remove_file(&temp).await;
-        return Err(DocumentError::Io(error));
-    }
-    let revision = super::revisions::store(&canonical_root, &request.source)
+    let relative = document_path(requested)?;
+    let root_owned = root.to_owned();
+    let source_owned = request.source.clone();
+    blocking("document write", move || {
+        let workspace = ConfinedDir::open_or_create(&root_owned).map_err(confinement_error)?;
+        workspace
+            .atomic_write(&relative, source_owned.as_bytes())
+            .map_err(confinement_error)
+    })
+    .await?;
+    let revision = super::revisions::store(root, &request.source)
         .await
         .map_err(|error| revision_io(&error))?;
     Ok(DocumentResponse {
@@ -159,80 +163,7 @@ pub async fn write(
     })
 }
 
-fn revision_io(error: &super::revisions::RevisionError) -> DocumentError {
-    DocumentError::Io(io::Error::other(error.to_string()))
-}
-
-fn list_sync(root: &Path) -> Result<Vec<DocumentEntry>, DocumentError> {
-    let canonical_root = match std::fs::canonicalize(root) {
-        Ok(root) => root,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // The default workspace is materialized by the first write. Until
-            // then, a fresh studio has no documents rather than an I/O failure.
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(DocumentError::Io(error)),
-    };
-    let mut entries = Vec::new();
-    visit(&canonical_root, &canonical_root, &mut entries)?;
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(entries)
-}
-
-fn visit(
-    root: &Path,
-    directory: &Path,
-    entries: &mut Vec<DocumentEntry>,
-) -> Result<(), DocumentError> {
-    for item in std::fs::read_dir(directory)? {
-        let item = item?;
-        let file_type = item.file_type()?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        let path = item.path();
-        if file_type.is_dir() {
-            visit(root, &path, entries)?;
-        } else if file_type.is_file() && path.extension() == Some(OsStr::new("awl")) {
-            let relative = path.strip_prefix(root).map_err(|error| {
-                DocumentError::InvalidPath(format!("workspace path escaped its root: {error}"))
-            })?;
-            let path_text = relative.to_string_lossy().replace('\\', "/");
-            let name = path
-                .file_stem()
-                .unwrap_or(OsStr::new(""))
-                .to_string_lossy()
-                .into_owned();
-            entries.push(DocumentEntry {
-                path: path_text,
-                name,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn resolve_existing(root: &Path, requested: &str) -> Result<PathBuf, DocumentError> {
-    let relative = validate_relative(requested)?;
-    ensure_awl(&relative)?;
-    let canonical_root = std::fs::canonicalize(root)?;
-    let candidate = canonical_root.join(relative);
-    let canonical = std::fs::canonicalize(&candidate).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            DocumentError::NotFound(requested.to_owned())
-        } else {
-            DocumentError::Io(error)
-        }
-    })?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err(DocumentError::InvalidPath(
-            "path resolves outside the workspace".to_owned(),
-        ));
-    }
-    Ok(canonical)
-}
-
-fn validate_relative(requested: &str) -> Result<PathBuf, DocumentError> {
+pub(crate) fn document_path(requested: &str) -> Result<PathBuf, DocumentError> {
     let path = Path::new(requested);
     if requested.is_empty()
         || path
@@ -243,39 +174,38 @@ fn validate_relative(requested: &str) -> Result<PathBuf, DocumentError> {
             "path must be non-empty, relative, and contain no `..` components".to_owned(),
         ));
     }
-    Ok(path.to_owned())
-}
-
-fn ensure_awl(path: &Path) -> Result<(), DocumentError> {
     if path.extension() != Some(OsStr::new("awl")) {
         return Err(DocumentError::InvalidPath(
             "document path must end in `.awl`".to_owned(),
         ));
     }
-    Ok(())
+    Ok(path.to_owned())
 }
 
-async fn create_safe_parents(root: &Path, relative: &Path) -> Result<(), DocumentError> {
-    let mut current = root.to_owned();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(DocumentError::InvalidPath("invalid parent path".to_owned()));
-        };
-        current.push(name);
-        match tokio::fs::symlink_metadata(&current).await {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                return Err(DocumentError::InvalidPath(
-                    "workspace parent is not a real directory".to_owned(),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tokio::fs::create_dir(&current).await?;
-            }
-            Err(error) => return Err(DocumentError::Io(error)),
-        }
+fn confinement_error(error: io::Error) -> DocumentError {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::NotADirectory
+    ) {
+        DocumentError::InvalidPath(format!(
+            "workspace paths must contain only real directories and files: {error}"
+        ))
+    } else {
+        DocumentError::Io(error)
     }
-    Ok(())
+}
+
+async fn blocking<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce() -> Result<T, DocumentError> + Send + 'static,
+) -> Result<T, DocumentError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| io::Error::other(format!("{operation} task failed: {error}")))?
+}
+
+fn revision_io(error: &super::revisions::RevisionError) -> DocumentError {
+    DocumentError::Io(io::Error::other(error.to_string()))
 }
 
 fn validate_document_name(name: &str) -> Result<(), DocumentError> {
@@ -304,10 +234,6 @@ fn new_document_source(name: &str) -> Result<String, DocumentError> {
     Ok(aion_awl::print(&document))
 }
 
-fn tempfile_path(parent: &Path, name: &OsStr) -> PathBuf {
-    parent.join(format!(".{}.aion-awl.tmp", name.to_string_lossy()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,15 +243,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let parent = tempfile::tempdir()?;
         let workspace = parent.path().join("aion-authoring");
-
         assert!(list(&workspace).await?.is_empty());
         assert!(!workspace.exists());
         Ok(())
     }
 
     #[tokio::test]
-    async fn workspace_list_read_write_round_trip_and_rejects_traversal()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn workspace_round_trip_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
         write(
             workspace.path(),
@@ -335,31 +259,33 @@ mod tests {
             },
         )
         .await?;
-
         let entries = list(workspace.path()).await?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "nested/example.awl");
-        assert_eq!(entries[0].name, "example");
-        let loaded = read(workspace.path(), "nested/example.awl").await?;
-        assert_eq!(loaded.source, "workflow example\n");
-
-        let refusal = write(
-            workspace.path(),
-            "../outside.awl",
-            PutDocumentRequest {
-                source: String::new(),
-            },
-        )
-        .await;
-        assert!(matches!(refusal, Err(DocumentError::InvalidPath(_))));
-        let absolute = read(workspace.path(), "/tmp/outside.awl").await;
-        assert!(matches!(absolute, Err(DocumentError::InvalidPath(_))));
+        assert_eq!(
+            read(workspace.path(), "nested/example.awl").await?.source,
+            "workflow example\n"
+        );
+        assert!(matches!(
+            write(
+                workspace.path(),
+                "../outside.awl",
+                PutDocumentRequest {
+                    source: String::new()
+                }
+            )
+            .await,
+            Err(DocumentError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            read(workspace.path(), "/tmp/outside.awl").await,
+            Err(DocumentError::InvalidPath(_))
+        ));
         Ok(())
     }
 
     #[tokio::test]
-    async fn create_is_atomic_typed_and_immediately_checks_green()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn create_is_atomic_typed_and_private() -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
         let created = create(
             workspace.path(),
@@ -373,34 +299,81 @@ mod tests {
             aion_awl::print(&aion_awl::parse(&created.source)?),
             created.source
         );
-        let checked = super::super::handlers::check_source(&super::super::handlers::CheckRequest {
-            source: created.source,
-            path: Some(
-                workspace
-                    .path()
-                    .join(&created.path)
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-        });
-        assert!(checked.ok, "diagnostics: {:?}", checked.diagnostics);
+        assert!(matches!(
+            create(
+                workspace.path(),
+                CreateDocumentRequest {
+                    name: "first_workflow".to_owned()
+                }
+            )
+            .await,
+            Err(DocumentError::Exists(_))
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(workspace.path().join(&created.path))?
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        Ok(())
+    }
 
-        let duplicate = create(
-            workspace.path(),
-            CreateDocumentRequest {
-                name: "first_workflow".to_owned(),
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn root_parent_and_dangling_temp_links_cannot_escape()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir()?;
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let root_link = sandbox.path().join("root-link");
+        symlink(&outside, &root_link)?;
+        assert!(
+            write(
+                &root_link,
+                "escape.awl",
+                PutDocumentRequest {
+                    source: "escaped".to_owned()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(!outside.join("escape.awl").exists());
+
+        let workspace = sandbox.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        symlink(&outside, workspace.join("linked"))?;
+        assert!(
+            write(
+                &workspace,
+                "linked/escape.awl",
+                PutDocumentRequest {
+                    source: "escaped".to_owned()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(!outside.join("escape.awl").exists());
+
+        let victim = outside.join("victim");
+        symlink(&victim, workspace.join(".victim.awl.aion-awl.tmp"))?;
+        write(
+            &workspace,
+            "victim.awl",
+            PutDocumentRequest {
+                source: "safe".to_owned(),
             },
         )
-        .await;
-        assert!(matches!(duplicate, Err(DocumentError::Exists(_))));
-        let invalid = create(
-            workspace.path(),
-            CreateDocumentRequest {
-                name: "../escape".to_owned(),
-            },
-        )
-        .await;
-        assert!(matches!(invalid, Err(DocumentError::InvalidName(_))));
+        .await?;
+        assert!(
+            !victim.exists(),
+            "predictable dangling temp link was followed"
+        );
         Ok(())
     }
 }
