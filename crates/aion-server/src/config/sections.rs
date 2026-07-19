@@ -17,11 +17,10 @@ use crate::error::ServerError;
 use super::{
     config_error,
     defaults::{
-        CLUSTER_BROADCAST_CAPACITY_REQUIRED, DEFAULT_AUTHORING_WORKSPACE_DIR, DEFAULT_GRPC_ADDRESS,
-        DEFAULT_HAEMATITE_DATA_DIR, DEFAULT_HTTP_ADDRESS, DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
-        DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES, DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS,
-        EVENT_BROADCAST_CAPACITY_REQUIRED, OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED,
-        OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED,
+        CLUSTER_BROADCAST_CAPACITY_REQUIRED, DEFAULT_GRPC_ADDRESS, DEFAULT_HTTP_ADDRESS,
+        DEFAULT_MAX_IN_FLIGHT_ACTIVITIES, DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES,
+        DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS, EVENT_BROADCAST_CAPACITY_REQUIRED,
+        OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED, OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED,
     },
 };
 
@@ -588,17 +587,16 @@ pub enum OutboxTransport {
 
 /// Server-side authoring settings from `[authoring]`.
 ///
-/// The AWL studio is on by default, rooted at `aion-authoring`, so a stock
-/// `aion server` provides its document, layout, check, deploy, revision, run,
-/// and scaffold surfaces without preliminary configuration. This relative
-/// durable workspace follows ADR-001's operator-serving default precedent for
-/// `aion-data`; operators can override it explicitly.
+/// The AWL studio is on by default, rooted at `<AION_HOME>/authoring`, so a
+/// stock `aion server` provides its document, layout, check, deploy, revision,
+/// run, and scaffold surfaces without preliminary configuration. Operators can
+/// override it explicitly.
 ///
 /// Only the separate Gleam authoring loop remains dark by default: without
 /// `gleam_path`, `/authoring/*` is not mounted and nothing invokes `gleam`
 /// (CN7). Setting `gleam_path` commissions that loop and makes `project_root`
 /// required.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthoringConfig {
     /// Path to the external `gleam` binary the toolchain spawns. `None`
@@ -612,21 +610,11 @@ pub struct AuthoringConfig {
     /// `workflow.toml`, and `schemas/`, so the operator provisions and names
     /// the project root.
     pub project_root: Option<PathBuf>,
-    /// Root directory exposed by the full AWL studio surface. Defaults to the
-    /// relative `aion-authoring` directory, following the ADR-001 `aion-data`
-    /// precedent so first use needs no config. `authoring.workspace_dir` or
-    /// `AION_AUTHORING_WORKSPACE_DIR` overrides it explicitly.
+    /// Root directory exposed by the full AWL studio surface. The merged server
+    /// loader defaults this to `<AION_HOME>/authoring` after config and
+    /// environment overlays. `authoring.workspace_dir` or
+    /// `AION_AUTHORING_WORKSPACE_DIR` therefore overrides it explicitly.
     pub workspace_dir: Option<PathBuf>,
-}
-
-impl Default for AuthoringConfig {
-    fn default() -> Self {
-        Self {
-            gleam_path: None,
-            project_root: None,
-            workspace_dir: Some(PathBuf::from(DEFAULT_AUTHORING_WORKSPACE_DIR)),
-        }
-    }
 }
 
 impl Default for ServerSection {
@@ -643,13 +631,13 @@ impl Default for StoreConfig {
     fn default() -> Self {
         Self {
             // The ablative stack is the out-of-box durable default: an empty
-            // config selects the haematite backend rooted at
-            // `DEFAULT_HAEMATITE_DATA_DIR`. `memory` (ephemeral) and `libsql`
-            // (lightweight, opt-in feature) remain explicit operator choices.
+            // config selects the haematite backend. The merged loader fills
+            // `<AION_HOME>/data`; `memory` (ephemeral) and `libsql`
+            // (lightweight, opt-in) remain explicit operator choices.
             backend: StoreBackend::Haematite,
             url: None,
             owned_shards: Vec::new(),
-            data_dir: Some(DEFAULT_HAEMATITE_DATA_DIR.to_owned()),
+            data_dir: None,
             // 64, NOT 4096 (#187): raising the default to 4096 bricked every
             // fresh server — engine boot's scan_prefix materializes every
             // shard, then each haematite 0.4.0 commit fans out one thread +

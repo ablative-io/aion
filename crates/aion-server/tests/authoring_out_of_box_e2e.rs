@@ -29,7 +29,7 @@ struct Harness {
 impl Harness {
     async fn from_toml(toml: &[u8]) -> Result<Self, TestError> {
         let scratch = tempfile::tempdir()?;
-        let config = ServerConfig::from_slice(toml)?;
+        let config = ServerConfig::from_slice_with_home(toml, scratch.path())?;
         let (_, mut runtime) = config.into_parts();
         let configured = runtime
             .authoring

@@ -5,10 +5,20 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
 ## Unreleased
 
-- **AWL studio works out of the box.** A stock `aion server` now roots the full
+- **Aion home centralizes server configuration and state.** `AION_HOME` wins,
+  otherwise the server uses `~/.aion`, without creating it during config reads.
+  Server config discovery is now explicit `--config` > project-local
+  `./aion.toml` > `<AION_HOME>/config.toml` > built-in defaults; every discovered
+  file remains a loud typed failure when unreadable or invalid. Unconfigured
+  haematite data and AWL studio roots are now `<AION_HOME>/data` and
+  `<AION_HOME>/authoring`. If the old CWD-relative `aion-data` or
+  `aion-authoring` directory exists, the corresponding unconfigured default
+  keeps using it and emits an unambiguous startup migration warning naming both
+  paths; explicitly configured paths never activate the guard.
+- **AWL studio works out of the box.** A stock `aion server` exposes the full
   document, layout, check-backed editing, direct deploy, revision, run-status,
-  and scaffold experience in the relative `aion-authoring` workspace, creating
-  its document and state directories on first write. Operators can still set
+  and scaffold experience under the Aion-home authoring root, creating document
+  and state directories on first write. Operators can still set
   `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR` explicitly. CN7 is
   unchanged: the separate Gleam loop stays unmounted until `gleam_path` is set.
 

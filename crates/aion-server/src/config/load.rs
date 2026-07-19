@@ -22,19 +22,20 @@ use crate::error::ServerError;
 
 use super::{
     AUTHORING_GLEAM_PATH_EMPTY, AUTHORING_PROJECT_ROOT_REQUIRED, AuthConfig, AuthoringConfig,
-    CORS_ALLOWED_ORIGIN_INVALID, CliOverrides, ClusterConfig, DEFAULT_CLUSTER_BROADCAST_CAPACITY,
-    DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES, DEFAULT_DEPLOY_MAX_INFLATED_BYTES,
-    DEFAULT_EVENT_BROADCAST_CAPACITY, DEFAULT_OUTBOX_BACKOFF_BASE_MS,
-    DEFAULT_OUTBOX_BACKOFF_MAX_MS, DEFAULT_OUTBOX_BACKOFF_MULTIPLIER, DEFAULT_OUTBOX_BATCH_SIZE,
-    DEFAULT_OUTBOX_MAX_ATTEMPTS, DEFAULT_OUTBOX_POLL_INTERVAL_MS, DEFAULT_QUERY_TIMEOUT_MS,
-    DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED, DEPLOY_MAX_INFLATED_BYTES_REQUIRED, DeployConfig, DevConfig,
-    DrainConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, NamespacesConfig,
-    OUTBOX_BACKOFF_BASE_REQUIRED, OUTBOX_BACKOFF_MAX_REQUIRED, OUTBOX_BACKOFF_MULTIPLIER_REQUIRED,
-    OUTBOX_BATCH_SIZE_REQUIRED, OUTBOX_MAX_ATTEMPTS_REQUIRED, OUTBOX_POLL_INTERVAL_REQUIRED,
+    CORS_ALLOWED_ORIGIN_INVALID, CliOverrides, ClusterConfig, ConfigResolution,
+    DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES,
+    DEFAULT_DEPLOY_MAX_INFLATED_BYTES, DEFAULT_EVENT_BROADCAST_CAPACITY,
+    DEFAULT_OUTBOX_BACKOFF_BASE_MS, DEFAULT_OUTBOX_BACKOFF_MAX_MS,
+    DEFAULT_OUTBOX_BACKOFF_MULTIPLIER, DEFAULT_OUTBOX_BATCH_SIZE, DEFAULT_OUTBOX_MAX_ATTEMPTS,
+    DEFAULT_OUTBOX_POLL_INTERVAL_MS, DEFAULT_QUERY_TIMEOUT_MS, DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED,
+    DEPLOY_MAX_INFLATED_BYTES_REQUIRED, DeployConfig, DevConfig, DrainConfig, ListenConfig,
+    MetricsConfig, NamespaceConfig, NamespaceMode, NamespacesConfig, OUTBOX_BACKOFF_BASE_REQUIRED,
+    OUTBOX_BACKOFF_MAX_REQUIRED, OUTBOX_BACKOFF_MULTIPLIER_REQUIRED, OUTBOX_BATCH_SIZE_REQUIRED,
+    OUTBOX_MAX_ATTEMPTS_REQUIRED, OUTBOX_POLL_INTERVAL_REQUIRED,
     OUTBOX_RECONCILE_INTERVAL_REQUIRED, OUTBOX_RECONCILE_STALE_AFTER_REQUIRED, ObservabilityConfig,
     OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, QUERY_TIMEOUT_REQUIRED, RuntimeConfig,
     RuntimeSection, ServerSection, StoreBackend, StoreConfig, TlsConfig, WebSocketConfig,
-    WorkerConfig, config_error, env, file,
+    WorkerConfig, aion_home, config_error, env, file, resolution::fill_home_defaults,
 };
 
 /// Complete merged server configuration.
@@ -81,6 +82,11 @@ pub struct ServerConfig {
     pub observability: ObservabilityConfig,
 }
 
+pub(crate) struct LoadedConfig {
+    pub(crate) config: ServerConfig,
+    pub(crate) resolution: ConfigResolution,
+}
+
 impl ServerConfig {
     /// Load and merge config from defaults, optional TOML file, environment, and CLI overrides.
     ///
@@ -89,13 +95,57 @@ impl ServerConfig {
     /// Returns [`ServerError::Config`] when file discovery, parsing, environment parsing, CLI
     /// values, or validation fail.
     pub fn load(cli: &CliOverrides) -> Result<Self, ServerError> {
-        let mut config = file::load(cli.config_path.as_deref())?.unwrap_or_default();
-        env::overlay(&mut config)?;
+        Ok(Self::load_resolved(cli)?.config)
+    }
+
+    pub(crate) fn load_resolved(cli: &CliOverrides) -> Result<LoadedConfig, ServerError> {
+        let home = aion_home()?;
+        let working_dir = std::env::current_dir().map_err(|source| ServerError::Config {
+            message: format!(
+                "failed to resolve the current directory for config discovery: {source}"
+            ),
+        })?;
+        Self::load_in(cli, &home, &working_dir, true)
+    }
+
+    fn load_in(
+        cli: &CliOverrides,
+        home: &Path,
+        working_dir: &Path,
+        overlay_environment: bool,
+    ) -> Result<LoadedConfig, ServerError> {
+        let discovered = file::discover(cli.config_path.as_deref(), home, working_dir)?;
+        let mut config = match discovered.bytes {
+            Some(bytes) => Self::parse_unresolved(&bytes).map_err(|error| ServerError::Config {
+                message: format!("failed to parse {}: {error}", discovered.source),
+            })?,
+            None => Self::default(),
+        };
+        if overlay_environment {
+            env::overlay(&mut config)?;
+        }
         config.apply_cli_overrides(cli);
-        config.load_discovered_workflow_packages(cli, Path::new("."))?;
+        config.load_discovered_workflow_packages(cli, working_dir)?;
+        let migrations = fill_home_defaults(&mut config, home, working_dir)?;
         config.fill_operational_defaults();
         config.validate()?;
-        Ok(config)
+        let resolution = ConfigResolution {
+            home: home.to_owned(),
+            source: discovered.source,
+            data_dir: config.store.data_dir.clone(),
+            authoring_workspace: config.authoring.workspace_dir.clone(),
+            migrations,
+        };
+        Ok(LoadedConfig { config, resolution })
+    }
+
+    #[cfg(test)]
+    fn load_for_test(
+        cli: &CliOverrides,
+        home: &Path,
+        working_dir: &Path,
+    ) -> Result<LoadedConfig, ServerError> {
+        Self::load_in(cli, home, working_dir, false)
     }
 
     /// Fill operational tuning knobs that have a sane default when omitted, so a
@@ -188,12 +238,38 @@ impl ServerConfig {
     ///
     /// Returns [`ServerError::Config`] when parsing fails or values are invalid.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ServerError> {
-        let mut config: Self = toml::from_slice(bytes).map_err(|source| ServerError::Config {
-            message: format!("invalid server config: {source}"),
+        let home = aion_home()?;
+        Self::from_slice_with_home(bytes, &home)
+    }
+
+    /// Parse server configuration using an explicitly supplied Aion home.
+    ///
+    /// This is useful for embedded callers and tests that must not consult or
+    /// touch the process user's real home. It applies the same dynamic defaults
+    /// and legacy-directory migration guard as [`Self::load`], but does not
+    /// apply environment or CLI overlays.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Config`] when parsing, current-directory
+    /// resolution, dynamic path defaulting, or validation fails.
+    pub fn from_slice_with_home(bytes: &[u8], home: &Path) -> Result<Self, ServerError> {
+        let working_dir = std::env::current_dir().map_err(|source| ServerError::Config {
+            message: format!(
+                "failed to resolve the current directory for config defaults: {source}"
+            ),
         })?;
+        let mut config = Self::parse_unresolved(bytes)?;
+        fill_home_defaults(&mut config, home, &working_dir)?;
         config.fill_operational_defaults();
         config.validate()?;
         Ok(config)
+    }
+
+    fn parse_unresolved(bytes: &[u8]) -> Result<Self, ServerError> {
+        toml::from_slice(bytes).map_err(|source| ServerError::Config {
+            message: format!("invalid server config: {source}"),
+        })
     }
 
     /// Load server configuration from an explicit TOML file path.
@@ -541,6 +617,10 @@ fn merge_workflow_packages(
 fn deduplicated_package_key(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
+
+#[cfg(test)]
+#[path = "load_home_tests.rs"]
+mod home_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1265,13 +1345,14 @@ mod tests {
     #[test]
     fn authoring_absent_defaults_awl_workspace_but_keeps_gleam_dark()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config = ServerConfig::from_slice(b"")?;
+        let home = tempfile::tempdir()?;
+        let config = ServerConfig::from_slice_with_home(b"", home.path())?;
 
         assert_eq!(config.authoring.gleam_path, None);
         assert_eq!(config.authoring.project_root, None);
         assert_eq!(
             config.authoring.workspace_dir.as_deref(),
-            Some(std::path::Path::new(DEFAULT_AUTHORING_WORKSPACE_DIR))
+            Some(home.path().join(DEFAULT_AUTHORING_WORKSPACE_DIR).as_path())
         );
         Ok(())
     }
@@ -1524,13 +1605,10 @@ mod tests {
     fn default_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = ServerConfig::default();
 
-        // The ablative stack is the out-of-box durable default: an empty config
-        // selects the haematite backend rooted at the default data_dir, so a stock
-        // server is durable without any [store] configuration. The default MUST
-        // carry data_dir or validate() would reject it (data_dir is required for
-        // haematite).
+        // Raw serde defaults defer user-level paths until the merged loader has
+        // resolved Aion home and applied every operator override.
         assert_eq!(config.store.backend, StoreBackend::Haematite);
-        assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
+        assert_eq!(config.store.data_dir, None);
         // 64 pending #187: 4096 defeated its own lazy-materialization premise
         // (boot scan_prefix materializes all shards; commit then fsyncs per
         // shard and blows the actor timeout). See StoreConfig::default().
@@ -1561,6 +1639,13 @@ mod tests {
         config.websocket.event_broadcast_capacity = Some(64);
         config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
+        let home = tempfile::tempdir()?;
+        let working_dir = tempfile::tempdir()?;
+        super::fill_home_defaults(&mut config, home.path(), working_dir.path())?;
+        assert_eq!(
+            config.store.data_dir.as_deref(),
+            home.path().join("data").to_str()
+        );
         config.validate()?;
         Ok(())
     }
@@ -1569,6 +1654,7 @@ mod tests {
     fn outbox_is_disabled_by_default_and_needs_no_knobs() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut config = ServerConfig::default();
+        config.store.data_dir = Some("test-data".to_owned());
         config.websocket.event_broadcast_capacity = Some(64);
         config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
@@ -1591,6 +1677,7 @@ mod tests {
 
     fn outbox_enabled_base() -> ServerConfig {
         let mut config = ServerConfig::default();
+        config.store.data_dir = Some("test-data".to_owned());
         config.websocket.event_broadcast_capacity = Some(64);
         config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);

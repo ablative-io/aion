@@ -161,27 +161,26 @@ pub(crate) const OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED: &str = "observability.m
 /// cap would retain no transcript at all).
 pub(crate) const OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED: &str = "observability.max_stream_events must be a positive integer when set (a zero per-stream cap would retain no transcript at all); omit observability.max_stream_events (or AION_OBSERVABILITY_MAX_STREAM_EVENTS) to use the default, or set it to a positive integer";
 
-/// Default haematite data directory for the unconfigured durable backend.
+/// Child directory below Aion home used by the default haematite store.
 ///
-/// An empty `[store]` section (or no config file at all) now selects the ablative
-/// stack's haematite event store rooted here, so a stock server is durable out of
-/// the box. `validate()` requires a non-empty `data_dir` when the backend is
-/// haematite, so the default must supply one or an otherwise-empty config would
-/// fail validation. Operators override it with `store.data_dir` /
-/// `AION_STORE_DATA_DIR`, or opt out with `backend = "memory"` / `"libsql"`.
-pub const DEFAULT_HAEMATITE_DATA_DIR: &str = "aion-data";
+/// The complete default is `<AION_HOME>/data`; it is resolved dynamically after
+/// file and environment overlays so an explicit `store.data_dir` always wins.
+pub const DEFAULT_HAEMATITE_DATA_DIR: &str = "data";
 
-/// Default AWL authoring workspace for the out-of-box studio.
+/// Child directory below Aion home used by the out-of-box AWL studio.
 ///
-/// An empty `[authoring]` section (or no config file at all) exposes the full
-/// AWL studio rooted here. As with [`DEFAULT_HAEMATITE_DATA_DIR`], this relative
-/// durable directory is an operator-serving ADR-001 default: `aion server`
-/// starts as a complete experience in its working directory without requiring
-/// configuration that merely names first-use state. Operators override it with
-/// `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR`. This does not
-/// commission the separate Gleam authoring loop, which still requires an
-/// explicit `authoring.gleam_path`.
-pub const DEFAULT_AUTHORING_WORKSPACE_DIR: &str = "aion-authoring";
+/// The complete default is `<AION_HOME>/authoring`; it is resolved dynamically
+/// after file and environment overlays so an explicit
+/// `authoring.workspace_dir` always wins. This does not commission the separate
+/// Gleam authoring loop, which still requires an explicit
+/// `authoring.gleam_path`.
+pub const DEFAULT_AUTHORING_WORKSPACE_DIR: &str = "authoring";
+
+/// CWD-relative store default used before Aion home existed.
+pub(crate) const LEGACY_HAEMATITE_DATA_DIR: &str = "aion-data";
+
+/// CWD-relative studio default shipped by the first out-of-box authoring round.
+pub(crate) const LEGACY_AUTHORING_WORKSPACE_DIR: &str = "aion-authoring";
 
 /// Operator-facing message for an empty or malformed `cors_allowed_origins`
 /// entry.
