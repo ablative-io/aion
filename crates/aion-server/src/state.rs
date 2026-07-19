@@ -1480,6 +1480,15 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
 /// present, otherwise the single-node path. Returns the store and (for the
 /// distributed path) its inbound-write responder. Restart-safe: an existing
 /// on-disk database is reused (its shard count wins) rather than re-created.
+///
+/// On Linux, Haematite receives a `/proc/self/fd` path derived from the checked
+/// `ConfinedDir`, never the configured ambient pathname. On macOS, where
+/// `/dev/fd/N/child` is not traversable, startup resolves the held descriptor's
+/// current path immediately before opening Haematite. Every shard is materialized
+/// before startup returns and the capability is retained for the store's full
+/// lifetime. This eliminates every post-startup lazy-shard window on both systems;
+/// the locked path-only Haematite 0.5 API leaves a residual macOS startup race
+/// between descriptor-path resolution and eager materialization.
 #[cfg(feature = "haematite-backend")]
 fn build_haematite_store(
     data_dir: &str,
@@ -1492,32 +1501,77 @@ fn build_haematite_store(
     ),
     ServerError,
 > {
+    build_haematite_store_with_hook(data_dir, shard_count, cluster, || Ok(()))
+}
+
+#[cfg(feature = "haematite-backend")]
+fn build_haematite_store_with_hook(
+    data_dir: &str,
+    shard_count: usize,
+    cluster: Option<crate::config::ClusterConfig>,
+    before_backend_touch: impl FnOnce() -> Result<(), std::io::Error>,
+) -> Result<
+    (
+        aion_store_haematite::HaematiteStore,
+        Option<aion_store_haematite::ClusterResponder>,
+    ),
+    ServerError,
+> {
     use aion_store_haematite::{ClusterBootstrap, HaematiteStore};
 
-    // Materialize the data root through the same no-follow component walk used
-    // by authoring before the backend opens ambient paths. New components are
-    // 0700 on Unix and a permissive existing root is a loud startup failure.
+    // Acquire the data root through the same no-follow component walk used by
+    // authoring. New components are 0700 on Unix and a permissive existing root
+    // is a loud startup failure.
     let private_root = crate::filesystem::ConfinedDir::open_or_create(std::path::Path::new(
         data_dir,
     ))
     .map_err(|error| ServerError::Config {
         message: format!("unsafe store.data_dir `{data_dir}`: {error}"),
     })?;
-    let Some(cluster) = cluster else {
-        // Single-node path: byte-identical to before.
-        let path = std::path::Path::new(data_dir);
-        let store = if path.join("config.json").exists() {
-            HaematiteStore::open(path).map_err(ServerError::from)?
-        } else {
-            HaematiteStore::create_with_shard_count(path, shard_count).map_err(ServerError::from)?
-        };
+
+    // Haematite 0.5 creates shard directories lazily. Pre-create every configured
+    // directory descriptor-relatively, then force the backend's actual shard
+    // spawn/recovery path below while this checked-and-hardened window is held.
+    for shard in 0..shard_count {
         private_root
-            .harden_tree()
+            .create_dir_all(std::path::Path::new(&format!("shard-{shard}")))
             .map_err(|error| ServerError::Config {
                 message: format!(
-                    "failed to apply private modes under store.data_dir `{data_dir}`: {error}"
+                    "failed to materialize shard-{shard} under store.data_dir `{data_dir}`: {error}"
                 ),
             })?;
+    }
+    private_root
+        .harden_tree()
+        .map_err(|error| private_store_mode_error(data_dir, &error))?;
+
+    // Deterministic regression seam: the capability and shard directories exist,
+    // but Haematite has not touched any path yet.
+    before_backend_touch().map_err(|error| ServerError::Config {
+        message: format!("store.data_dir pre-open hook failed: {error}"),
+    })?;
+
+    #[cfg(unix)]
+    let backend_path = private_root
+        .backend_path()
+        .map_err(|error| ServerError::Config {
+            message: format!("failed to resolve held store.data_dir `{data_dir}`: {error}"),
+        })?;
+    #[cfg(not(unix))]
+    let backend_path = std::path::PathBuf::from(data_dir);
+
+    let Some(cluster) = cluster else {
+        let store = if backend_path.join("config.json").exists() {
+            HaematiteStore::open(&backend_path).map_err(ServerError::from)?
+        } else {
+            HaematiteStore::create_with_shard_count(&backend_path, shard_count)
+                .map_err(ServerError::from)?
+        };
+        store.materialize_all_shards().map_err(ServerError::from)?;
+        private_root
+            .harden_tree()
+            .map_err(|error| private_store_mode_error(data_dir, &error))?;
+        let store = store.retain_data_root_capability(private_root);
         return Ok((store, None));
     };
 
@@ -1533,16 +1587,23 @@ fn build_haematite_store(
         timeout: HAEMATITE_CLUSTER_OP_TIMEOUT,
     };
     let (store, responder) =
-        HaematiteStore::open_or_create_distributed(data_dir, shard_count, boot)
+        HaematiteStore::open_or_create_distributed(&backend_path, shard_count, boot)
             .map_err(ServerError::from)?;
+    store.materialize_all_shards().map_err(ServerError::from)?;
     private_root
         .harden_tree()
-        .map_err(|error| ServerError::Config {
-            message: format!(
-                "failed to apply private modes under store.data_dir `{data_dir}`: {error}"
-            ),
-        })?;
+        .map_err(|error| private_store_mode_error(data_dir, &error))?;
+    let store = store.retain_data_root_capability(private_root);
     Ok((store, Some(responder)))
+}
+
+#[cfg(feature = "haematite-backend")]
+fn private_store_mode_error(data_dir: &str, error: &std::io::Error) -> ServerError {
+    ServerError::Config {
+        message: format!(
+            "failed to apply private modes under store.data_dir `{data_dir}`: {error}"
+        ),
+    }
 }
 
 /// Per-operation quorum/election timeout for the distributed haematite backend.
@@ -1768,6 +1829,55 @@ mod tests {
             1,
             "an event appended through the server's dyn EventStore reads back"
         );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "haematite-backend", unix))]
+    #[test]
+    fn haematite_root_swap_before_first_backend_touch_cannot_redirect_writes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir()?;
+        let configured_root = sandbox.path().join("data");
+        let held_root = sandbox.path().join("held-data");
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let configured = configured_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let (store, responder) =
+            super::build_haematite_store_with_hook(configured, 4, None, || {
+                // The server has acquired and hardened `configured_root`, but
+                // Haematite has not opened or created anything. Replace the
+                // ambient name with an attacker-controlled symlink at exactly
+                // the old check/use boundary.
+                std::fs::rename(&configured_root, &held_root)?;
+                symlink(&outside, &configured_root)?;
+                Ok(())
+            })?;
+        assert!(responder.is_none());
+
+        let outside_entries = std::fs::read_dir(&outside)?.collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            outside_entries.is_empty(),
+            "Haematite followed the replaced ambient root and wrote outside"
+        );
+        assert!(held_root.join("config.json").is_file());
+        for shard in 0..4 {
+            let shard_path = held_root.join(format!("shard-{shard}"));
+            assert!(shard_path.is_dir(), "shard {shard} was not materialized");
+            assert!(
+                std::fs::read_dir(&shard_path)?
+                    .next()
+                    .transpose()?
+                    .is_some(),
+                "shard {shard} did not run Haematite's materialization path"
+            );
+        }
+
+        drop(store);
         Ok(())
     }
 

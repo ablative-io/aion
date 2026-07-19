@@ -192,6 +192,11 @@ impl Drop for ClusterResponder {
 #[derive(Clone)]
 pub struct HaematiteStore {
     inner: Arc<haematite::EventStore>,
+    /// A caller-supplied data-root capability retained for the lifetime of every
+    /// store clone. Production passes the same checked directory descriptor used
+    /// to derive haematite's descriptor path, so later lazy backend work cannot
+    /// outlive or lose that filesystem authority.
+    data_root_capability: Option<Arc<dyn Send + Sync>>,
     /// `Some` in distributed mode; `None` in single-node mode (B1, unchanged).
     distribution: Option<DistributedRouting>,
     /// Which shards this store owns for ENUMERATION purposes.
@@ -210,6 +215,10 @@ impl std::fmt::Debug for HaematiteStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HaematiteStore")
+            .field(
+                "retains_data_root_capability",
+                &self.data_root_capability.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -284,6 +293,7 @@ impl HaematiteStore {
     ) -> Self {
         Self {
             inner: Arc::new(haematite::EventStore::new(database)),
+            data_root_capability: None,
             distribution: Some(DistributedRouting {
                 membership,
                 timeout,
@@ -305,9 +315,61 @@ impl HaematiteStore {
         &self.inner
     }
 
+    /// Retain the checked filesystem capability that authorizes this store's
+    /// data root.
+    ///
+    /// Haematite 0.5 accepts a path and keeps it for lazy shard work. A caller
+    /// that passes a descriptor-backed path must also keep that descriptor open;
+    /// attaching its capability here makes the lifetime identical to the store's
+    /// lifetime, including all [`Clone`]s.
+    #[must_use]
+    pub fn retain_data_root_capability(mut self, capability: impl Send + Sync + 'static) -> Self {
+        self.data_root_capability = Some(Arc::new(capability));
+        self
+    }
+
+    /// Force Haematite 0.5 to materialize every configured lazy shard now.
+    ///
+    /// The locked backend exposes key-based first-touch but no public direct
+    /// materialize-by-index operation. This probes deterministic keys, asks the
+    /// backend which shard each key owns, and performs one read on the first key
+    /// found for every shard. Reads do not mutate logical data, but they do run
+    /// the backend's normal shard spawn/recovery path and create its on-disk shard
+    /// directory while startup still owns the checked root window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] if any shard cannot be spawned or read.
+    pub fn materialize_all_shards(&self) -> Result<(), StoreError> {
+        let database = self.inner.database();
+        let shard_count = database.shard_count();
+        let mut materialized = vec![false; shard_count];
+        let mut remaining = shard_count;
+        let mut probe = 0_u64;
+        while remaining != 0 {
+            let key = probe.to_le_bytes();
+            let shard = database.shard_for(&key);
+            if !materialized[shard] {
+                database
+                    .read_value(&key)
+                    .map_err(|error| database_error(&error))?;
+                materialized[shard] = true;
+                remaining -= 1;
+            }
+            probe = probe.checked_add(1).ok_or_else(|| {
+                StoreError::Backend(
+                    "could not find a routing probe for every configured haematite shard"
+                        .to_owned(),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     fn from_database(database: Database) -> Self {
         Self {
             inner: Arc::new(haematite::EventStore::new(database)),
+            data_root_capability: None,
             distribution: None,
             owned_shards: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }

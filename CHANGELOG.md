@@ -18,10 +18,12 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
   are private by contract: on Unix Aion creates directories as `0700` and files
   as `0600` independent of umask, and an existing permissive Aion home fails
   startup with `chmod 700` remediation. Setting `AION_HOME` explicitly does not
-  opt into a shared-home mode; shared Aion homes are unsupported. On Windows,
-  Aion confines paths and inherits the pre-provisioned parent ACL because Rust
-  has no stable owner-only DACL creation API, so operators must provision a
-  private `AION_HOME` ACL before startup.
+  opt into a shared-home mode; shared Aion homes are unsupported. On non-Unix
+  targets Aion does not claim to install or validate an owner-only ACL: startup
+  fails closed for default home, data, authoring, and authoring-state roots.
+  Operators must pre-provision private directories and explicitly configure
+  `AION_HOME`, `store.data_dir`, and `authoring.workspace_dir`; accepted explicit
+  roots emit a loud startup warning that ACL privacy was not verified.
 - **AWL studio works out of the box.** A stock `aion server` exposes the full
   document, layout, check-backed editing, direct deploy, revision, run-status,
   and scaffold experience under the Aion-home authoring root, creating document

@@ -69,22 +69,77 @@ pub(crate) struct ConfigResolution {
     pub(crate) data_dir: Option<String>,
     pub(crate) authoring_workspace: Option<PathBuf>,
     pub(crate) migrations: Vec<MigrationNotice>,
+    #[cfg(not(unix))]
+    pub(crate) home_explicit: bool,
+    #[cfg(not(unix))]
+    pub(crate) data_dir_explicit: bool,
+    #[cfg(not(unix))]
+    pub(crate) data_root_required: bool,
+    #[cfg(not(unix))]
+    pub(crate) authoring_workspace_explicit: bool,
 }
 
 impl ConfigResolution {
     /// Emit config provenance, resolved roots, and any migration guards in the
     /// server's existing structured startup-log style.
     pub(crate) fn validate_private_home(&self) -> Result<(), ServerError> {
-        crate::filesystem::validate_private_root(&self.home, "Aion home").map_err(|error| {
-            ServerError::Config {
-                message: format!("unsafe Aion home: {error}"),
+        #[cfg(unix)]
+        {
+            crate::filesystem::validate_private_root(&self.home, "Aion home").map_err(|error| {
+                ServerError::Config {
+                    message: format!("unsafe Aion home: {error}"),
+                }
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            require_explicit_non_unix_root(
+                self.home_explicit,
+                "Aion home",
+                "AION_HOME",
+                &self.home,
+            )?;
+            if self.data_root_required {
+                let data_dir = self
+                    .data_dir
+                    .as_deref()
+                    .ok_or_else(|| ServerError::Config {
+                        message: "store.data_dir is required for the haematite backend".to_owned(),
+                    })?;
+                require_explicit_non_unix_root(
+                    self.data_dir_explicit,
+                    "data root",
+                    "store.data_dir or AION_STORE_DATA_DIR",
+                    Path::new(data_dir),
+                )?;
             }
-        })
+            if let Some(authoring) = &self.authoring_workspace {
+                require_explicit_non_unix_root(
+                    self.authoring_workspace_explicit,
+                    "authoring and authoring-state root",
+                    "authoring.workspace_dir or AION_AUTHORING_WORKSPACE_DIR",
+                    authoring,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn log_startup(&self) {
         for migration in &self.migrations {
             warn!(notice = %migration, "Aion home legacy-directory migration guard active");
+        }
+        #[cfg(not(unix))]
+        {
+            warn_unverified_acl("Aion home", &self.home);
+            if self.data_root_required {
+                if let Some(data_dir) = &self.data_dir {
+                    warn_unverified_acl("data root", Path::new(data_dir));
+                }
+            }
+            if let Some(authoring) = &self.authoring_workspace {
+                warn_unverified_acl("authoring and authoring-state root", authoring);
+            }
         }
         info!(
             config_source = %self.source,
@@ -104,6 +159,46 @@ impl ConfigResolution {
             );
         }
     }
+}
+
+#[cfg(not(unix))]
+fn require_explicit_non_unix_root(
+    explicit: bool,
+    label: &str,
+    configuration: &str,
+    path: &Path,
+) -> Result<(), ServerError> {
+    require_explicit_root_selection(explicit, label, configuration, path)?;
+    crate::filesystem::validate_private_root(path, label).map_err(|error| ServerError::Config {
+        message: format!("unsafe explicitly configured {label}: {error}"),
+    })
+}
+
+#[cfg(any(not(unix), test))]
+fn require_explicit_root_selection(
+    explicit: bool,
+    label: &str,
+    configuration: &str,
+    path: &Path,
+) -> Result<(), ServerError> {
+    if !explicit {
+        return Err(ServerError::Config {
+            message: format!(
+                "refusing default-sensitive {label} `{}` on this non-Unix platform because Aion cannot verify or install a private ACL; pre-provision a private directory and explicitly configure it with {configuration}",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn warn_unverified_acl(label: &str, path: &Path) {
+    warn!(
+        sensitive_root = label,
+        path = %path.display(),
+        "ACL PRIVACY NOT VERIFIED: using explicitly configured sensitive root on a non-Unix platform; Aion does not install or validate an owner-only ACL"
+    );
 }
 
 /// Apply dynamic home-rooted defaults and the two legacy-directory guards.
@@ -175,4 +270,36 @@ fn path_to_string(path: &Path, field: &str) -> Result<String, ServerError> {
                 path.display()
             ),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_unix_default_sensitive_roots_fail_with_explicit_acl_remediation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = Path::new(r"C:\ProgramData\Aion");
+        let error = require_explicit_root_selection(false, "Aion home", "AION_HOME", path)
+            .err()
+            .ok_or("a non-Unix default root did not fail closed")?;
+        let message = error.to_string();
+        assert!(message.contains("default-sensitive Aion home"));
+        assert!(message.contains("cannot verify or install a private ACL"));
+        assert!(message.contains("pre-provision a private directory"));
+        assert!(message.contains("AION_HOME"));
+        Ok(())
+    }
+
+    #[test]
+    fn non_unix_explicit_sensitive_root_selection_is_accepted_for_shape_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        require_explicit_root_selection(
+            true,
+            "data root",
+            "store.data_dir or AION_STORE_DATA_DIR",
+            Path::new(r"C:\Aion\data"),
+        )?;
+        Ok(())
+    }
 }

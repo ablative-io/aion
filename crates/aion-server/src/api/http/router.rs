@@ -251,7 +251,7 @@ mod tests {
     use super::*;
     use crate::{
         NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
-        config::{NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig},
+        config::{NamespaceConfig, NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig},
     };
 
     #[tokio::test]
@@ -434,6 +434,76 @@ mod tests {
                 .is_none(),
             "no CorsLayer must be installed when no origins are configured"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "auth")]
+    #[tokio::test]
+    async fn worker_availability_allows_granted_jwt_namespace_and_denies_foreign_namespace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (engine, _, _) = super::super::test_support::shared_engine().await?;
+        let resolver = NamespaceResolver::from_config(
+            NamespaceConfig {
+                mode: NamespaceMode::SharedEngine,
+            },
+            engine,
+        );
+        let router = http_router(server_state(resolver, runtime_config()).await?)?;
+
+        let allowed = router
+            .clone()
+            .oneshot(json_request(
+                "/awl/workers/availability",
+                &serde_json::json!({
+                    "namespace": NAMESPACE,
+                    "task_queue": "orders",
+                }),
+            )?)
+            .await?;
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        let foreign = router
+            .oneshot(json_request(
+                "/awl/workers/availability",
+                &serde_json::json!({
+                    "namespace": "tenant-b",
+                    "task_queue": "orders",
+                }),
+            )?)
+            .await?;
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = read_json(foreign).await?;
+        assert_eq!(body["code"], "namespace_denied");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_availability_keeps_auth_off_operator_access()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (engine, _, _) = super::super::test_support::shared_engine().await?;
+        let resolver = NamespaceResolver::from_config(
+            NamespaceConfig {
+                mode: NamespaceMode::SharedEngine,
+            },
+            engine,
+        );
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        config.auth.jwks_url = None;
+        let router = http_router(crate::ServerState::from_parts(resolver, config))?;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/awl/workers/availability")
+            .header("content-type", "application/json")
+            .body(body::Body::from(serde_json::to_vec(&serde_json::json!({
+                "namespace": "operator-selected-namespace",
+                "task_queue": "orders",
+            }))?))?;
+
+        let response = router.oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await?;
+        assert_eq!(body["connected_workers"], 0);
         Ok(())
     }
 

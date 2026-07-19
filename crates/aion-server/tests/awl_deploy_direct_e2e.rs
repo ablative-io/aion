@@ -19,6 +19,11 @@ use axum::{body, http::Request, http::StatusCode, response::Response};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[cfg(feature = "auth")]
+use base64::Engine as _;
+#[cfg(feature = "auth")]
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+
 const NAMESPACE: &str = "default";
 const FROZEN_ENTRY: &str = "awl_hello";
 
@@ -62,6 +67,21 @@ impl Harness {
             Arc::clone(&engine),
         );
         let config = runtime_config(workspace.path().to_path_buf(), template_root, auth_enabled);
+        #[cfg(feature = "auth")]
+        let state = if auth_enabled {
+            let mut config = config;
+            let jwks_url = serve_jwks()?;
+            config.auth.jwks_url = Some(jwks_url.clone());
+            let cache = aion_server::auth::JwksCache::new(
+                jwks_url,
+                Duration::from_secs(config.auth.jwks_refresh_seconds),
+            )
+            .await?;
+            ServerState::from_parts_with_jwks(resolver, config, cache)
+        } else {
+            ServerState::from_parts(resolver, config)
+        };
+        #[cfg(not(feature = "auth"))]
         let state = ServerState::from_parts(resolver, config);
         let router = http_router(state.clone())?;
         Ok(Self {
@@ -130,15 +150,76 @@ fn runtime_config(
     }
 }
 
-fn caller_headers(builder: axum::http::request::Builder) -> axum::http::request::Builder {
-    builder
-        .header("x-aion-subject", "direct-deploy-test")
-        .header("x-aion-namespaces", NAMESPACE)
-        .header("authorization", "Bearer direct-test-token")
+#[cfg(feature = "auth")]
+const JWT_KEY_ID: &str = "aion-test-key";
+#[cfg(feature = "auth")]
+const JWT_SECRET: &[u8] = b"aion-test-jwt-shared-secret";
+
+#[cfg(feature = "auth")]
+fn serve_jwks() -> Result<String, std::io::Error> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    tokio::spawn(async move {
+        let router = axum::Router::new().route(
+            "/jwks.json",
+            axum::routing::get(|| async {
+                axum::Json(json!({
+                    "keys": [{
+                        "kty": "oct",
+                        "kid": JWT_KEY_ID,
+                        "alg": "HS256",
+                        "k": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(JWT_SECRET),
+                    }]
+                }))
+            }),
+        );
+        if let Err(error) = axum::serve(listener, router).await {
+            eprintln!("fixture JWKS server exited: {error}");
+        }
+    });
+    Ok(format!("http://{address}/jwks.json"))
 }
 
-fn granted(builder: axum::http::request::Builder) -> axum::http::request::Builder {
-    caller_headers(builder).header("x-aion-deploy", "true")
+#[cfg(feature = "auth")]
+fn mint_token(deploy: bool) -> Result<String, jsonwebtoken::errors::Error> {
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(JWT_KEY_ID.to_owned());
+    jsonwebtoken::encode(
+        &header,
+        &json!({
+            "sub": "direct-deploy-test",
+            "namespace": NAMESPACE,
+            "exp": jsonwebtoken::get_current_timestamp() + 3600,
+            "deploy": deploy,
+        }),
+        &EncodingKey::from_secret(JWT_SECRET),
+    )
+}
+
+fn caller_headers(
+    builder: axum::http::request::Builder,
+) -> Result<axum::http::request::Builder, TestError> {
+    #[cfg(feature = "auth")]
+    let bearer = mint_token(false)?;
+    #[cfg(not(feature = "auth"))]
+    let bearer = "direct-test-token".to_owned();
+    let authorization = format!("Bearer {bearer}").parse::<axum::http::HeaderValue>()?;
+    Ok(builder
+        .header("x-aion-subject", "direct-deploy-test")
+        .header("x-aion-namespaces", NAMESPACE)
+        .header("authorization", authorization))
+}
+
+fn granted(
+    builder: axum::http::request::Builder,
+) -> Result<axum::http::request::Builder, TestError> {
+    #[cfg(feature = "auth")]
+    let builder = builder.header("authorization", format!("Bearer {}", mint_token(true)?));
+    #[cfg(not(feature = "auth"))]
+    let builder = caller_headers(builder)?.header("x-aion-deploy", "true");
+    Ok(builder)
 }
 
 async fn json_request(
@@ -152,7 +233,7 @@ async fn json_request(
             .method(method)
             .uri(uri)
             .header("content-type", "application/json"),
-    )
+    )?
     .body(body::Body::from(serde_json::to_vec(&value)?))?;
     Ok(router.clone().oneshot(request).await?)
 }
@@ -163,7 +244,7 @@ async fn read_json(response: Response) -> Result<Value, TestError> {
 }
 
 async fn get_request(router: &axum::Router, uri: &str) -> Result<Response, TestError> {
-    let request = granted(Request::builder().method("GET").uri(uri)).body(body::Body::empty())?;
+    let request = granted(Request::builder().method("GET").uri(uri))?.body(body::Body::empty())?;
     Ok(router.clone().oneshot(request).await?)
 }
 
@@ -198,9 +279,9 @@ async fn deploy_request_as(
         .uri("/awl/deploy")
         .header("content-type", "application/json");
     let builder = if deploy_granted {
-        granted(builder)
+        granted(builder)?
     } else {
-        caller_headers(builder)
+        caller_headers(builder)?
     };
     let request = builder.body(body::Body::from(serde_json::to_vec(&json!({
         "path": path,

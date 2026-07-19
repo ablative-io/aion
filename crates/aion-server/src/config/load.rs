@@ -125,6 +125,14 @@ impl ServerConfig {
             env::overlay(&mut config)?;
         }
         config.apply_cli_overrides(cli);
+        #[cfg(not(unix))]
+        let home_explicit = !overlay_environment || std::env::var_os("AION_HOME").is_some();
+        #[cfg(not(unix))]
+        let data_dir_explicit = config.store.data_dir.is_some();
+        #[cfg(not(unix))]
+        let data_root_required = matches!(config.store.backend, StoreBackend::Haematite);
+        #[cfg(not(unix))]
+        let authoring_workspace_explicit = config.authoring.workspace_dir.is_some();
         config.load_discovered_workflow_packages(cli, working_dir)?;
         let migrations = fill_home_defaults(&mut config, home, working_dir)?;
         config.fill_operational_defaults();
@@ -135,6 +143,14 @@ impl ServerConfig {
             data_dir: config.store.data_dir.clone(),
             authoring_workspace: config.authoring.workspace_dir.clone(),
             migrations,
+            #[cfg(not(unix))]
+            home_explicit,
+            #[cfg(not(unix))]
+            data_dir_explicit,
+            #[cfg(not(unix))]
+            data_root_required,
+            #[cfg(not(unix))]
+            authoring_workspace_explicit,
         };
         Ok(LoadedConfig { config, resolution })
     }

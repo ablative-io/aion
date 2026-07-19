@@ -16,6 +16,10 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, DirBuilder, OpenOptions};
 #[cfg(unix)]
 use cap_std::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+#[cfg(all(unix, not(target_os = "macos")))]
+use std::os::fd::AsRawFd as _;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt as _;
 
 const PRIVATE_DIR_MODE: u32 = 0o700;
 const PRIVATE_FILE_MODE: u32 = 0o600;
@@ -120,14 +124,49 @@ impl ConfinedDir {
         Ok(paths)
     }
 
+    /// Eagerly create a descendant directory through this capability.
+    pub(crate) fn create_dir_all(&self, relative: &Path) -> io::Result<()> {
+        drop(self.open_dir(relative, true)?);
+        Ok(())
+    }
+
+    /// Return the narrowest path bridge the platform offers from this held
+    /// descriptor to a backend that accepts only `PathBuf`.
+    ///
+    /// Linux/Android can traverse descendants through `/proc/self/fd`, so the
+    /// returned path remains descriptor-authoritative. macOS and other Unix
+    /// targets expose a directory descriptor in `/dev/fd` but do not permit
+    /// descendant traversal through that name; there we resolve the descriptor's
+    /// current real path immediately before backend startup. Eagerly materializing
+    /// every backend shard closes later lazy races, but a pathname-swap race remains
+    /// between this resolution and completion of startup on those platforms until
+    /// Haematite exposes a descriptor-relative constructor.
+    #[cfg(unix)]
+    pub(crate) fn backend_path(&self) -> io::Result<PathBuf> {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            Ok(Path::new("/proc/self/fd").join(self.dir.as_raw_fd().to_string()))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let path = rustix::fs::getpath(&self.dir)?;
+            Ok(PathBuf::from(OsString::from_vec(path.into_bytes())))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+        {
+            std::fs::canonicalize(Path::new("/dev/fd").join(self.dir.as_raw_fd().to_string()))
+        }
+    }
+
     /// Return metadata for this held root directory.
     pub(crate) fn metadata(&self) -> io::Result<cap_std::fs::Metadata> {
         self.dir.dir_metadata()
     }
 
     /// Apply private modes to every existing descendant without following links.
-    /// Windows inherits the pre-provisioned root ACL because Rust has no stable
-    /// API for constructing an owner-only DACL.
+    /// On non-Unix targets this performs no ACL mutation. Startup permits that
+    /// limitation only for roots the operator explicitly configured and emits a
+    /// warning that ACL privacy was not verified.
     pub(crate) fn harden_tree(&self) -> io::Result<()> {
         #[cfg(unix)]
         harden_dir(&self.dir)?;
@@ -345,9 +384,11 @@ fn invalid_relative() -> io::Error {
 }
 
 /// Refuse an existing sensitive root that grants any Unix group/world access.
-/// On Windows Rust has no stable API for installing a private DACL; creation is
-/// descriptor-confined and inherits the operator-selected parent ACL. Deployments
-/// requiring a non-inherited ACL must provision `AION_HOME` with that ACL first.
+///
+/// On non-Unix targets this function verifies only that an existing root is a
+/// real directory. The configuration-resolution boundary separately refuses
+/// default roots and warns for explicitly configured roots because ACL privacy
+/// is not implemented or claimed here.
 pub(crate) fn validate_private_root(path: &Path, label: &str) -> io::Result<()> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,

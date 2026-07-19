@@ -208,6 +208,10 @@ pub(crate) async fn worker_availability(
     Json(request): Json<awl::run_loop::WorkerAvailabilityRequest>,
 ) -> Result<Json<awl::run_loop::WorkerAvailabilityResponse>, Response> {
     require_authenticated(&caller)?;
+    state
+        .namespace_guard()
+        .authorize_namespace(&caller, &request.namespace)
+        .map_err(|error| HttpWireError(error.to_wire_error()).into_response())?;
     awl::run_loop::worker_availability(&state, request)
         .map(Json)
         .map_err(|error| RunLoopHttpError::RunLoop(error).into_response())

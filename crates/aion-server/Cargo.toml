@@ -101,6 +101,9 @@ liminal-server = { workspace = true, optional = true }
 # the wire type. Optional, enabled only by `liminal-transport`.
 liminal = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 # The libSQL backend is now optional in the production graph (behind
 # `libsql-backend`), but several integration tests (the LSUB-PROD cross-node
