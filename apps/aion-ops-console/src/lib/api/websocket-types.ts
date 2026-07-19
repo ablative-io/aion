@@ -35,18 +35,29 @@ export const DEFAULT_RECONNECT: ReconnectOptions = {
   maxAttempts: 5,
 };
 
+/** Maximum time a live-only full refetch may hold recovery open. */
+export const DEFAULT_RESYNC_TIMEOUT_MS = 10_000;
+
 export const SOCKET_CONNECTING = 0;
 export const SOCKET_OPEN = 1;
 export const SOCKET_CLOSING = 2;
 
-export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
+export type ConnectionStatus =
+  | 'connected'
+  | 'resynced-with-possible-gap'
+  | 'reconnecting'
+  | 'disconnected';
 
 /**
  * Kinds of live-socket failure surfaced to the UI. Each maps to a distinct,
  * human-readable cause so a view can render *why* the stream is degraded rather
  * than swallowing the error to the console.
  */
-export type AionSocketErrorKind = 'frame-decode' | 'subscriber-application' | 'reconnect-exhausted';
+export type AionSocketErrorKind =
+  | 'frame-decode'
+  | 'subscriber-application'
+  | 'subscriber-resync'
+  | 'reconnect-exhausted';
 
 /**
  * A typed live-socket error. M1 (no-silent-failure): instead of warning to the
@@ -115,9 +126,10 @@ export type SubscribeOptions = {
    */
   lastSeenSequence?: number | undefined;
   /**
-   * Recovery work performed after a reconnect. Live-only subscriptions must
-   * provide this callback; their connection remains recovering until its promise
-   * fulfills, and a rejection consumes the bounded reconnect budget.
+   * Best-effort recovery work performed after a reconnect. A live-only feed is
+   * marked as possibly gapped until this callback fulfills. If omitted, that
+   * honest degraded marker remains; rejection or timeout consumes the bounded
+   * reconnect budget.
    */
   onResync?: ResyncHandler | undefined;
 };
@@ -154,6 +166,8 @@ export type AionEventWebSocketManagerOptions = {
   webSocketImpl?: WebSocketConstructor;
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
+  /** Timeout for an awaited live-only full refetch. Defaults to 10 seconds. */
+  resyncTimeoutMs?: number;
   warn?: WarningLogger;
 };
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { eventSequence, mergeEventsBySequence } from '@/features/workflow-detail/lib/timeline';
-import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
+import type { AionEventWebSocketManager, ApiClient, ConnectionStatus } from '@/lib/api';
 import type { FirehoseEventSubscriptionFilter, ResyncContext } from '@/lib/api/websocket';
 import { configuredEventSocket, createConfiguredApiClient } from '@/lib/config';
 import type { Event, Namespace, WorkflowId, WorkflowStatus } from '@/types';
@@ -22,7 +22,7 @@ import { tallyExactlyOnce } from '../lib/exactlyOnce';
 const FIREHOSE_SUBSCRIPTION_MANAGER = configuredEventSocket;
 const ACTIVITY_SCHEDULED = 'ActivityScheduled';
 
-export type FanOutConnection = 'connected' | 'reconnecting' | 'disconnected';
+export type FanOutConnection = ConnectionStatus;
 
 export type FanOutProgress = {
   /** Seq-ordered, deduped merged event set (history + live). */

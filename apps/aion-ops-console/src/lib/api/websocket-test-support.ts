@@ -1,6 +1,8 @@
 export class FakeSocketFactory {
   readonly sockets: FakeSocket[] = [];
-  readonly ctor: new (url: string) => FakeSocket;
+  readonly ctor: new (
+    url: string
+  ) => FakeSocket;
 
   constructor() {
     const sockets = this.sockets;
@@ -65,19 +67,32 @@ export class FakeSocket {
 
 export class FakeScheduler {
   readonly delays: number[] = [];
-  private readonly callbacks: Array<() => void> = [];
+  private readonly callbacks: Array<{
+    handle: ReturnType<typeof setTimeout>;
+    callback: () => void;
+  }> = [];
+  private nextHandle = 1;
+
+  get pendingCount(): number {
+    return this.callbacks.length;
+  }
 
   setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout> {
     this.delays.push(delayMs);
-    this.callbacks.push(callback);
-    return this.callbacks.length as unknown as ReturnType<typeof setTimeout>;
+    const handle = this.nextHandle as unknown as ReturnType<typeof setTimeout>;
+    this.nextHandle += 1;
+    this.callbacks.push({ handle, callback });
+    return handle;
   }
 
-  clearTimeout(): void {
-    this.callbacks.shift();
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void {
+    const index = this.callbacks.findIndex((entry) => entry.handle === handle);
+    if (index >= 0) {
+      this.callbacks.splice(index, 1);
+    }
   }
 
   runNext(): void {
-    this.callbacks.shift()?.();
+    this.callbacks.shift()?.callback();
   }
 }

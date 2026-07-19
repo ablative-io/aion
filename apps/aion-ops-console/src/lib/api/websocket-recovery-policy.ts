@@ -1,11 +1,16 @@
 import type { SubscriptionConnection, SubscriptionErrorState } from './websocket-connection';
 import { buildResyncContext, subscriberResyncError } from './websocket-protocol';
-import type { AionSocketError, ManagedWebSocket, WarningLogger } from './websocket-types';
+import type {
+  AionSocketError,
+  ManagedWebSocket,
+  Scheduler,
+  TimeoutHandle,
+  WarningLogger,
+} from './websocket-types';
 
 type RecoveryHost = {
   isCurrent(connection: SubscriptionConnection, socket: ManagedWebSocket): boolean;
   updateStatus(): void;
-  drainPending(connection: SubscriptionConnection, socket: ManagedWebSocket): boolean;
   failBoundary(connection: SubscriptionConnection, socket: ManagedWebSocket): void;
 };
 
@@ -14,7 +19,9 @@ export class ApplicationRecoveryPolicy {
   constructor(
     private readonly warn: WarningLogger,
     private readonly errors: SubscriptionErrorState,
-    private readonly host: RecoveryHost
+    private readonly host: RecoveryHost,
+    private readonly scheduler: Scheduler,
+    private readonly resyncTimeoutMs: number
   ) {}
 
   isUnresolved(error: AionSocketError | null): boolean {
@@ -25,27 +32,52 @@ export class ApplicationRecoveryPolicy {
     const onResync = connection.subscription.onResync;
 
     if (onResync === undefined) {
+      // There is no recovery claim to make. The live socket remains usable, but
+      // its possible-gap state and any boundary error stay visible indefinitely.
+      return;
+    }
+
+    const timeout = this.scheduler.setTimeout(() => {
+      if (connection.resyncTimer !== timeout) {
+        return;
+      }
+
+      connection.resyncTimer = null;
       this.fail(
         connection,
         socket,
-        new Error('Live-only subscriptions require an onResync full-refetch callback')
+        new Error(`Live-state refetch timed out after ${this.resyncTimeoutMs}ms`)
       );
-      return;
-    }
+    }, this.resyncTimeoutMs);
+    connection.resyncTimer = timeout;
 
     let recovery: void | Promise<void>;
 
     try {
       recovery = onResync(buildResyncContext(connection.subscription));
     } catch (error) {
+      this.clearTimeout(connection, timeout);
       this.fail(connection, socket, error);
       return;
     }
 
     void Promise.resolve(recovery).then(
-      () => this.completeLiveOnly(connection, socket),
-      (error: unknown) => this.fail(connection, socket, error)
+      () => {
+        this.clearTimeout(connection, timeout);
+        this.complete(connection, socket);
+      },
+      (error: unknown) => {
+        this.clearTimeout(connection, timeout);
+        this.fail(connection, socket, error);
+      }
     );
+  }
+
+  cancel(connection: SubscriptionConnection): void {
+    const timeout = connection.resyncTimer;
+    if (timeout !== null) {
+      this.clearTimeout(connection, timeout);
+    }
   }
 
   complete(connection: SubscriptionConnection, socket: ManagedWebSocket): void {
@@ -57,12 +89,6 @@ export class ApplicationRecoveryPolicy {
     connection.state = 'connected';
     this.errors.clear(connection);
     this.host.updateStatus();
-  }
-
-  private completeLiveOnly(connection: SubscriptionConnection, socket: ManagedWebSocket): void {
-    if (this.host.isCurrent(connection, socket) && this.host.drainPending(connection, socket)) {
-      this.complete(connection, socket);
-    }
   }
 
   notifyDurable(connection: SubscriptionConnection): void {
@@ -79,6 +105,15 @@ export class ApplicationRecoveryPolicy {
     } catch (error) {
       this.warn('Aion workflow subscriber resync notification failed', error);
     }
+  }
+
+  private clearTimeout(connection: SubscriptionConnection, timeout: TimeoutHandle): void {
+    if (connection.resyncTimer !== timeout) {
+      return;
+    }
+
+    connection.resyncTimer = null;
+    this.scheduler.clearTimeout(timeout);
   }
 
   private fail(connection: SubscriptionConnection, socket: ManagedWebSocket, error: unknown): void {

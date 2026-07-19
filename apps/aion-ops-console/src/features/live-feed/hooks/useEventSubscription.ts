@@ -69,6 +69,29 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
   });
 }
 
+type ResyncHandlerRef = {
+  current: ResyncHandler | undefined;
+};
+
+/**
+ * Preserves an absent optional callback instead of turning it into a successful
+ * no-op. The returned wrapper keeps React closures fresh, but fails explicitly
+ * if a callback that existed when the subscription opened later disappears.
+ */
+export function resyncHandlerFromRef(ref: ResyncHandlerRef): ResyncHandler | undefined {
+  if (ref.current === undefined) {
+    return undefined;
+  }
+
+  return (context) => {
+    const onResync = ref.current;
+    if (onResync === undefined) {
+      throw new Error('The live-state refetch callback became unavailable during recovery');
+    }
+    return onResync(context);
+  };
+}
+
 export function useEventSubscription<TFilter extends AionEventSubscriptionFilter>({
   enabled = true,
   afterSeq,
@@ -107,7 +130,7 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
       (event) => onEventRef.current(event),
       {
         afterSeq: cursorRef.current,
-        onResync: (context) => onResyncRef.current?.(context),
+        onResync: resyncHandlerFromRef(onResyncRef),
       }
     );
   }, [enabled, filter, manager, selectedNamespace]);

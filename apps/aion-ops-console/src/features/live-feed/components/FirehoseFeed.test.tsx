@@ -15,6 +15,15 @@ test('FirehoseFeedContent renders explicit empty and disconnected states', () =>
   expect(markup).toContain('Live socket is disconnected');
 });
 
+test('FirehoseFeedContent warns when a reconnected live tail may have a gap', () => {
+  const markup = renderToStaticMarkup(
+    <FirehoseFeedContent events={[]} namespace={namespace} status="resynced-with-possible-gap" />
+  );
+
+  expect(markup).toContain('events may have been missed after reconnect');
+  expect(markup).toContain('Live with possible gap');
+});
+
 test('FirehoseFeedContent surfaces a socket error message as visible state', () => {
   const markup = renderToStaticMarkup(
     <FirehoseFeedContent

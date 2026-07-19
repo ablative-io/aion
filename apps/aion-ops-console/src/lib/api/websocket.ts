@@ -1,4 +1,11 @@
 import {
+  closeWhenSafe,
+  failFeedBoundary,
+  isCurrentConnection,
+  type SubscriptionConnection,
+  SubscriptionErrorState,
+} from './websocket-connection';
+import {
   assertExpectedWorkflowSequence,
   browserWebSocketConstructor,
   buildSubscribeMessage,
@@ -10,14 +17,6 @@ import {
   stripTrailingSlash,
   subscriberApplicationError,
 } from './websocket-protocol';
-import {
-  closeWhenSafe,
-  drainPendingMessages,
-  failFeedBoundary,
-  isCurrentConnection,
-  type SubscriptionConnection,
-  SubscriptionErrorState,
-} from './websocket-connection';
 import { ApplicationRecoveryPolicy } from './websocket-recovery-policy';
 import {
   type AionEventHandler,
@@ -26,6 +25,7 @@ import {
   type AionSocketError,
   type ConnectionStatus,
   DEFAULT_RECONNECT,
+  DEFAULT_RESYNC_TIMEOUT_MS,
   type ManagedWebSocket,
   type ReconnectOptions,
   type Scheduler,
@@ -62,14 +62,14 @@ export type {
 /**
  * Owns one fail-stop socket per logical subscription.
  *
- * Recovery is proven at the application boundary, never presumed from a
- * transport handshake: a decode or subscriber failure immediately makes that
- * socket stale, durable cursors advance only after successful application, and
- * live-only feeds remain recovering until their full-refetch promise fulfills.
- * Handshakes opened for an unresolved boundary do not reset its retry budget;
- * only a replayed durable event or a confirmed live-only resync does. Persistent
- * decode, application, and refetch failures therefore stop at the configured
- * bound instead of crossing a cursor gap or reconnecting forever.
+ * Durable feeds recover provably; live-only feeds degrade visibly. A decode or
+ * subscriber failure immediately makes its socket stale, and durable cursors
+ * advance only after successful application. Filtered and firehose reconnects
+ * cannot prove continuity, so they expose a possible-gap state while delivering
+ * new frames immediately. Only an awaited full refetch clears that marker.
+ * Persistent decode, application, and timed-out/refused refetch failures consume
+ * one shared bounded retry budget instead of crossing a cursor gap, buffering an
+ * unbounded live tail, or reconnecting forever.
  */
 export class AionEventWebSocketManager {
   private readonly baseUrl: string;
@@ -77,6 +77,7 @@ export class AionEventWebSocketManager {
   private readonly webSocketImpl: WebSocketConstructor;
   private readonly scheduler: Scheduler;
   private readonly reconnect: ReconnectOptions;
+  private readonly resyncTimeoutMs: number;
   private readonly warn: WarningLogger;
   private readonly connections = new Map<string, SubscriptionConnection>();
   private readonly statusListeners = new Set<StatusListener>();
@@ -101,17 +102,21 @@ export class AionEventWebSocketManager {
       clearTimeout: (handle) => clearTimeout(handle),
     };
     this.reconnect = { ...DEFAULT_RECONNECT, ...options.reconnect };
+    this.resyncTimeoutMs = options.resyncTimeoutMs ?? DEFAULT_RESYNC_TIMEOUT_MS;
     this.warn = options.warn ?? consoleWarn;
-    this.recoveryPolicy = new ApplicationRecoveryPolicy(this.warn, this.connectionErrors, {
-      isCurrent: (connection, socket) => isCurrentConnection(this.connections, connection, socket),
-      updateStatus: () => this.updateStatus(),
-      drainPending: (connection, socket) =>
-        drainPendingMessages(connection, socket, (data) =>
-          this.handleMessage(connection, socket, data)
-        ),
-      failBoundary: (connection, socket) =>
-        failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket)),
-    });
+    this.recoveryPolicy = new ApplicationRecoveryPolicy(
+      this.warn,
+      this.connectionErrors,
+      {
+        isCurrent: (connection, socket) =>
+          isCurrentConnection(this.connections, connection, socket),
+        updateStatus: () => this.updateStatus(),
+        failBoundary: (connection, socket) =>
+          failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket)),
+      },
+      this.scheduler,
+      this.resyncTimeoutMs
+    );
   }
 
   connect(): void {
@@ -140,6 +145,7 @@ export class AionEventWebSocketManager {
 
     for (const connection of this.connections.values()) {
       this.clearReconnectTimer(connection);
+      this.recoveryPolicy.cancel(connection);
       connection.reconnectAttempts = 0;
       connection.state = 'idle';
       const socket = connection.socket;
@@ -171,9 +177,10 @@ export class AionEventWebSocketManager {
       subscription,
       socket: null,
       state: 'idle',
+      hasOpened: false,
       reconnectAttempts: 0,
-      pendingMessages: [],
       reconnectTimer: null,
+      resyncTimer: null,
       error: null,
       errorSequence: 0,
     };
@@ -199,6 +206,7 @@ export class AionEventWebSocketManager {
 
     this.connections.delete(subscriptionId);
     this.clearReconnectTimer(connection);
+    this.recoveryPolicy.cancel(connection);
     const socket = connection.socket;
     connection.socket = null;
 
@@ -276,22 +284,22 @@ export class AionEventWebSocketManager {
     }
 
     this.clearReconnectTimer(connection);
-    connection.pendingMessages = [];
-    const recoveredFromDrop = connection.state === 'reconnecting';
+    const recoveredFromDrop = connection.hasOpened;
     const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl, this.credentials));
     connection.socket = socket;
     socket.onopen = () => {
       if (!isCurrentConnection(this.connections, connection, socket)) {
         return;
       }
+      connection.hasOpened = true;
 
       socket.send(JSON.stringify(buildSubscribeMessage(connection.subscription)));
 
       if (recoveredFromDrop && connection.subscription.filter.kind !== 'workflow') {
-        // A live-only handshake cannot prove that events missed while disconnected
-        // are present locally. Keep both status and any application error degraded
-        // until the caller's full refetch actually completes.
-        connection.state = 'reconnecting';
+        // A live-only handshake cannot prove continuity. Deliver the new live tail
+        // immediately, but keep the explicit gap marker and any boundary error
+        // until a real full refetch succeeds.
+        connection.state = 'possible-gap';
         this.updateStatus();
         this.recoveryPolicy.recoverLiveOnly(connection, socket);
         return;
@@ -319,14 +327,6 @@ export class AionEventWebSocketManager {
       if (!isCurrentConnection(this.connections, connection, socket)) {
         return;
       }
-      if (
-        connection.state === 'reconnecting' &&
-        connection.subscription.filter.kind !== 'workflow'
-      ) {
-        connection.pendingMessages.push(message.data);
-        return;
-      }
-
       this.handleMessage(connection, socket, message.data);
     };
     socket.onclose = () => {
@@ -346,6 +346,7 @@ export class AionEventWebSocketManager {
       return;
     }
 
+    this.recoveryPolicy.cancel(connection);
     connection.socket = null;
     connection.state = 'reconnecting';
     const previousStatus = this.status;
@@ -434,6 +435,8 @@ export class AionEventWebSocketManager {
         nextStatus = 'disconnected';
       } else if (connections.some((connection) => connection.state === 'reconnecting')) {
         nextStatus = 'reconnecting';
+      } else if (connections.some((connection) => connection.state === 'possible-gap')) {
+        nextStatus = 'resynced-with-possible-gap';
       } else if (connections.every((connection) => connection.state === 'connected')) {
         nextStatus = 'connected';
       }

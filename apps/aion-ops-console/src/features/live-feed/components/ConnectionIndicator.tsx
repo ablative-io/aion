@@ -9,12 +9,14 @@ import { useConnectionStatus, useSocketError } from '../hooks/useConnectionStatu
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
   connected: 'Connected',
   disconnected: 'Disconnected',
+  'resynced-with-possible-gap': 'Live with possible gap',
   reconnecting: 'Reconnecting',
 };
 
 const STATUS_STYLES: Record<ConnectionStatus, string> = {
   connected: 'border-success/40 bg-success-glow text-success',
   disconnected: 'border-danger/40 bg-danger-glow text-danger',
+  'resynced-with-possible-gap': 'border-warning/40 bg-warning-glow text-warning',
   reconnecting: 'border-warning/40 bg-warning-glow text-warning',
 };
 

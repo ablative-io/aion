@@ -7,15 +7,21 @@ import type {
 } from './websocket-types';
 import { SOCKET_CONNECTING } from './websocket-types';
 
-export type SubscriptionSocketState = 'idle' | 'connected' | 'reconnecting' | 'exhausted';
+export type SubscriptionSocketState =
+  | 'idle'
+  | 'connected'
+  | 'possible-gap'
+  | 'reconnecting'
+  | 'exhausted';
 
 export type SubscriptionConnection = {
   subscription: SubscriptionRecord;
   socket: ManagedWebSocket | null;
   state: SubscriptionSocketState;
+  hasOpened: boolean;
   reconnectAttempts: number;
-  pendingMessages: unknown[];
   reconnectTimer: TimeoutHandle | null;
+  resyncTimer: TimeoutHandle | null;
   error: AionSocketError | null;
   errorSequence: number;
 };
@@ -86,24 +92,6 @@ export function isCurrentConnection(
   socket: ManagedWebSocket
 ): boolean {
   return connections.get(connection.subscription.id) === connection && connection.socket === socket;
-}
-
-export function drainPendingMessages(
-  connection: SubscriptionConnection,
-  socket: ManagedWebSocket,
-  handleMessage: (data: unknown) => void
-): boolean {
-  const pendingMessages = connection.pendingMessages;
-  connection.pendingMessages = [];
-
-  for (const data of pendingMessages) {
-    handleMessage(data);
-    if (connection.socket !== socket) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 export function failFeedBoundary(socket: ManagedWebSocket, disconnect: () => void): void {

@@ -93,7 +93,7 @@ export function subscriberApplicationError(
 
 export function subscriberResyncError(cause: unknown, subscriptionId: string): AionSocketError {
   return {
-    kind: 'subscriber-application',
+    kind: 'subscriber-resync',
     subscriptionId,
     message: 'Live state could not be resynchronized; recovery will retry within its limit.',
     cause,
