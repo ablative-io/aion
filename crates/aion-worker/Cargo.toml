@@ -16,14 +16,14 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion-core = { version = "0.9.0", path = "../aion-core" }
+aion-core = { version = "0.9.1", path = "../aion-core" }
 # The harness-integration SDK — the TRAIT ONLY (`AgentHarness`/`AgentSession`).
 # The worker drives ANY harness generically through this seam; it must NEVER
 # depend on a concrete adapter (`aion-integration-norn`) or on `norn` itself
 # (the §3A.4 no-norn-in-platform invariant). The concrete harness is injected by
 # the binary composition root (aion-cli), never named here.
-aion-integrations = { version = "0.9.0", path = "../aion-integrations" }
-aion-proto = { version = "0.9.0", path = "../aion-proto", features = ["generated"] }
+aion-integrations = { version = "0.9.1", path = "../aion-integrations" }
+aion-proto = { version = "0.9.1", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 prost = { workspace = true }

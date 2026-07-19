@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -83,13 +83,13 @@ hostname = "0.4"
 # child failure); 0.14.0 added `loader/encode` (the `.beam` container writer
 # behind the `encode` feature) consumed by aion-awl's BC-3 bytecode emitter.
 beamr = { version = "0.15.4", features = ["json", "encode"] }
-haematite = "0.4.1"
+haematite = "0.5.0"
 # 0.2.4 carries the park-flip (idle connections park on fd readiness — retires
 # the embedded front door's per-connection busy-spin measured 2026-07-13) and
 # G7's push-reply contract restoration (receive = pure wait quantum).
-liminal = { package = "liminal-rs", version = "0.2.5" }
-liminal-sdk = "0.2.4"
-liminal-server = "0.2.5"
+liminal = { package = "liminal-rs", version = "0.3.0" }
+liminal-sdk = "0.3.0"
+liminal-server = "0.3.0"
 tempfile = "3.27.0"
 tokio-stream = "0.1.18"
 ts-rs = { version = "12.0.1", features = ["chrono-impl", "uuid-impl", "no-serde-warnings"] }

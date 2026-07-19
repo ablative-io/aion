@@ -145,6 +145,10 @@ impl RunningServer {
             // liminal 0.2.4 defaults = the 0.2.3 behaviour (full profile, signed caps).
             services: liminal_server::config::ServicesConfig::default(),
             limits: liminal_server::config::LimitsConfig::default(),
+            // liminal 0.3.0: no WebSocket listener, participant capability
+            // disabled — byte-identical to the pre-0.3.0 build, matching run.rs.
+            websocket: None,
+            participant: None,
         };
 
         // The aion-side connected-worker registry the notifier registers into and

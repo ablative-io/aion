@@ -698,6 +698,14 @@ fn build_liminal_row_dispatch(
         // profile election here is a future feature decision, not this migration.
         services: ServicesConfig::default(),
         limits: LimitsConfig::default(),
+        // liminal 0.3.0 (LP-WS-TRANSPORT R1 / LP Part B): optional WebSocket
+        // acceptor and participant lifecycle activation. `None` for both starts
+        // no WebSocket listener and leaves the participant capability disabled —
+        // documented as byte-identical to the pre-0.3.0 build. Electing either
+        // for this embedded worker front door is a feature decision, not part of
+        // the dependency alignment.
+        websocket: None,
+        participant: None,
     };
 
     // (1) Reuse the registry already in ServerState: gRPC + liminal workers share

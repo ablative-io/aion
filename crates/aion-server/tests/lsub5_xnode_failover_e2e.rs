@@ -415,6 +415,10 @@ impl RunningLiminalServer {
             // liminal 0.2.4 defaults = the 0.2.3 behaviour (full profile, signed caps).
             services: liminal_server::config::ServicesConfig::default(),
             limits: liminal_server::config::LimitsConfig::default(),
+            // liminal 0.3.0: no WebSocket listener, participant capability
+            // disabled — byte-identical to the pre-0.3.0 build, matching run.rs.
+            websocket: None,
+            participant: None,
         };
         let registry = aion_server::worker::ConnectedWorkerRegistry::default();
         let notifier = Arc::new(LiminalConnectionNotifier::new(registry.clone()));

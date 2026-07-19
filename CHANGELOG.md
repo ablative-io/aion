@@ -5,6 +5,20 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
 ## Unreleased
 
+## 0.9.1 — 2026-07-19
+
+Dependency-alignment release — no aion surface changes.
+
+- **haematite 0.4.1 → 0.5.0** and the **liminal family to 0.3.0**
+  (`liminal-rs` 0.3.0, `liminal-sdk` 0.3.0, `liminal-server` 0.3.0) in one
+  motion: `liminal-rs` 0.3.0's error types speak haematite 0.5.0, so the
+  two pins are coupled and move together. haematite 0.5.0's kind-aware
+  merge surface (its deliberate break) touches no API aion consumes.
+- The embedded liminal worker front door passes `websocket: None` and
+  `participant: None` for `liminal-server` 0.3.0's two new optional
+  sections — documented byte-identical to the pre-0.3.0 build. Electing
+  either is a future feature decision.
+
 ## 0.9.0 — 2026-07-18
 
 Workspace version **0.9.0**. beamr pin now **0.15.4**. Three new crates
