@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 
 import { ApiClient, type WorkflowPage } from '@/lib/api';
 import type { Event, Namespace, WorkflowFilter, WorkflowSummary } from '@/types';
-import { patchWorkflowPage } from '../hooks/useLiveListUpdates';
+import { affectsWorkflowSummaryProjection, patchWorkflowPage } from '../hooks/useLiveListUpdates';
 import { queryWorkflowPage, workflowQueryKey } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
@@ -138,6 +138,32 @@ describe('live workflow list updates', () => {
 
     expect(patched?.items.map((item) => item.workflow_id)).toEqual(['workflow-1']);
     expect(patched?.items[0]?.status).toBe('Completed');
+  });
+
+  test('projects every summary-changing lifecycle status and clears a reopened terminal', () => {
+    const filter = workflowFilterFromState(EMPTY_WORKFLOW_LIST_FILTER_STATE);
+    const pausedEvent = workflowPaused(2, workflow.workflow_id);
+    const continuedEvent = workflowContinuedAsNew(3, workflow.workflow_id);
+    const reopenedEvent = workflowReopened(4, workflow.workflow_id);
+    const resumedEvent = workflowResumed(5, workflow.workflow_id);
+
+    expect(
+      [pausedEvent, continuedEvent, reopenedEvent, resumedEvent].every(
+        affectsWorkflowSummaryProjection
+      )
+    ).toBeTrue();
+
+    const paused = patchWorkflowPage(page, pausedEvent, filter, 50);
+    expect(paused?.items[0]).toMatchObject({ status: 'Paused', ended_at: null });
+
+    const continued = patchWorkflowPage(page, continuedEvent, filter, 50);
+    expect(continued?.items[0]).toMatchObject({
+      status: 'ContinuedAsNew',
+      ended_at: '2026-06-05T20:03:00Z',
+    });
+
+    const reopened = patchWorkflowPage(continued ?? page, reopenedEvent, filter, 50);
+    expect(reopened?.items[0]).toMatchObject({ status: 'Running', ended_at: null });
   });
 
   test('off page 1, a newly-started workflow is NOT inserted into the cursor view', () => {
@@ -291,6 +317,52 @@ function workflowCompleted(seq: number, workflowId: string): Event {
     data: {
       envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
       result: { content_type: 'Json', bytes: [123, 125] },
+    },
+  };
+}
+
+function workflowContinuedAsNew(seq: number, workflowId: string): Event {
+  return {
+    type: 'WorkflowContinuedAsNew',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      input: { content_type: 'Json', bytes: [123, 125] },
+      workflow_type: null,
+      parent_run_id: '00000000-0000-0000-0000-0000000000a1',
+    },
+  };
+}
+
+function workflowReopened(seq: number, workflowId: string): Event {
+  return {
+    type: 'WorkflowReopened',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      reopened: [],
+    },
+  };
+}
+
+function workflowPaused(seq: number, workflowId: string): Event {
+  return {
+    type: 'WorkflowPaused',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      reason: null,
+      operator: null,
+    },
+  };
+}
+
+function workflowResumed(seq: number, workflowId: string): Event {
+  return {
+    type: 'WorkflowResumed',
+    data: {
+      envelope: { seq, recorded_at: `2026-06-05T20:0${seq}:00Z`, workflow_id: workflowId },
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      operator: null,
     },
   };
 }

@@ -40,8 +40,12 @@ test('subscribe sends a per-workflow request and dispatches streamed typed event
   });
   const received: AionEvent[] = [];
 
-  const unsubscribe = manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
-    received.push(nextEvent)
+  const unsubscribe = manager.subscribe(
+    { kind: 'workflow', namespace, workflowId },
+    (nextEvent) => {
+      received.push(nextEvent);
+      return true;
+    }
   );
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
@@ -68,7 +72,10 @@ test('streamed wire-envelope payload bytes are decoded before dispatch', () => {
   const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
   const received: AionEvent[] = [];
 
-  manager.subscribe({ kind: 'firehose', namespace }, (nextEvent) => received.push(nextEvent));
+  manager.subscribe({ kind: 'firehose', namespace }, (nextEvent) => {
+    received.push(nextEvent);
+    return true;
+  });
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
   socket.message(
@@ -114,6 +121,7 @@ test('frames without namespace are logged instead of guessed from workflow id', 
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) => {
     received.push(nextEvent);
+    return true;
   });
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
@@ -302,12 +310,14 @@ test('concurrent subscriptions use distinct sockets and both reconnect independe
     },
   } as AionEvent;
 
-  manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
-    firstReceived.push(nextEvent)
-  );
-  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, (nextEvent) =>
-    secondReceived.push(nextEvent)
-  );
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) => {
+    firstReceived.push(nextEvent);
+    return true;
+  });
+  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, (nextEvent) => {
+    secondReceived.push(nextEvent);
+    return true;
+  });
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
   const secondSocket = socketFactory.sockets[1] as FakeSocket;
   firstSocket.open();

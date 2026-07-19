@@ -44,6 +44,7 @@ test('adapter preserves absent firehose refetch and cannot clear a malformed-fra
     { kind: 'firehose' },
     () => {
       applications += 1;
+      return true;
     },
     { onResync: resyncHandlerFromRef(resyncRef) }
   );

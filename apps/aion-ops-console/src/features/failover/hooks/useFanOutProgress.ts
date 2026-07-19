@@ -72,6 +72,10 @@ export function deriveArity(events: readonly Event[], seedArity: number | null):
   return seedArity;
 }
 
+export function affectsFanOutProjection(event: Event, workflowId: WorkflowId | null): boolean {
+  return workflowId !== null && event.data.envelope.workflow_id === workflowId;
+}
+
 export function deriveStatus(events: readonly Event[]): WorkflowStatus {
   let status: WorkflowStatus = 'Running';
 
@@ -207,14 +211,18 @@ export function useFanOutProgress({
     const stopSubscription = manager.subscribe(
       filter,
       (event: Event) => {
-        const seq = eventSequence(event);
+        if (!affectsFanOutProjection(event, workflowId)) {
+          return false;
+        }
 
+        const seq = eventSequence(event);
         if (liveSeqs.current.has(seq)) {
-          return;
+          return false;
         }
 
         liveSeqs.current.add(seq);
         setLiveEvents((previous) => [...previous, event]);
+        return true;
       },
       { onResync }
     );
@@ -223,7 +231,7 @@ export function useFanOutProgress({
       stopStatus();
       stopSubscription();
     };
-  }, [enabled, manager, namespace, fetchHistory]);
+  }, [enabled, manager, namespace, fetchHistory, workflowId]);
 
   const events = useMemo(
     () => mergeEventsBySequence(historyEvents, liveEvents),

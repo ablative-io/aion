@@ -105,6 +105,7 @@ test('Running projection keeps a post-completion HTTP snapshot authoritative', a
         throw new Error('transient live projection failure');
       }
       projection = ['w1:Running'];
+      return true;
     },
     {
       onResync: () => {
@@ -220,6 +221,7 @@ test('a never-settling refetch has no frame buffer and times out into visible ex
     { kind: 'firehose', namespace },
     () => {
       applications += 1;
+      return true;
     },
     { onResync: () => new Promise<void>(() => undefined) }
   );

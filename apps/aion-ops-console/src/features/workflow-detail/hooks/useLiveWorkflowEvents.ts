@@ -69,6 +69,7 @@ export function useLiveWorkflowEvents({
     manager,
     onEvent: (event) => {
       setLiveEvents((current) => mergeEventsBySequence(current, [event]));
+      return true;
     },
     onResync: async (context) => {
       if (isSelectedNamespace(selectedNamespace)) {

@@ -97,7 +97,14 @@ export type AionEventSubscriptionFilter =
   | FilteredEventSubscriptionFilter
   | FirehoseEventSubscriptionFilter;
 
-export type AionEventHandler = (event: Event, context: AionEventContext) => void;
+/**
+ * Whether an applied live frame can race an in-flight authoritative refetch.
+ * Returning `false` is an explicit projection-neutral acknowledgement. Existing
+ * handlers that return nothing remain conservatively recovery-relevant.
+ */
+export type RecoveryFrameImpact = boolean | undefined;
+
+export type AionEventHandler = (event: Event, context: AionEventContext) => RecoveryFrameImpact;
 
 /**
  * Reconnect recovery is durable only for per-workflow subscriptions. Live-only

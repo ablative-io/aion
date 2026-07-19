@@ -37,6 +37,7 @@ export function FirehoseFeed({ manager, maxEvents = 100 }: FirehoseFeedProps) {
     manager,
     onEvent: (event) => {
       setEvents((current) => mergeEventsBySequence(current, [event]).slice(-maxEvents));
+      return true;
     },
   });
 

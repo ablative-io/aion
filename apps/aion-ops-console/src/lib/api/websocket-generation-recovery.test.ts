@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 
 import {
+  affectsWorkflowSummaryProjection,
   patchWorkflowPage,
   refetchWorkflowListForRecovery,
 } from '@/features/workflow-list/hooks/useLiveListUpdates';
@@ -39,6 +40,21 @@ function eventAt(sequence: number): Event {
     ...event,
     data: { ...event.data, envelope: { ...event.data.envelope, seq: sequence } },
   } as Event;
+}
+
+function activityEventAt(sequence: number): Event {
+  return {
+    type: 'ActivityStarted',
+    data: {
+      envelope: {
+        seq: sequence,
+        recorded_at: '2026-06-05T20:01:00Z',
+        workflow_id: workflowId,
+      },
+      activity_id: 1,
+      attempt: 1,
+    },
+  };
 }
 
 test('dirty list refetch repeats before clearing the gap after the inverse cache race', async () => {
@@ -88,6 +104,7 @@ test('dirty list refetch repeats before clearing the gap after the inverse cache
       if (patched !== null) {
         queryClient.setQueryData(queryKey, patched);
       }
+      return affectsWorkflowSummaryProjection(liveEvent);
     },
     {
       onResync: (context) => refetchWorkflowListForRecovery(queryClient, queryKey, context),
@@ -125,6 +142,49 @@ test('dirty list refetch repeats before clearing the gap after the inverse cache
 
   stopObserver();
   manager.reset();
+});
+
+test('projection-neutral activity frames do not dirty an authoritative list refetch', async () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const refetch = deferred<void>();
+  let refetchCalls = 0;
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 1, maxAttempts: 2 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe(
+    { kind: 'filtered', namespace, workflowType: 'checkout', status: 'Running' },
+    (liveEvent) => affectsWorkflowSummaryProjection(liveEvent),
+    {
+      onResync: () => {
+        refetchCalls += 1;
+        return refetch.promise;
+      },
+    }
+  );
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).drop();
+  scheduler.runNext();
+  const recoverySocket = socketFactory.sockets[1] as FakeSocket;
+  recoverySocket.open();
+
+  recoverySocket.message(JSON.stringify({ namespace, event: activityEventAt(8) }));
+  recoverySocket.message(JSON.stringify({ namespace, event: activityEventAt(9) }));
+  expect(refetchCalls).toBe(1);
+  expect(manager.getStatus()).toBe('resynced-with-possible-gap');
+
+  refetch.resolve();
+  await flushMicrotasks();
+
+  expect(refetchCalls).toBe(1);
+  expect(recoverySocket.closeCalls).toBe(0);
+  expect(manager.getStatus()).toBe('connected');
+  expect(manager.getLastError()).toBeNull();
+  expect(scheduler.pendingCount).toBe(0);
 });
 
 test('a timed-out recovery generation cannot commit after a newer refetch succeeds', async () => {
@@ -186,12 +246,16 @@ test('a continuously dirty refetch exhausts the shared recovery budget', async (
     warn: () => undefined,
   });
 
-  manager.subscribe({ kind: 'firehose', namespace }, () => undefined, {
-    onResync: () => {
-      refetchCalls += 1;
-      return refetchCalls === 1 ? first.promise : second.promise;
-    },
-  });
+  manager.subscribe(
+    { kind: 'firehose', namespace },
+    (liveEvent) => affectsWorkflowSummaryProjection(liveEvent),
+    {
+      onResync: () => {
+        refetchCalls += 1;
+        return refetchCalls === 1 ? first.promise : second.promise;
+      },
+    }
+  );
   (socketFactory.sockets[0] as FakeSocket).open();
   (socketFactory.sockets[0] as FakeSocket).drop();
   scheduler.runNext();

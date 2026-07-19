@@ -60,6 +60,7 @@ test('throwing durable subscriber reconnects from the last successfully applied 
       if (applications === 1) {
         throw new Error('transient cache application failure');
       }
+      return true;
     },
     {
       lastSeenSequence: 6,
@@ -120,7 +121,10 @@ test('malformed durable frame fail-stops the socket and clears only after replay
 
   manager.subscribe(
     { kind: 'workflow', namespace, workflowId },
-    (nextEvent) => applied.push(nextEvent.data.envelope.seq),
+    (nextEvent) => {
+      applied.push(nextEvent.data.envelope.seq);
+      return true;
+    },
     { lastSeenSequence: 6 }
   );
   const firstSocket = socketFactory.sockets[0] as FakeSocket;

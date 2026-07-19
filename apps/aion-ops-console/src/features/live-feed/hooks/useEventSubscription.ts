@@ -38,7 +38,7 @@ type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilte
   lastSeenSequence?: number | undefined;
   filter: Omit<TFilter, 'namespace'> | null;
   manager?: EventSubscriptionManager | undefined;
-  onEvent: (event: Event) => void;
+  onEvent: (event: Event) => ReturnType<AionEventHandler>;
   onResync?: ResyncHandler | undefined;
 };
 
@@ -55,7 +55,7 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
   manager: EventSubscriptionManager,
   namespace: Namespace,
   filter: Omit<TFilter, 'namespace'>,
-  onEvent: (event: Event) => void,
+  onEvent: (event: Event) => ReturnType<AionEventHandler>,
   options: {
     afterSeq?: number | undefined;
     onResync?: ResyncHandler | undefined;

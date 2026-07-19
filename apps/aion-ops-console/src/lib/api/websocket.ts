@@ -2,8 +2,8 @@ import {
   closeWhenSafe,
   failFeedBoundary,
   isCurrentConnection,
-  type SubscriptionConnection,
   notifyTransitionListeners,
+  type SubscriptionConnection,
   SubscriptionErrorState,
 } from './websocket-connection';
 import {
@@ -410,8 +410,9 @@ export class AionEventWebSocketManager {
 
     const subscription = connection.subscription;
 
+    let recoveryImpact: ReturnType<AionEventHandler>;
     try {
-      subscription.handler(frame.event, {
+      recoveryImpact = subscription.handler(frame.event, {
         subscriptionId: subscription.id,
         namespace: frame.namespace,
         filter: subscription.filter,
@@ -425,7 +426,7 @@ export class AionEventWebSocketManager {
     }
 
     // The durable cursor means "already applied", not merely decoded/delivered.
-    this.recoveryPolicy.markFrameDelivered(connection, socket);
+    this.recoveryPolicy.markFrameDelivered(connection, socket, recoveryImpact);
     subscription.lastSeenSequence = frame.event.data.envelope.seq;
     if (
       this.recoveryPolicy.isUnresolved(connection.error) &&

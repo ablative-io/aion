@@ -35,8 +35,8 @@ import {
  * The server keeps `/events/stream` strictly one-subscription-per-socket: the
  * cluster channel is a NEW ARM of the single subscription frame, not a second
  * subscription multiplexed over the workflow socket. The dedicated socket sends
- * `{ subscription: { cluster: { after_seq } } }`, then must receive and apply a
- * priming `cluster_snapshot` before any live `cluster_event` is accepted.
+ * `{ subscription: { cluster: { after_seq: 0 } } }`, then must receive and apply
+ * a priming `cluster_snapshot` before any live `cluster_event` is accepted.
  *
  * Transport open is never recovery proof. On reconnect the retained topology is
  * explicitly possibly gapped until a fresh snapshot is applied. Snapshot timeout,
@@ -94,7 +94,7 @@ export class AionClusterStreamManager {
   private primingTimer: TimeoutHandle | null = null;
   private intentionalClose = false;
   private hasAppliedSnapshot = false;
-  /** Highest `cluster_seq` applied; resumes the in-flight backlog on reconnect. */
+  /** Highest `cluster_seq` applied within the current snapshot-defined epoch. */
   private lastAppliedSeq = 0;
 
   constructor(options: ClusterStreamManagerOptions = {}) {
@@ -197,7 +197,10 @@ export class AionClusterStreamManager {
       [CLUSTER_REQUEST.type]: CLUSTER_REQUEST.subscribe,
       [CLUSTER_REQUEST.subscription]: {
         [CLUSTER_REQUEST.cluster]: {
-          [CLUSTER_REQUEST.afterSeq]: this.lastAppliedSeq,
+          // The publisher sequence is process-local and has no epoch identity.
+          // Always subscribe from zero; the mandatory snapshot supplies the only
+          // safe baseline for dropping buffered deltas on this connection.
+          [CLUSTER_REQUEST.afterSeq]: 0,
         },
       },
     };
@@ -268,7 +271,9 @@ export class AionClusterStreamManager {
       return;
     }
 
-    this.lastAppliedSeq = Math.max(this.lastAppliedSeq, snapshot.as_of_seq);
+    // A fresh snapshot is authoritative even when a restarted publisher's epoch
+    // begins below the prior process's high-water mark.
+    this.lastAppliedSeq = snapshot.as_of_seq;
     this.hasAppliedSnapshot = true;
     this.clearPrimingTimer();
     this.reconnectAttempts = 0;
@@ -277,6 +282,10 @@ export class AionClusterStreamManager {
   }
 
   private applyEvent(socket: ManagedWebSocket, event: ClusterEvent): void {
+    if (event.meta.cluster_seq <= this.lastAppliedSeq) {
+      return;
+    }
+
     try {
       for (const listener of this.listeners) {
         listener.onEvent(event);
@@ -286,7 +295,7 @@ export class AionClusterStreamManager {
       return;
     }
     if (this.socket === socket) {
-      this.lastAppliedSeq = Math.max(this.lastAppliedSeq, event.meta.cluster_seq);
+      this.lastAppliedSeq = event.meta.cluster_seq;
     }
   }
 

@@ -73,8 +73,8 @@ export function useLiveListUpdates({
 
   const onEvent = useCallback(
     (event: Event) => {
-      if (!isSelectedNamespace(selectedNamespace)) {
-        return;
+      if (!isSelectedNamespace(selectedNamespace) || !affectsWorkflowSummaryProjection(event)) {
+        return false;
       }
 
       const current = queryClient.getQueryData<WorkflowPage<WorkflowSummary>>(queryKey);
@@ -88,14 +88,15 @@ export function useLiveListUpdates({
         // only when the event truly represents a newly-started matching row.
         if (!isFirstPage && isNewMatchingStart(current, event, filter)) {
           setNewAboveCount((count) => count + 1);
-          return;
+          return true;
         }
 
         void queryClient.invalidateQueries({ queryKey });
-        return;
+        return true;
       }
 
       queryClient.setQueryData(queryKey, patched);
+      return true;
     },
     [filter, isFirstPage, page.limit, queryClient, queryKey, selectedNamespace]
   );
@@ -143,6 +144,11 @@ export async function refetchWorkflowListForRecovery(
   } finally {
     context.signal.removeEventListener('abort', cancelStaleQuery);
   }
+}
+
+/** True only for lifecycle frames that can change a workflow-list summary. */
+export function affectsWorkflowSummaryProjection(event: Event): boolean {
+  return statusFromEvent(event) !== null;
 }
 
 /**
@@ -235,6 +241,7 @@ function patchExistingSummary(summary: WorkflowSummary, event: Event): WorkflowS
   if (event.type === 'WorkflowStarted') {
     return {
       ...summary,
+      ended_at: null,
       started_at: event.data.envelope.recorded_at,
       status: 'Running',
       workflow_type: event.data.workflow_type,
@@ -247,7 +254,11 @@ function patchExistingSummary(summary: WorkflowSummary, event: Event): WorkflowS
 
   return {
     ...summary,
-    ended_at: isTerminalStatus(nextStatus) ? event.data.envelope.recorded_at : summary.ended_at,
+    ended_at: isTerminalStatus(nextStatus)
+      ? event.data.envelope.recorded_at
+      : nextStatus === 'Running'
+        ? null
+        : summary.ended_at,
     status: nextStatus,
   };
 }
@@ -279,6 +290,13 @@ function statusFromEvent(event: Event): WorkflowStatus | null {
       return 'Cancelled';
     case 'WorkflowTimedOut':
       return 'TimedOut';
+    case 'WorkflowContinuedAsNew':
+      return 'ContinuedAsNew';
+    case 'WorkflowPaused':
+      return 'Paused';
+    case 'WorkflowReopened':
+    case 'WorkflowResumed':
+      return 'Running';
     default:
       return null;
   }
@@ -305,7 +323,7 @@ function summaryMatchesFilter(summary: WorkflowSummary, filter: WorkflowFilter):
 }
 
 function isTerminalStatus(status: WorkflowStatus): boolean {
-  return status !== 'Running';
+  return status !== 'Running' && status !== 'Paused';
 }
 
 function normalizeLimit(limit: number | undefined): number {

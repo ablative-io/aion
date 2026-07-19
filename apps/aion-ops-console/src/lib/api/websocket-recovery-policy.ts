@@ -11,6 +11,7 @@ import {
 import type {
   AionSocketError,
   ManagedWebSocket,
+  RecoveryFrameImpact,
   Scheduler,
   WarningLogger,
 } from './websocket-types';
@@ -102,10 +103,15 @@ export class ApplicationRecoveryPolicy {
     );
   }
 
-  /** Marks an in-flight full refetch unable to prove a current snapshot. */
-  markFrameDelivered(connection: SubscriptionConnection, socket: ManagedWebSocket): void {
+  /** Marks a relevant applied frame as racing an in-flight full refetch. */
+  markFrameDelivered(
+    connection: SubscriptionConnection,
+    socket: ManagedWebSocket,
+    impact: RecoveryFrameImpact
+  ): void {
     const attempt = connection.recoveryAttempt;
     if (
+      impact !== false &&
       attempt !== null &&
       attempt.kind === 'live-only' &&
       attempt.socket === socket &&
