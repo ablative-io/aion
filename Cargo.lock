@@ -163,6 +163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-darwin-acl"
+version = "0.9.1"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
 name = "aion-integration-cli"
 version = "0.9.1"
 dependencies = [
@@ -304,6 +311,7 @@ dependencies = [
  "aion-awl",
  "aion-awl-package",
  "aion-core",
+ "aion-darwin-acl",
  "aion-integrations",
  "aion-package",
  "aion-proto",

@@ -2062,6 +2062,108 @@ mod tests {
 
     #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
     #[test]
+    fn path_ambient_haematite_accepts_the_euid_uuid_allow_ace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use exacl::{AclEntry, AclOption, Perm};
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let private_parent = sandbox.path().join("euid-uuid-allow");
+        let data_root = private_parent.join("data");
+        std::fs::create_dir(&private_parent)?;
+        std::fs::set_permissions(&private_parent, std::fs::Permissions::from_mode(0o700))?;
+
+        let server_uid = rustix::process::geteuid().as_raw();
+        let ace_qualifier = crate::filesystem::darwin_user_uuid_for_test(server_uid)?;
+        let entry = AclEntry::allow_user(
+            &ace_qualifier.to_string(),
+            Perm::EXECUTE | Perm::WRITE | Perm::APPEND | Perm::DELETE_CHILD,
+            None,
+        );
+        exacl::setfacl(
+            &[private_parent.as_path()],
+            &[entry],
+            AclOption::SYMLINK_ACL,
+        )?;
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let result = super::build_haematite_store(configured, 4, None);
+        let cleanup = std::process::Command::new("chmod")
+            .arg("-RN")
+            .arg(&private_parent)
+            .status()?;
+        assert!(cleanup.success(), "failed to clean euid UUID allow ACL");
+
+        let (store, responder) = result?;
+        assert!(responder.is_none());
+        assert!(data_root.join("config.json").is_file());
+        drop(store);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
+    #[test]
+    fn path_ambient_haematite_refuses_a_non_euid_user_uuid_allow_ace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use exacl::{AclEntry, AclOption, Perm};
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let shared = sandbox.path().join("non-euid-uuid-allow");
+        let data_root = shared.join("data");
+        std::fs::create_dir(&shared)?;
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700))?;
+
+        let server_uid = rustix::process::geteuid().as_raw();
+        let foreign_uid = u32::from(server_uid == 0);
+        let foreign_qualifier = crate::filesystem::darwin_user_uuid_for_test(foreign_uid)?;
+        let entry = AclEntry::allow_user(
+            &foreign_qualifier.to_string(),
+            Perm::EXECUTE | Perm::WRITE | Perm::APPEND | Perm::DELETE_CHILD,
+            None,
+        );
+        exacl::setfacl(&[shared.as_path()], &[entry], AclOption::SYMLINK_ACL)?;
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let result = super::build_haematite_store(configured, 4, None);
+        let cleanup = std::process::Command::new("chmod")
+            .arg("-RN")
+            .arg(&shared)
+            .status()?;
+        assert!(cleanup.success(), "failed to clean non-euid UUID allow ACL");
+
+        let Err(error) = result else {
+            return Err("mutating non-euid user UUID allow ACE was accepted".into());
+        };
+        let message = error.to_string();
+        let crate::ServerError::UnsafeDataRootAncestor {
+            component, reason, ..
+        } = error
+        else {
+            return Err(format!("expected typed unsafe-ancestor error, got {message}").into());
+        };
+        assert_eq!(component, std::fs::canonicalize(&shared)?);
+        assert!(
+            reason.contains("allow") && reason.contains(&format!("server euid {server_uid}")),
+            "reason did not name the rejected ACE: {reason}"
+        );
+        assert!(
+            !data_root.join("config.json").exists(),
+            "Haematite touched its ambient path before the UUID ACL refusal"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
+    #[test]
     fn path_ambient_haematite_accepts_a_deny_only_acl_ancestor()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt as _;

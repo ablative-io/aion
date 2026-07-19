@@ -1,0 +1,27 @@
+[package]
+name = "aion-darwin-acl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Audited raw Darwin ACL qualifier bindings for Aion's macOS path-ambient gate."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+# This crate is the deliberately small unsafe leaf around Darwin's C ACL and
+# membership APIs. All callers receive owned values through safe functions.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "warn"
+
+[dependencies]
+uuid.workspace = true

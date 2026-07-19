@@ -496,6 +496,11 @@ pub(crate) fn validate_ambient_backend_ancestors(
     Ok(())
 }
 
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn darwin_user_uuid_for_test(uid: u32) -> io::Result<uuid::Uuid> {
+    darwin_acl::user_uuid_for_test(uid)
+}
+
 /// Refuse an existing sensitive root that grants any Unix group/world access.
 ///
 /// On non-Unix targets this function verifies only that an existing root is a
