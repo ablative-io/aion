@@ -46,7 +46,10 @@ export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
  * human-readable cause so a view can render *why* the stream is degraded rather
  * than swallowing the error to the console.
  */
-export type AionSocketErrorKind = 'frame-decode' | 'reconnect-exhausted';
+export type AionSocketErrorKind =
+  | 'frame-decode'
+  | 'subscriber-application'
+  | 'reconnect-exhausted';
 
 /**
  * A typed live-socket error. M1 (no-silent-failure): instead of warning to the
@@ -55,6 +58,8 @@ export type AionSocketErrorKind = 'frame-decode' | 'reconnect-exhausted';
  */
 export type AionSocketError = {
   kind: AionSocketErrorKind;
+  /** Logical event subscription that failed; null for dedicated stream managers. */
+  subscriptionId: string | null;
   /** Operator-facing message; safe to render directly. */
   message: string;
   /** The underlying error/value, kept for the console trail. */

@@ -66,17 +66,37 @@ function withResumeFromSequence(record: JsonRecord, lastSeenSequence: number | n
   };
 }
 
-export function frameDecodeError(cause: unknown): AionSocketError {
+export function frameDecodeError(
+  cause: unknown,
+  subscriptionId: string | null = null
+): AionSocketError {
   return {
     kind: 'frame-decode',
+    subscriptionId,
     message: 'A live event could not be decoded; the feed may be missing entries.',
     cause,
   };
 }
 
-export function reconnectExhaustedError(attempts: number): AionSocketError {
+export function subscriberApplicationError(
+  cause: unknown,
+  subscriptionId: string
+): AionSocketError {
+  return {
+    kind: 'subscriber-application',
+    subscriptionId,
+    message: 'A live event could not be applied; reconnecting without advancing its cursor.',
+    cause,
+  };
+}
+
+export function reconnectExhaustedError(
+  attempts: number,
+  subscriptionId: string | null = null
+): AionSocketError {
   return {
     kind: 'reconnect-exhausted',
+    subscriptionId,
     message: `Live connection lost after ${attempts} reconnect attempt${
       attempts === 1 ? '' : 's'
     }. Reload to retry.`,

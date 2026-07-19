@@ -33,6 +33,8 @@ mod whoami;
 mod workflows;
 
 #[cfg(test)]
+mod events_filter_integration_tests;
+#[cfg(test)]
 mod test_support;
 
 pub use router::{http_router, workflow_router};

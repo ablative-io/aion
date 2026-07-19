@@ -449,6 +449,7 @@ function readTranscriptLagged(frame: unknown): TranscriptLagged | null {
 function transcriptLaggedError(lagged: TranscriptLagged): AionSocketError {
   return {
     kind: 'frame-decode',
+    subscriptionId: null,
     message: `The transcript stream fell behind and dropped ${lagged.skipped} live update${
       lagged.skipped === 1 ? '' : 's'
     }; reconnecting to re-read the durable tail.`,

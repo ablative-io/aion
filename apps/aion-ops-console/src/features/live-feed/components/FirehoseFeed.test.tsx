@@ -20,6 +20,7 @@ test('FirehoseFeedContent surfaces a socket error message as visible state', () 
     <FirehoseFeedContent
       error={{
         kind: 'reconnect-exhausted',
+        subscriptionId: 'aion-events-1',
         message: 'Live connection lost after 5 reconnect attempts. Reload to retry.',
         cause: null,
       }}

@@ -421,6 +421,7 @@ function readClusterLagged(frame: unknown): ClusterStreamError | null {
 function clusterLaggedError(lagged: ClusterStreamError): AionSocketError {
   return {
     kind: 'frame-decode',
+    subscriptionId: null,
     message: `The cluster stream fell behind and dropped ${lagged.skipped} update${
       lagged.skipped === 1 ? '' : 's'
     }; reconnecting to re-read the topology.`,

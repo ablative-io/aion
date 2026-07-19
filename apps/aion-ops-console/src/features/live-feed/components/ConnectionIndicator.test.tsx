@@ -36,6 +36,7 @@ describe('ConnectionIndicator', () => {
       <ConnectionIndicatorContent
         error={{
           kind: 'frame-decode',
+          subscriptionId: 'aion-events-1',
           message: 'A live event could not be decoded; the feed may be missing entries.',
           cause: null,
         }}
