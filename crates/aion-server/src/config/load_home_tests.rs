@@ -63,7 +63,7 @@ fn write(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn discovery_precedence_covers_explicit_local_home_and_defaults()
 -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("home");
     let working_dir = scratch.path().join("project");
     fs::create_dir_all(&working_dir)?;
@@ -109,7 +109,7 @@ fn discovery_precedence_covers_explicit_local_home_and_defaults()
 
 #[test]
 fn malformed_home_config_is_a_loud_typed_failure() -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("home");
     let working_dir = scratch.path().join("project");
     fs::create_dir_all(&working_dir)?;
@@ -128,7 +128,7 @@ fn malformed_home_config_is_a_loud_typed_failure() -> Result<(), Box<dyn std::er
 #[test]
 fn unconfigured_paths_resolve_under_home_without_eager_creation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("not-created-yet");
     let working_dir = scratch.path().join("project");
     fs::create_dir_all(&working_dir)?;
@@ -151,7 +151,7 @@ fn unconfigured_paths_resolve_under_home_without_eager_creation()
 
 #[test]
 fn legacy_directories_guard_only_unconfigured_defaults() -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("home");
     let working_dir = scratch.path().join("project");
     let legacy_data = working_dir.join("aion-data");
@@ -216,7 +216,7 @@ fn legacy_directories_guard_only_unconfigured_defaults() -> Result<(), Box<dyn s
 fn legacy_symlink_directories_are_never_selected() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::symlink;
 
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("home");
     let working_dir = scratch.path().join("project");
     let outside = scratch.path().join("outside");
@@ -241,7 +241,7 @@ fn legacy_symlink_directories_are_never_selected() -> Result<(), Box<dyn std::er
 #[test]
 fn aion_home_environment_override_is_respected_everywhere() -> Result<(), Box<dyn std::error::Error>>
 {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::test_support::private_tempdir()?;
     let home = scratch.path().join("overridden-home");
     let working_dir = scratch.path().join("project");
     fs::create_dir_all(&working_dir)?;

@@ -21,7 +21,7 @@ workspace = true
 # the external `gleam` binary. The `no_gleam_compiler_in_dependency_tree` test
 # asserts this.
 [dependencies]
-aion-package = { version = "0.9.1", path = "../aion-package" }
+aion-package = { version = "0.9.2", path = "../aion-package" }
 thiserror = { workspace = true }
 # serde + toml read the project's workflow.toml to derive the entry module
 # that submitted source is written into. Neither is a compiler dependency.

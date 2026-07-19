@@ -856,7 +856,7 @@ fn xnode_owner_kill_redrives_fanout_to_exactly_once_completion() -> TestResult {
     // --- 1. Boot the 3-node real-loopback haematite cluster (sync prologue). -
     let node_count = NODE_NAMES.len();
     let dirs: Vec<tempfile::TempDir> = (0..node_count)
-        .map(|_| tempfile::tempdir())
+        .map(|_| private_tempdir())
         .collect::<Result<_, _>>()
         .map_err(test_error)?;
     let send_targets: Vec<Vec<&str>> = (0..node_count)
@@ -1295,4 +1295,17 @@ async fn workflow_completed(
 ) -> Result<bool, TestError> {
     let history = read_history(store, workflow_id).await?;
     Ok(aion_core::status_from_events(&history) == WorkflowStatus::Completed)
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

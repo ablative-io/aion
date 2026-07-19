@@ -337,7 +337,7 @@ mod tests {
         use axum::http::Method;
         use serde_json::json;
 
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         crate::awl::documents::write(
             workspace.path(),
             "existing.awl",

@@ -66,6 +66,10 @@ pub mod shutdown;
 pub mod state;
 /// WebSocket event-streaming support.
 pub mod stream;
+/// Umask-independent temporary directories for tests that exercise
+/// private-root validation.
+#[cfg(test)]
+pub(crate) mod test_support;
 /// Remote-worker registry, heartbeat, and dispatch support.
 pub mod worker;
 

@@ -1785,7 +1785,7 @@ mod tests {
 
         use crate::config::{StoreBackend, StoreConfig};
 
-        let data_dir = tempfile::tempdir()?;
+        let data_dir = crate::test_support::private_tempdir()?;
         // Single shard, a fresh temp data_dir: the production connect path opens
         // an existing haematite database or creates one, then shares the leaf as
         // both the engine EventStore and the dispatcher OutboxStore.
@@ -1848,7 +1848,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let configured_root = sandbox.path().join("data");
         let held_root = sandbox.path().join("held-data");
         let outside = sandbox.path().join("outside");
@@ -1904,7 +1904,7 @@ mod tests {
         use aion_store::{WritableEventStore as _, WriteToken};
         use chrono::Utc;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let configured_root = sandbox.path().join("data");
         let held_root = sandbox.path().join("held-data");
         let capture = sandbox.path().join("capture");
@@ -1960,7 +1960,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
 
         for mode in [0o770, 0o1777] {
@@ -2010,7 +2010,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
         let shared = sandbox.path().join("acl-shared");
         let data_root = shared.join("data");
@@ -2068,7 +2068,7 @@ mod tests {
 
         use exacl::{AclEntry, AclOption, Perm};
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
         let private_parent = sandbox.path().join("euid-uuid-allow");
         let data_root = private_parent.join("data");
@@ -2113,7 +2113,7 @@ mod tests {
 
         use exacl::{AclEntry, AclOption, Perm};
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
         let shared = sandbox.path().join("non-euid-uuid-allow");
         let data_root = shared.join("data");
@@ -2168,7 +2168,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
         let private_parent = sandbox.path().join("deny-only");
         let data_root = private_parent.join("data");
@@ -2234,7 +2234,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
         let private_parent = sandbox.path().join("private");
         let data_root = private_parent.join("data");

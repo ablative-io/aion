@@ -360,7 +360,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../aion-awl/tests/fixtures/rev2/schema-doors/valid");
         let source = std::fs::read_to_string(fixture_dir.join("mixed_doors.awl"))?;

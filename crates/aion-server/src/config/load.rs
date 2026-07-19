@@ -1361,7 +1361,7 @@ mod tests {
     #[test]
     fn authoring_absent_defaults_awl_workspace_but_keeps_gleam_dark()
     -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
+        let home = crate::test_support::private_tempdir()?;
         let config = ServerConfig::from_slice_with_home(b"", home.path())?;
 
         assert_eq!(config.authoring.gleam_path, None);
@@ -1655,8 +1655,8 @@ mod tests {
         config.websocket.event_broadcast_capacity = Some(64);
         config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
-        let home = tempfile::tempdir()?;
-        let working_dir = tempfile::tempdir()?;
+        let home = crate::test_support::private_tempdir()?;
+        let working_dir = crate::test_support::private_tempdir()?;
         super::fill_home_defaults(&mut config, home.path(), working_dir.path())?;
         assert_eq!(
             config.store.data_dir.as_deref(),
@@ -1909,7 +1909,7 @@ mod tests {
 
     #[test]
     fn package_discovery_is_sorted() -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = crate::test_support::private_tempdir()?;
         std::fs::write(temp_dir.path().join("zeta.aion"), b"package")?;
         std::fs::write(temp_dir.path().join("alpha.aion"), b"package")?;
         std::fs::write(temp_dir.path().join("ignored.txt"), b"package")?;
@@ -1952,7 +1952,7 @@ mod tests {
 
     #[test]
     fn package_merge_deduplicates_canonical_files() -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = crate::test_support::private_tempdir()?;
         let package = temp_dir.path().join("hello.aion");
         std::fs::write(&package, b"package")?;
         let mut packages = vec![package.clone()];
@@ -1967,7 +1967,7 @@ mod tests {
     #[test]
     fn zero_config_cli_workflow_package_uses_in_memory_defaults()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = crate::test_support::private_tempdir()?;
 
         let cli = CliOverrides {
             workflow_packages: vec!["hello-world.aion".into()],

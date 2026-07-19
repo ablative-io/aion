@@ -1464,7 +1464,7 @@ mod lsub_prod_xnode_e2e {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn production_boot_dispatches_executes_and_records_over_liminal() -> Result<(), TestError>
     {
-        let dir = tempfile::tempdir().map_err(test_error)?;
+        let dir = crate::test_support::private_tempdir().map_err(test_error)?;
         let db_path = dir.path().join("aion.db");
         let package_path = write_package_archive(dir.path())?;
         // The production path binds the CONFIGURED listen address, so commit to a

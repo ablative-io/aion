@@ -214,9 +214,9 @@ fn directory_on_c(node_c: &Node, node_b_grpc: SocketAddr) -> StaticShardDirector
 /// gRPC address) → `route_mutation` FORWARDS to B (the adopter).
 #[test]
 fn directory_resolves_adopter_after_failover_so_request_forwards() -> TestResult {
-    let dir_a = tempfile::tempdir()?;
-    let dir_b = tempfile::tempdir()?;
-    let dir_c = tempfile::tempdir()?;
+    let dir_a = private_tempdir()?;
+    let dir_b = private_tempdir()?;
+    let dir_c = private_tempdir()?;
 
     // A declares + owns SHARD and replicates to {B}; B and C are survivors.
     let node_a = Node::spawn(NODE_A, dir_a.path(), 3, &[NODE_B])?;
@@ -312,4 +312,17 @@ fn directory_resolves_adopter_after_failover_so_request_forwards() -> TestResult
     assert_eq!(owner.node_id, NODE_B, "forward target is the adopter B");
     assert_eq!(shard, SHARD);
     Ok(())
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

@@ -257,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn ops_console_assets_serve_index_asset_and_do_not_shadow_public_api()
     -> Result<(), Box<dyn std::error::Error>> {
-        let bundle = tempfile::tempdir()?;
+        let bundle = crate::test_support::private_tempdir()?;
         fs::write(
             bundle.path().join("index.html"),
             "<!doctype html><title>Aion</title><script src=\"/app.js\"></script>",

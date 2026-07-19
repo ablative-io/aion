@@ -170,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn layout_is_per_user_atomic_and_garbage_collects_orphans()
     -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         super::super::documents::write(
             workspace.path(),
             "flow.awl",
@@ -197,7 +197,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_positions_and_unknown_steps_are_refused()
     -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         super::super::documents::write(
             workspace.path(),
             "flow.awl",
@@ -235,10 +235,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let workspace = sandbox.path().join("workspace");
         let outside = sandbox.path().join("outside");
         std::fs::create_dir(&workspace)?;
+        crate::test_support::make_private(&workspace)?;
         std::fs::create_dir(&outside)?;
         super::super::documents::write(
             &workspace,

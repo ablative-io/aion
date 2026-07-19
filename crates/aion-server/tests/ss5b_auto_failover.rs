@@ -383,7 +383,7 @@ fn supervisor_auto_adopts_dead_peer_shard_without_manual_trigger() -> TestResult
         .enable_all()
         .build()?;
     let dirs: Vec<_> = (0..3)
-        .map(|_| tempfile::tempdir())
+        .map(|_| private_tempdir())
         .collect::<Result<_, _>>()?;
 
     println!("\n=== SS-5b: AUTOMATIC failover (supervisor-driven, no manual adopt) ===");
@@ -508,4 +508,17 @@ fn supervisor_engine(
     supervisor: &ClusterSupervisor<HaematiteStore, aion::Engine>,
 ) -> &aion::Engine {
     supervisor.adopter()
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn dangling_project_config_is_loud_and_home_is_not_read()
     -> Result<(), Box<dyn std::error::Error>> {
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let working = sandbox.path().join("working");
         let home = sandbox.path().join("home");
         fs::create_dir(&working)?;
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn dangling_home_config_is_loud_instead_of_defaults() -> Result<(), Box<dyn std::error::Error>>
     {
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let working = sandbox.path().join("working");
         let home = sandbox.path().join("home");
         fs::create_dir(&working)?;
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn unstatable_project_and_home_paths_are_loud() -> Result<(), Box<dyn std::error::Error>> {
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let working = sandbox.path().join("working");
         let home = sandbox.path().join("home");
         fs::create_dir(&working)?;

@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn missing_workspace_lists_empty_without_materializing_it()
     -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::test_support::private_tempdir()?;
         let workspace = parent.path().join("aion-authoring");
         assert!(list(&workspace).await?.is_empty());
         assert!(!workspace.exists());
@@ -250,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_round_trip_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         write(
             workspace.path(),
             "nested/example.awl",
@@ -286,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_is_atomic_typed_and_private() -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         let created = create(
             workspace.path(),
             CreateDocumentRequest {
@@ -326,7 +326,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let outside = sandbox.path().join("outside");
         std::fs::create_dir(&outside)?;
         let root_link = sandbox.path().join("root-link");
@@ -346,6 +346,7 @@ mod tests {
 
         let workspace = sandbox.path().join("workspace");
         std::fs::create_dir(&workspace)?;
+        crate::test_support::make_private(&workspace)?;
         symlink(&outside, workspace.join("linked"))?;
         assert!(
             write(

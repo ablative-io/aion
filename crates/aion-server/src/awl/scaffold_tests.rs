@@ -74,7 +74,7 @@ fn scaffold_refusals_are_typed() {
 fn generated_flagship_rust_worker_compiles() -> Result<(), Box<dyn std::error::Error>> {
     let response = scaffold(&request("rust"));
     let files = response.files.ok_or("Rust scaffold was refused")?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::test_support::private_tempdir()?;
     for (path, content) in files {
         let target = directory.path().join(path);
         if let Some(parent) = target.parent() {

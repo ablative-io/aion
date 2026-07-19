@@ -255,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn revisions_are_content_addressed_immutable_and_private()
     -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         let first = store(workspace.path(), "workflow first\n").await?;
         let same = store(workspace.path(), "workflow first\n").await?;
         let changed = store(workspace.path(), "workflow second\n").await?;
@@ -281,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_round_trip_and_drift_detection() -> Result<(), Box<dyn std::error::Error>> {
-        let workspace = tempfile::tempdir()?;
+        let workspace = crate::test_support::private_tempdir()?;
         super::super::documents::write(
             workspace.path(),
             "flow.awl",
@@ -313,7 +313,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let workspace = sandbox.path().join("workspace");
         let outside = sandbox.path().join("outside");
         std::fs::create_dir(&workspace)?;

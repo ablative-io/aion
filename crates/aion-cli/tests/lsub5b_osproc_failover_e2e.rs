@@ -121,6 +121,10 @@ fn osproc_liminal_listener_accepts_real_worker_connection() -> Result<(), TestEr
     // (1) Boot the REAL aion server OS process with the liminal outbox transport.
     let mut server = Command::new(env!("CARGO_BIN_EXE_aion"))
         .args(["server", "--config", &config.to_string_lossy()])
+        .env(
+            "AION_HOME",
+            std::env::temp_dir().join(format!("aion-e2e-home-{}", std::process::id())),
+        )
         .current_dir(temp.path())
         .env("RUST_LOG", "info")
         .stdout(Stdio::piped())

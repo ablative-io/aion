@@ -105,6 +105,10 @@ fn server_subcommand_boots_serves_and_drains_cleanly() -> Result<(), TestError> 
     // stray `.aion` archives from the workspace.
     let mut child = Command::new(env!("CARGO_BIN_EXE_aion"))
         .args(["server", "--config", &config_path])
+        .env(
+            "AION_HOME",
+            std::env::temp_dir().join(format!("aion-e2e-home-{}", std::process::id())),
+        )
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

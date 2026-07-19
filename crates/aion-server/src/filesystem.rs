@@ -550,7 +550,7 @@ mod tests {
             return assert_private_creation(Path::new(&path));
         }
 
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let executable = std::env::current_exe()?;
         let status = std::process::Command::new("sh")
             .arg("-c")
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn permissive_existing_root_fails_with_precise_remediation()
     -> Result<(), Box<dyn std::error::Error>> {
-        let sandbox = tempfile::tempdir()?;
+        let sandbox = crate::test_support::private_tempdir()?;
         let home = sandbox.path().join("aion-home");
         std::fs::create_dir(&home)?;
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755))?;

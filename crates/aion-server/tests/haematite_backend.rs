@@ -37,7 +37,7 @@ cluster_broadcast_capacity = 64
 
 #[test]
 fn haematite_config_parses_and_validates() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let toml = haematite_config_toml(&dir.path().to_string_lossy());
     let config = ServerConfig::from_slice(toml.as_bytes())?;
     assert_eq!(config.store.backend, StoreBackend::Haematite);
@@ -70,7 +70,7 @@ query_timeout_ms = 10000
 event_broadcast_capacity = 64
 cluster_broadcast_capacity = 64
 "#;
-    let home = tempfile::tempdir()?;
+    let home = private_tempdir()?;
     let config = ServerConfig::from_slice_with_home(toml.as_bytes(), home.path())?;
     assert_eq!(config.store.backend, StoreBackend::Haematite);
     assert_eq!(
@@ -114,7 +114,7 @@ cluster_broadcast_capacity = 64
 
 #[tokio::test(flavor = "multi_thread")]
 async fn server_boots_over_haematite_backend() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let toml = haematite_config_toml(&dir.path().to_string_lossy());
     let config = ServerConfig::from_slice(toml.as_bytes())?;
     // Full production boot: this routes through `connect_store`, which constructs
@@ -167,7 +167,7 @@ cluster_broadcast_capacity = 64
 #[tokio::test(flavor = "multi_thread")]
 async fn server_boots_as_a_cluster_of_one_and_elects_its_shard()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let toml = haematite_cluster_of_one_toml(&dir.path().to_string_lossy());
     let config = ServerConfig::from_slice(toml.as_bytes())?;
     // Full production boot of the DISTRIBUTED path: connect_store binds the
@@ -217,4 +217,17 @@ cluster_broadcast_capacity = 64
             Ok(())
         }
     }
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

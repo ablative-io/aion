@@ -44,6 +44,13 @@ impl Harness {
 
     async fn new_with_auth(auth_enabled: bool) -> Result<Self, TestError> {
         let workspace = tempfile::tempdir()?;
+        // `tempfile::tempdir` inherits the umask; the server's private-root
+        // validation requires the workspace root itself to be `0700`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
         let template_root = workspace.path().join("frozen-template");
         std::fs::create_dir_all(&template_root)?;
         std::fs::write(

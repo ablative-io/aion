@@ -408,6 +408,10 @@ esac"#,
 fn boot_server(project: &Path, http_port: u16) -> Result<Child, TestError> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_aion"))
         .args(["server", "--config", "aion.toml"])
+        .env(
+            "AION_HOME",
+            std::env::temp_dir().join(format!("aion-e2e-home-{}", std::process::id())),
+        )
         .current_dir(project)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

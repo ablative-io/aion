@@ -3,7 +3,13 @@
 All aion crates share one workspace version; entries below cover the
 whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
-## Unreleased
+## 0.9.2 — 2026-07-20
+
+Out-of-box authoring, the central Aion home, security hardening of the
+default-on studio surface, and honest event-stream recovery semantics.
+Every change below survived independent adversarial review to a
+zero-findings verdict (6 safety passes on the authoring/home branch,
+5 correctness passes on the stream branch).
 
 - **Aion home centralizes server configuration and state.** `AION_HOME` wins,
   otherwise the server uses `~/.aion`, without creating it during config reads.
@@ -30,6 +36,31 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
   and state directories on first write. Operators can still set
   `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR` explicitly. CN7 is
   unchanged: the separate Gleam loop stays unmounted until `gleam_path` is set.
+- **The studio surface authenticates.** With `[auth]` enabled, every AWL
+  document, layout, check, revision, run-status, and availability route
+  requires a valid caller; document/layout/run-binding mutations require the
+  deploy grant, and `worker_availability` is namespace-scoped. Auth-off stock
+  behavior is unchanged. Workspace filesystem access is confined through held
+  no-follow directory capabilities (symlinked legacy roots are never adopted;
+  temp files are randomized `create_new`), and AWL `schema()` imports are
+  confined to the workspace.
+- **Path-ambient data-root protection (macOS).** Where the haematite backend's
+  post-startup I/O is path-based rather than descriptor-authoritative, startup
+  now requires every ancestor of the resolved data root to be owner-controlled
+  — POSIX modes and Darwin extended ACLs both checked, ACE principals compared
+  by UUID identity from a single owned ACL snapshot. New helper crate
+  `aion-darwin-acl` carries the minimal Security-framework binding.
+- **Honest event-stream contract and recovery.** The ops console speaks the
+  server's real per-workflow `resume_from_seq` cursor (replay proven by
+  integration test), runs one server-enforced subscription per socket, and
+  never claims recovery it cannot prove: durable feeds recover via cursor
+  replay with cursor-advance only after successful application; live-only
+  feeds (filtered/firehose/cluster) degrade visibly with an explicit
+  possible-gap state cleared only by a confirmed, quiesced, generation-guarded
+  refetch. Cluster frames are contract-validated and each fresh snapshot is a
+  new sequence epoch, so a server restart can no longer silently mute deltas.
+  `WorkflowTimedOut` remains exported but unwired (no runtime emission
+  exists); its build-or-drop decision is recorded as an open ruling.
 
 ## 0.9.1 — 2026-07-19
 

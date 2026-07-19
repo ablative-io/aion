@@ -494,6 +494,10 @@ fn boot_node(config: &Path, log_path: &Path, ports: (u16, u16)) -> Result<Node, 
     let stderr = log.try_clone()?;
     let child = Command::new(env!("CARGO_BIN_EXE_aion"))
         .args(["server", "--config", &config.to_string_lossy()])
+        .env(
+            "AION_HOME",
+            std::env::temp_dir().join(format!("aion-e2e-home-{}", std::process::id())),
+        )
         .env("RUST_LOG", "info")
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))

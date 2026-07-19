@@ -28,7 +28,7 @@ struct Harness {
 
 impl Harness {
     async fn from_toml(toml: &[u8]) -> Result<Self, TestError> {
-        let scratch = tempfile::tempdir()?;
+        let scratch = private_tempdir()?;
         let config = ServerConfig::from_slice_with_home(toml, scratch.path())?;
         let (_, mut runtime) = config.into_parts();
         let configured = runtime
@@ -269,4 +269,17 @@ async fn explicit_workspace_is_honored_and_traversal_is_typed_and_confined() -> 
     assert_eq!(refusal["error_type"], "InvalidDocumentPath");
     assert!(!harness.scratch().join("escape.awl").exists());
     Ok(())
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

@@ -292,7 +292,7 @@ fn described_schedule_owner(
 
 #[tokio::test]
 async fn workflow_namespace_enforcement_survives_restart() -> Result<(), TestError> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let db_path = dir.path().join("namespace-restart-workflows.db");
     let alice = caller_for("alice", TENANT_A);
     let bob = caller_for("bob", TENANT_B);
@@ -377,7 +377,7 @@ async fn workflow_namespace_enforcement_survives_restart() -> Result<(), TestErr
 
 #[tokio::test]
 async fn schedule_namespace_enforcement_survives_restart() -> Result<(), TestError> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let db_path = dir.path().join("namespace-restart-schedules.db");
     let alice = caller_for("alice", TENANT_A);
     let bob = caller_for("bob", TENANT_B);
@@ -469,7 +469,7 @@ async fn schedule_namespace_enforcement_survives_restart() -> Result<(), TestErr
 
 #[tokio::test]
 async fn child_workflow_namespace_enforcement_survives_restart() -> Result<(), TestError> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let db_path = dir.path().join("namespace-restart-children.db");
     let alice = caller_for("alice", TENANT_A);
     let bob = caller_for("bob", TENANT_B);
@@ -580,7 +580,7 @@ async fn child_workflow_namespace_enforcement_survives_restart() -> Result<(), T
 /// falls back to the namespace's default queue.
 #[tokio::test]
 async fn workflow_task_queue_selection_survives_restart() -> Result<(), TestError> {
-    let dir = tempfile::tempdir()?;
+    let dir = private_tempdir()?;
     let db_path = dir.path().join("namespace-restart-task-queue.db");
     let alice = caller_for("alice", TENANT_A);
 
@@ -626,4 +626,17 @@ async fn workflow_task_queue_selection_survives_restart() -> Result<(), TestErro
 
     restarted.shutdown()?;
     Ok(())
+}
+
+/// Umask-independent private temporary directory: the server's private-root
+/// validation requires sensitive roots to be `0700`, while
+/// `tempfile::tempdir` inherits the process umask.
+fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }

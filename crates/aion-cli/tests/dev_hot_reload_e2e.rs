@@ -179,12 +179,16 @@ fn dev_hot_loads_a_new_content_hash_version_on_edit_without_restart() -> Result<
     let http_port = reserve_port()?;
     let grpc_port = reserve_port()?;
     let config = write_server_config(temp.path(), http_port, grpc_port)?;
+    // The server validates the resolved Aion home at startup; keep the test
+    // hermetic under a private temp home instead of the operator's ~/.aion.
+    let aion_home = temp.path().join("aion-home");
     let mut server = Command::new(env!("CARGO_BIN_EXE_aion"))
         .args([
             "server",
             "--config",
             config.to_str().ok_or("non-utf8 config path")?,
         ])
+        .env("AION_HOME", &aion_home)
         .current_dir(temp.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
