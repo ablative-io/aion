@@ -5,7 +5,7 @@ import type { AionEventWebSocketManager } from '@/lib/api';
 import type {
   AionEventHandler,
   AionEventSubscriptionFilter,
-  ResyncContext,
+  ResyncHandler,
 } from '@/lib/api/websocket';
 import { configuredEventSocket } from '@/lib/config';
 import type { Event, Namespace } from '@/types';
@@ -38,8 +38,8 @@ type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilte
   lastSeenSequence?: number | undefined;
   filter: Omit<TFilter, 'namespace'> | null;
   manager?: EventSubscriptionManager | undefined;
-  onEvent: (event: Event) => void;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  onEvent: (event: Event) => ReturnType<AionEventHandler>;
+  onResync?: ResyncHandler | undefined;
 };
 
 export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
@@ -55,10 +55,10 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
   manager: EventSubscriptionManager,
   namespace: Namespace,
   filter: Omit<TFilter, 'namespace'>,
-  onEvent: (event: Event) => void,
+  onEvent: (event: Event) => ReturnType<AionEventHandler>,
   options: {
     afterSeq?: number | undefined;
-    onResync?: ((context: ResyncContext) => void) | undefined;
+    onResync?: ResyncHandler | undefined;
   } = {}
 ) {
   const handler: AionEventHandler = (event) => onEvent(event);
@@ -67,6 +67,29 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
     lastSeenSequence: options.afterSeq,
     onResync: options.onResync,
   });
+}
+
+type ResyncHandlerRef = {
+  current: ResyncHandler | undefined;
+};
+
+/**
+ * Preserves an absent optional callback instead of turning it into a successful
+ * no-op. The returned wrapper keeps React closures fresh, but fails explicitly
+ * if a callback that existed when the subscription opened later disappears.
+ */
+export function resyncHandlerFromRef(ref: ResyncHandlerRef): ResyncHandler | undefined {
+  if (ref.current === undefined) {
+    return undefined;
+  }
+
+  return (context) => {
+    const onResync = ref.current;
+    if (onResync === undefined) {
+      throw new Error('The live-state refetch callback became unavailable during recovery');
+    }
+    return onResync(context);
+  };
 }
 
 export function useEventSubscription<TFilter extends AionEventSubscriptionFilter>({
@@ -81,14 +104,13 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
   const { selectedNamespace } = useNamespace();
   const active = enabled && filter !== null && isSelectedNamespace(selectedNamespace);
 
-  // The resume cursor (`lastSeenSequence`) advances on every event, and
-  // `onEvent`/`onResync` are fresh closures on every render. If any of these
-  // were in the effect's dependency array the socket would tear down and
-  // re-subscribe on every event — a resubscribe storm. They are held in refs and
-  // read at (re)subscribe time, so the subscription is re-opened only when its
-  // identity genuinely changes (`enabled` / `filter` / `manager` / namespace).
-  // The manager itself tracks the latest sequence internally for reconnect
-  // resume, so dropping the cursor from the deps does not weaken gap recovery.
+  // `lastSeenSequence` advances on every event, and `onEvent`/`onResync` are
+  // fresh closures on every render. If any were in the effect's dependency
+  // array, the socket would tear down and re-subscribe on every event. Refs keep
+  // identity changes (`enabled` / `filter` / `manager` / namespace) as the only
+  // reopen triggers. The manager uses the sequence as a durable cursor only for
+  // per-workflow subscriptions; filtered/firehose reconnect live-only and pass
+  // it back solely as context for the caller's full history refetch.
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const onResyncRef = useRef(onResync);
@@ -108,7 +130,7 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
       (event) => onEventRef.current(event),
       {
         afterSeq: cursorRef.current,
-        onResync: (context) => onResyncRef.current?.(context),
+        onResync: resyncHandlerFromRef(onResyncRef),
       }
     );
   }, [enabled, filter, manager, selectedNamespace]);

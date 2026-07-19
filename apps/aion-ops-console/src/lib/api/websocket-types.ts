@@ -1,17 +1,10 @@
 import type { Event, Namespace, WorkflowId, WorkflowStatus } from '@/types';
 
-// AW WebSocket contract surface: update this one object when cluster AW pins the
-// endpoint, subscribe/unsubscribe message keys, after-sequence cursor, or frame envelope shape.
+// Aion WebSocket contract surface. The server consumes one raw subscription as
+// the first frame on each socket; it does not multiplex subscription ids.
 export const AW_WEBSOCKET_CONTRACT = {
   endpoint: '/events/stream',
-  messageTypes: {
-    subscribe: 'subscribe',
-    unsubscribe: 'unsubscribe',
-  },
   requestKeys: {
-    type: 'type',
-    subscriptionId: 'subscription_id',
-    subscription: 'subscription',
     perWorkflow: 'per_workflow',
     filtered: 'filtered',
     firehose: 'firehose',
@@ -20,7 +13,7 @@ export const AW_WEBSOCKET_CONTRACT = {
     workflowId: 'workflow_id',
     workflowType: 'workflow_type',
     status: 'status',
-    afterSequence: 'after_seq',
+    resumeFromSequence: 'resume_from_seq',
   },
   frameKeys: {
     namespace: 'namespace',
@@ -42,18 +35,29 @@ export const DEFAULT_RECONNECT: ReconnectOptions = {
   maxAttempts: 5,
 };
 
+/** Maximum time a live-only full refetch may hold recovery open. */
+export const DEFAULT_RESYNC_TIMEOUT_MS = 10_000;
+
 export const SOCKET_CONNECTING = 0;
 export const SOCKET_OPEN = 1;
 export const SOCKET_CLOSING = 2;
 
-export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
+export type ConnectionStatus =
+  | 'connected'
+  | 'resynced-with-possible-gap'
+  | 'reconnecting'
+  | 'disconnected';
 
 /**
  * Kinds of live-socket failure surfaced to the UI. Each maps to a distinct,
  * human-readable cause so a view can render *why* the stream is degraded rather
  * than swallowing the error to the console.
  */
-export type AionSocketErrorKind = 'frame-decode' | 'reconnect-exhausted';
+export type AionSocketErrorKind =
+  | 'frame-decode'
+  | 'subscriber-application'
+  | 'subscriber-resync'
+  | 'reconnect-exhausted';
 
 /**
  * A typed live-socket error. M1 (no-silent-failure): instead of warning to the
@@ -62,6 +66,8 @@ export type AionSocketErrorKind = 'frame-decode' | 'reconnect-exhausted';
  */
 export type AionSocketError = {
   kind: AionSocketErrorKind;
+  /** Logical event subscription that failed; null for dedicated stream managers. */
+  subscriptionId: string | null;
   /** Operator-facing message; safe to render directly. */
   message: string;
   /** The underlying error/value, kept for the console trail. */
@@ -91,8 +97,19 @@ export type AionEventSubscriptionFilter =
   | FilteredEventSubscriptionFilter
   | FirehoseEventSubscriptionFilter;
 
-export type AionEventHandler = (event: Event, context: AionEventContext) => void;
+/**
+ * Whether an applied live frame can race an in-flight authoritative refetch.
+ * Returning `false` is an explicit projection-neutral acknowledgement. Existing
+ * handlers that return nothing remain conservatively recovery-relevant.
+ */
+export type RecoveryFrameImpact = boolean | undefined;
 
+export type AionEventHandler = (event: Event, context: AionEventContext) => RecoveryFrameImpact;
+
+/**
+ * Reconnect recovery is durable only for per-workflow subscriptions. Live-only
+ * filtered and firehose subscriptions always require a history refetch.
+ */
 export type ResyncMode = 'after-sequence' | 'full-refetch';
 
 export type AionEventContext = {
@@ -101,23 +118,46 @@ export type AionEventContext = {
   filter: AionEventSubscriptionFilter;
 };
 
+export type ResyncHandler = (context: ResyncContext) => void | Promise<void>;
+
+/** One manager-owned recovery generation. Consumers must guard state commits with `isCurrent`. */
 export type ResyncContext = AionEventContext & {
   lastSeenSequence: number | null;
   mode: ResyncMode;
+  /** Monotonically increasing within this logical subscription. */
+  generation: number;
+  /** Aborted when this generation times out, disconnects, is superseded, or is cancelled. */
+  signal: AbortSignal;
+  /**
+   * Transport abort is cooperative. Check this immediately before committing fetched state so
+   * a response from an HTTP implementation that ignored `signal` cannot overwrite a newer recovery.
+   */
+  isCurrent: () => boolean;
 };
 
 export type SubscribeOptions = {
+  /**
+   * Highest per-workflow sequence already applied. Per-workflow reconnects ask
+   * the server for the following sequence; filtered and firehose subscriptions
+   * retain it only as refetch context and never put it on the wire.
+   */
   lastSeenSequence?: number | undefined;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  /**
+   * Best-effort recovery work performed after a reconnect. A live-only feed is
+   * marked as possibly gapped until this callback fulfills. If omitted, that
+   * honest degraded marker remains; rejection or timeout consumes the bounded
+   * reconnect budget.
+   */
+  onResync?: ResyncHandler | undefined;
 };
 
 /**
  * Connection-level credentials for the live-events WebSocket. Browsers cannot
  * set request headers on a WebSocket handshake, so these are sent as query
- * parameters on the socket URL and the server promotes them back to their header
- * form (see `WsCaller` in aion-server). The connection authorizes the full set
- * of namespaces the caller may view; per-subscription filters narrow within it,
- * so switching the selected namespace never requires a reconnect.
+ * parameters on the socket URL and the server promotes them back to their
+ * header form (see `WsCaller` in aion-server). Every logical subscription gets
+ * its own socket and reuses these manager-level credentials; its filter is
+ * enforced by the server on that socket.
  */
 export type SocketCredentials = {
   namespaces?: readonly Namespace[];
@@ -143,6 +183,8 @@ export type AionEventWebSocketManagerOptions = {
   webSocketImpl?: WebSocketConstructor;
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
+  /** Timeout for an awaited live-only full refetch. Defaults to 10 seconds. */
+  resyncTimeoutMs?: number;
   warn?: WarningLogger;
 };
 
@@ -180,5 +222,5 @@ export type SubscriptionRecord = {
   filter: AionEventSubscriptionFilter;
   handler: AionEventHandler;
   lastSeenSequence: number | null;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  onResync?: ResyncHandler | undefined;
 };

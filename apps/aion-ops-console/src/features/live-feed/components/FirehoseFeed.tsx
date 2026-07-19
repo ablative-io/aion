@@ -37,6 +37,7 @@ export function FirehoseFeed({ manager, maxEvents = 100 }: FirehoseFeedProps) {
     manager,
     onEvent: (event) => {
       setEvents((current) => mergeEventsBySequence(current, [event]).slice(-maxEvents));
+      return true;
     },
   });
 
@@ -94,7 +95,9 @@ export function FirehoseFeedContent({
         <div className="rounded-lg border border-warning/30 bg-warning-glow p-3 text-warning text-sm">
           {status === 'reconnecting'
             ? 'Socket dropped; reconnecting and resubscribing to the firehose.'
-            : 'Live socket is disconnected.'}
+            : status === 'resynced-with-possible-gap'
+              ? 'Live tail resumed, but events may have been missed after reconnect.'
+              : 'Live socket is disconnected.'}
         </div>
       ) : null}
 

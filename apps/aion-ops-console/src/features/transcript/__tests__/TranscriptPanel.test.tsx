@@ -41,7 +41,12 @@ describe('TranscriptPanelContent', () => {
       <TranscriptPanelContent
         entries={[]}
         hasTarget={true}
-        socketError={{ kind: 'frame-decode', message: 'stream fell behind', cause: null }}
+        socketError={{
+          kind: 'frame-decode',
+          subscriptionId: null,
+          message: 'stream fell behind',
+          cause: null,
+        }}
         status="reconnecting"
       />
     );

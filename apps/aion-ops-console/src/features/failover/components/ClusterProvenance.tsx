@@ -36,12 +36,14 @@ export type ClusterProvenanceProps = {
 // lands the timestamp below is labelled "last change", which is honest for both.
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
   connected: 'connected',
+  'resynced-with-possible-gap': 'possible gap',
   reconnecting: 'reconnecting',
   disconnected: 'disconnected',
 };
 
 const STATUS_COLOR: Record<ConnectionStatus, string> = {
   connected: 'var(--status-live)',
+  'resynced-with-possible-gap': 'var(--status-warning)',
   reconnecting: 'var(--text-muted)',
   disconnected: 'var(--status-danger)',
 };

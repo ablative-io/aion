@@ -44,7 +44,6 @@ export function ShipRunPanel({ path, buffer, documents }: ShipRunPanelProps) {
   const live = useLiveWorkflowEvents({
     enabled: run?.deployment.workflowId !== null && run !== null,
     history: history.data ?? [],
-    onResync: () => void history.refetch(),
     workflowId: runningWorkflowId,
   });
   const activeActivity = [...live.timeline]

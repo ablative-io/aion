@@ -22,8 +22,14 @@ export function requireWorkflowHistoryNamespace(
   return requireSelectedNamespace(namespace, 'loading workflow history');
 }
 
-export function workflowHistoryRequestOptions(namespace: Namespace | null | undefined) {
-  return { namespace: requireWorkflowHistoryNamespace(namespace) };
+export function workflowHistoryRequestOptions(
+  namespace: Namespace | null | undefined,
+  signal?: AbortSignal
+) {
+  return {
+    namespace: requireWorkflowHistoryNamespace(namespace),
+    ...(signal !== undefined && { signal }),
+  };
 }
 
 export function useWorkflowHistory({
@@ -40,6 +46,7 @@ export function useWorkflowHistory({
   return useQuery({
     enabled: enabled && selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowHistoryQueryKey(selectedNamespace, workflowId),
-    queryFn: () => client.getHistory(workflowId, workflowHistoryRequestOptions(selectedNamespace)),
+    queryFn: ({ signal }) =>
+      client.getHistory(workflowId, workflowHistoryRequestOptions(selectedNamespace, signal)),
   });
 }

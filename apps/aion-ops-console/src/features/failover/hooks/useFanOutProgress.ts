@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { eventSequence, mergeEventsBySequence } from '@/features/workflow-detail/lib/timeline';
-import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
+import type { AionEventWebSocketManager, ApiClient, ConnectionStatus } from '@/lib/api';
 import type { FirehoseEventSubscriptionFilter, ResyncContext } from '@/lib/api/websocket';
 import { configuredEventSocket, createConfiguredApiClient } from '@/lib/config';
 import type { Event, Namespace, WorkflowId, WorkflowStatus } from '@/types';
@@ -22,7 +22,7 @@ import { tallyExactlyOnce } from '../lib/exactlyOnce';
 const FIREHOSE_SUBSCRIPTION_MANAGER = configuredEventSocket;
 const ACTIVITY_SCHEDULED = 'ActivityScheduled';
 
-export type FanOutConnection = 'connected' | 'reconnecting' | 'disconnected';
+export type FanOutConnection = ConnectionStatus;
 
 export type FanOutProgress = {
   /** Seq-ordered, deduped merged event set (history + live). */
@@ -70,6 +70,10 @@ export function deriveArity(events: readonly Event[], seedArity: number | null):
   }
 
   return seedArity;
+}
+
+export function affectsFanOutProjection(event: Event, workflowId: WorkflowId | null): boolean {
+  return workflowId !== null && event.data.envelope.workflow_id === workflowId;
 }
 
 export function deriveStatus(events: readonly Event[]): WorkflowStatus {
@@ -121,27 +125,64 @@ export function useFanOutProgress({
   );
 
   const liveSeqs = useRef<Set<number>>(new Set());
+  const historyRequestGeneration = useRef(0);
+  const historyAbort = useRef<AbortController | null>(null);
 
-  const fetchHistory = useCallback(() => {
-    if (!enabled || workflowId === null) {
-      return;
-    }
+  const fetchHistory = useCallback(
+    async (recovery?: ResyncContext): Promise<void> => {
+      if (!enabled || workflowId === null) {
+        return;
+      }
 
-    client
-      .getHistory(workflowId, { namespace })
-      .then((events) => {
-        setHistoryEvents(events);
+      historyRequestGeneration.current += 1;
+      const generation = historyRequestGeneration.current;
+      historyAbort.current?.abort();
+      const controller = new AbortController();
+      historyAbort.current = controller;
+      const abort = () => controller.abort();
+      recovery?.signal.addEventListener('abort', abort, { once: true });
+
+      try {
+        const result = await requestHistory(
+          client,
+          workflowId,
+          namespace,
+          controller,
+          generation,
+          () => historyRequestGeneration.current,
+          recovery
+        );
+        if (result.kind === 'stale') {
+          return;
+        }
+        if (result.kind === 'failed') {
+          const reason =
+            result.cause instanceof Error ? result.cause.message : 'describe back-fill failed';
+          setError(reason);
+          throw result.cause;
+        }
+
+        setHistoryEvents(result.events);
         setError(null);
-      })
-      .catch((cause: unknown) => {
-        const reason = cause instanceof Error ? cause.message : 'describe back-fill failed';
-        setError(reason);
-      });
-  }, [client, enabled, namespace, workflowId]);
+      } finally {
+        recovery?.signal.removeEventListener('abort', abort);
+        if (historyAbort.current === controller) {
+          historyAbort.current = null;
+        }
+      }
+    },
+    [client, enabled, namespace, workflowId]
+  );
 
   // Initial back-fill + whenever the read target or workflow changes.
   useEffect(() => {
-    fetchHistory();
+    void fetchHistory().catch(() => undefined);
+
+    return () => {
+      historyRequestGeneration.current += 1;
+      historyAbort.current?.abort();
+      historyAbort.current = null;
+    };
   }, [fetchHistory]);
 
   // Live firehose subscription. On reconnect (onResync) we re-fetch describe and the
@@ -156,24 +197,32 @@ export function useFanOutProgress({
 
     const filter: FirehoseEventSubscriptionFilter = { kind: 'firehose', namespace };
 
-    const onResync = (_context: ResyncContext) => {
+    const onResync = async (context: ResyncContext) => {
+      if (!context.isCurrent()) {
+        return;
+      }
+
       // Firehose has no resume cursor: drop the live buffer and back-fill fresh.
       liveSeqs.current = new Set();
       setLiveEvents([]);
-      fetchHistory();
+      await fetchHistory(context);
     };
 
     const stopSubscription = manager.subscribe(
       filter,
       (event: Event) => {
-        const seq = eventSequence(event);
+        if (!affectsFanOutProjection(event, workflowId)) {
+          return false;
+        }
 
+        const seq = eventSequence(event);
         if (liveSeqs.current.has(seq)) {
-          return;
+          return false;
         }
 
         liveSeqs.current.add(seq);
         setLiveEvents((previous) => [...previous, event]);
+        return true;
       },
       { onResync }
     );
@@ -182,7 +231,7 @@ export function useFanOutProgress({
       stopStatus();
       stopSubscription();
     };
-  }, [enabled, manager, namespace, fetchHistory]);
+  }, [enabled, manager, namespace, fetchHistory, workflowId]);
 
   const events = useMemo(
     () => mergeEventsBySequence(historyEvents, liveEvents),
@@ -201,6 +250,51 @@ export function useFanOutProgress({
     status,
     stale,
     error,
-    refetch: fetchHistory,
+    refetch: () => void fetchHistory().catch(() => undefined),
   };
+}
+
+type HistoryFetchResult =
+  | { kind: 'current'; events: Event[] }
+  | { kind: 'stale' }
+  | { kind: 'failed'; cause: unknown };
+
+async function requestHistory(
+  client: HistoryClient,
+  workflowId: WorkflowId,
+  namespace: Namespace,
+  controller: AbortController,
+  generation: number,
+  currentGeneration: () => number,
+  recovery?: ResyncContext
+): Promise<HistoryFetchResult> {
+  try {
+    const events = await client.getHistory(workflowId, {
+      namespace,
+      signal: controller.signal,
+    });
+    if (isStaleHistoryRequest(generation, currentGeneration(), recovery)) {
+      return { kind: 'stale' };
+    }
+    if (generation !== currentGeneration() || controller.signal.aborted) {
+      return { kind: 'failed', cause: new Error('history request was superseded') };
+    }
+    return { kind: 'current', events };
+  } catch (cause) {
+    if (isStaleHistoryRequest(generation, currentGeneration(), recovery)) {
+      return { kind: 'stale' };
+    }
+    return { kind: 'failed', cause };
+  }
+}
+
+function isStaleHistoryRequest(
+  generation: number,
+  currentGeneration: number,
+  recovery?: ResyncContext
+): boolean {
+  if (recovery !== undefined) {
+    return !recovery.isCurrent();
+  }
+  return generation !== currentGeneration;
 }

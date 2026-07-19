@@ -1,7 +1,6 @@
-import type { Event, Namespace, WorkflowStatus } from '@/types';
+import type { Event, Namespace } from '@/types';
 
 import {
-  type AionEventSubscriptionFilter,
   type AionSocketError,
   AW_WEBSOCKET_CONTRACT,
   type ConsoleLike,
@@ -24,80 +23,90 @@ export const consoleWarn: WarningLogger = (message, error) => {
 };
 
 export function buildSubscribeMessage(subscription: SubscriptionRecord): JsonRecord {
-  return {
-    [AW_WEBSOCKET_CONTRACT.requestKeys.type]: AW_WEBSOCKET_CONTRACT.messageTypes.subscribe,
-    [AW_WEBSOCKET_CONTRACT.requestKeys.subscriptionId]: subscription.id,
-    [AW_WEBSOCKET_CONTRACT.requestKeys.subscription]: buildSubscriptionRequest(subscription),
-  };
-}
-
-export function buildUnsubscribeMessage(subscriptionId: string): JsonRecord {
-  return {
-    [AW_WEBSOCKET_CONTRACT.requestKeys.type]: AW_WEBSOCKET_CONTRACT.messageTypes.unsubscribe,
-    [AW_WEBSOCKET_CONTRACT.requestKeys.subscriptionId]: subscriptionId,
-  };
+  return buildSubscriptionRequest(subscription);
 }
 
 function buildSubscriptionRequest(subscription: SubscriptionRecord): JsonRecord {
-  const afterSequence = subscription.lastSeenSequence;
-
   switch (subscription.filter.kind) {
     case 'workflow':
       return {
-        [AW_WEBSOCKET_CONTRACT.requestKeys.perWorkflow]: withAfterSequence(
+        [AW_WEBSOCKET_CONTRACT.requestKeys.perWorkflow]: withResumeFromSequence(
           {
             [AW_WEBSOCKET_CONTRACT.requestKeys.namespace]: subscription.filter.namespace,
             [AW_WEBSOCKET_CONTRACT.requestKeys.workflowId]: subscription.filter.workflowId,
           },
-          afterSequence
+          subscription.lastSeenSequence
         ),
       };
     case 'filtered':
       return {
-        [AW_WEBSOCKET_CONTRACT.requestKeys.filtered]: withAfterSequence(
-          {
-            [AW_WEBSOCKET_CONTRACT.requestKeys.namespace]: subscription.filter.namespace,
-            [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]:
-              subscription.filter.workflowType ?? null,
-            [AW_WEBSOCKET_CONTRACT.requestKeys.status]: subscription.filter.status ?? null,
-          },
-          afterSequence
-        ),
+        [AW_WEBSOCKET_CONTRACT.requestKeys.filtered]: {
+          [AW_WEBSOCKET_CONTRACT.requestKeys.namespace]: subscription.filter.namespace,
+          [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]:
+            subscription.filter.workflowType ?? null,
+          [AW_WEBSOCKET_CONTRACT.requestKeys.status]: subscription.filter.status ?? null,
+        },
       };
     case 'firehose':
       return {
-        [AW_WEBSOCKET_CONTRACT.requestKeys.firehose]: withAfterSequence(
-          {
-            [AW_WEBSOCKET_CONTRACT.requestKeys.namespaceSelector]: subscription.filter.namespace,
-          },
-          afterSequence
-        ),
+        [AW_WEBSOCKET_CONTRACT.requestKeys.firehose]: {
+          [AW_WEBSOCKET_CONTRACT.requestKeys.namespaceSelector]: subscription.filter.namespace,
+        },
       };
   }
 }
 
-function withAfterSequence(record: JsonRecord, sequence: number | null): JsonRecord {
-  if (sequence === null) {
+function withResumeFromSequence(record: JsonRecord, lastSeenSequence: number | null): JsonRecord {
+  if (lastSeenSequence === null) {
     return record;
   }
 
   return {
     ...record,
-    [AW_WEBSOCKET_CONTRACT.requestKeys.afterSequence]: sequence,
+    [AW_WEBSOCKET_CONTRACT.requestKeys.resumeFromSequence]: lastSeenSequence + 1,
   };
 }
 
-export function frameDecodeError(cause: unknown): AionSocketError {
+export function frameDecodeError(
+  cause: unknown,
+  subscriptionId: string | null = null
+): AionSocketError {
   return {
     kind: 'frame-decode',
+    subscriptionId,
     message: 'A live event could not be decoded; the feed may be missing entries.',
     cause,
   };
 }
 
-export function reconnectExhaustedError(attempts: number): AionSocketError {
+export function subscriberApplicationError(
+  cause: unknown,
+  subscriptionId: string
+): AionSocketError {
+  return {
+    kind: 'subscriber-application',
+    subscriptionId,
+    message: 'A live event could not be applied; reconnecting without advancing its cursor.',
+    cause,
+  };
+}
+
+export function subscriberResyncError(cause: unknown, subscriptionId: string): AionSocketError {
+  return {
+    kind: 'subscriber-resync',
+    subscriptionId,
+    message: 'Live state could not be resynchronized; recovery will retry within its limit.',
+    cause,
+  };
+}
+
+export function reconnectExhaustedError(
+  attempts: number,
+  subscriptionId: string | null = null
+): AionSocketError {
   return {
     kind: 'reconnect-exhausted',
+    subscriptionId,
     message: `Live connection lost after ${attempts} reconnect attempt${
       attempts === 1 ? '' : 's'
     }. Reload to retry.`,
@@ -105,13 +114,22 @@ export function reconnectExhaustedError(attempts: number): AionSocketError {
   };
 }
 
-export function buildResyncContext(subscription: SubscriptionRecord): ResyncContext {
+export function buildResyncContext(
+  subscription: SubscriptionRecord,
+  recovery: Pick<ResyncContext, 'generation' | 'signal' | 'isCurrent'>
+): ResyncContext {
   return {
     subscriptionId: subscription.id,
     namespace: subscription.filter.namespace,
     filter: subscription.filter,
     lastSeenSequence: subscription.lastSeenSequence,
-    mode: subscription.lastSeenSequence === null ? 'full-refetch' : 'after-sequence',
+    mode:
+      subscription.filter.kind === 'workflow' && subscription.lastSeenSequence !== null
+        ? 'after-sequence'
+        : 'full-refetch',
+    generation: recovery.generation,
+    signal: recovery.signal,
+    isCurrent: recovery.isCurrent,
   };
 }
 
@@ -130,6 +148,22 @@ export function parseFrame(data: unknown): { namespace: Namespace; event: Event 
     namespace: namespaceValue,
     event,
   };
+}
+
+export function assertExpectedWorkflowSequence(
+  subscription: SubscriptionRecord,
+  event: Event
+): void {
+  const previous = subscription.lastSeenSequence;
+
+  if (subscription.filter.kind !== 'workflow' || previous === null) {
+    return;
+  }
+
+  const received = event.data.envelope.seq;
+  if (received !== previous + 1) {
+    throw new Error(`workflow replay sequence gap: expected ${previous + 1}, received ${received}`);
+  }
 }
 
 function parseJsonData(data: unknown): unknown {
@@ -194,61 +228,6 @@ function readEnvelopePayload(value: unknown): unknown {
   }
 
   return value;
-}
-
-export function matchesSubscription(
-  filter: AionEventSubscriptionFilter,
-  namespace: Namespace,
-  event: Event
-): boolean {
-  if (filter.namespace !== namespace) {
-    return false;
-  }
-
-  switch (filter.kind) {
-    case 'workflow':
-      return event.data.envelope.workflow_id === filter.workflowId;
-    case 'filtered':
-      return filter.workflowType === undefined && filter.status === undefined
-        ? true
-        : matchesWorkflowType(filter.workflowType, event) &&
-            matchesWorkflowStatus(filter.status, event);
-    case 'firehose':
-      return true;
-  }
-}
-
-function matchesWorkflowType(workflowType: string | null | undefined, event: Event): boolean {
-  if (workflowType === undefined || workflowType === null) {
-    return true;
-  }
-
-  return 'workflow_type' in event.data && event.data.workflow_type === workflowType;
-}
-
-function matchesWorkflowStatus(status: WorkflowStatus | null | undefined, event: Event): boolean {
-  if (status === undefined || status === null) {
-    return true;
-  }
-
-  return statusFromEvent(event) === status;
-}
-
-function statusFromEvent(event: Event): WorkflowStatus | null {
-  switch (event.type) {
-    case 'WorkflowStarted':
-      return 'Running';
-    case 'WorkflowCompleted':
-      return 'Completed';
-    case 'WorkflowFailed':
-      return 'Failed';
-    case 'WorkflowCancelled':
-      return 'Cancelled';
-    case 'WorkflowTimedOut':
-      return 'TimedOut';
-    default:
-      return null;
-  }
 }
 
 function isEvent(value: unknown): value is Event {

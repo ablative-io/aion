@@ -86,7 +86,9 @@ function freshReducerState(): ReducerState {
 function applySnapshot(state: ReducerState, snapshot: ClusterSnapshot): void {
   state.selfNode = snapshot.node;
   state.asOfSeq = snapshot.as_of_seq;
-  state.lastSeq = Math.max(state.lastSeq, snapshot.as_of_seq);
+  // The publisher cursor is process-local. A mandatory fresh snapshot replaces
+  // the prior epoch even when its sequence baseline is lower after a restart.
+  state.lastSeq = snapshot.as_of_seq;
   state.primed = true;
 
   state.peers = new Map(snapshot.peers.map((peer) => [peer.peer_name, peer]));

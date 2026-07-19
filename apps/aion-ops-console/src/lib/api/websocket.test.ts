@@ -7,6 +7,7 @@ import {
   createAionEventWebSocketManager,
   type ResyncContext,
 } from './websocket';
+import { FakeScheduler, type FakeSocket, FakeSocketFactory } from './websocket-test-support';
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
@@ -39,8 +40,12 @@ test('subscribe sends a per-workflow request and dispatches streamed typed event
   });
   const received: AionEvent[] = [];
 
-  const unsubscribe = manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
-    received.push(nextEvent)
+  const unsubscribe = manager.subscribe(
+    { kind: 'workflow', namespace, workflowId },
+    (nextEvent) => {
+      received.push(nextEvent);
+      return true;
+    }
   );
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
@@ -49,23 +54,17 @@ test('subscribe sends a per-workflow request and dispatches streamed typed event
   expect(socket.url).toBe('wss://aion.example/events/stream');
   expect(socket.sent.map((message) => JSON.parse(message) as unknown)).toEqual([
     {
-      type: 'subscribe',
-      subscription_id: 'aion-events-1',
-      subscription: {
-        per_workflow: {
-          namespace,
-          workflow_id: workflowId,
-        },
+      per_workflow: {
+        namespace,
+        workflow_id: workflowId,
       },
     },
   ]);
   expect(received).toEqual([event]);
 
   unsubscribe();
-  expect(JSON.parse(socket.sent[1] ?? '{}')).toEqual({
-    type: 'unsubscribe',
-    subscription_id: 'aion-events-1',
-  });
+  expect(socket.sent).toHaveLength(1);
+  expect(socket.closeCalls).toBe(1);
 });
 
 test('streamed wire-envelope payload bytes are decoded before dispatch', () => {
@@ -73,7 +72,10 @@ test('streamed wire-envelope payload bytes are decoded before dispatch', () => {
   const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
   const received: AionEvent[] = [];
 
-  manager.subscribe({ kind: 'firehose', namespace }, (nextEvent) => received.push(nextEvent));
+  manager.subscribe({ kind: 'firehose', namespace }, (nextEvent) => {
+    received.push(nextEvent);
+    return true;
+  });
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
   socket.message(
@@ -119,6 +121,7 @@ test('frames without namespace are logged instead of guessed from workflow id', 
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) => {
     received.push(nextEvent);
+    return true;
   });
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
@@ -142,7 +145,9 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined, {
     lastSeenSequence: 41,
-    onResync: (context) => resyncs.push(context),
+    onResync: (context) => {
+      resyncs.push(context);
+    },
   });
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
   firstSocket.open();
@@ -157,25 +162,23 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
 
   expect(statuses).toEqual(['connected', 'reconnecting', 'connected']);
   expect(JSON.parse(secondSocket.sent[0] ?? '{}')).toEqual({
-    type: 'subscribe',
-    subscription_id: 'aion-events-1',
-    subscription: {
-      per_workflow: {
-        namespace,
-        workflow_id: workflowId,
-        after_seq: 41,
-      },
+    per_workflow: {
+      namespace,
+      workflow_id: workflowId,
+      resume_from_seq: 42,
     },
   });
-  expect(resyncs).toEqual([
-    {
-      subscriptionId: 'aion-events-1',
-      namespace,
-      filter: { kind: 'workflow', namespace, workflowId },
-      lastSeenSequence: 41,
-      mode: 'after-sequence',
-    },
-  ]);
+  expect(resyncs).toHaveLength(1);
+  expect(resyncs[0]).toMatchObject({
+    subscriptionId: 'aion-events-1',
+    namespace,
+    filter: { kind: 'workflow', namespace, workflowId },
+    lastSeenSequence: 41,
+    mode: 'after-sequence',
+    generation: 1,
+  });
+  expect(resyncs[0]?.signal).toBeInstanceOf(AbortSignal);
+  expect(resyncs[0]?.isCurrent()).toBeTrue();
 });
 
 test('malformed frame emits a typed decode error to listeners (no silent failure)', () => {
@@ -232,11 +235,10 @@ test('a single subscription sends exactly one subscribe frame (no double-subscri
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
 
-  const subscribeFrames = socket.sent
-    .map((message) => JSON.parse(message) as { type?: string })
-    .filter((frame) => frame.type === 'subscribe');
-
-  expect(subscribeFrames).toHaveLength(1);
+  expect(socket.sent).toHaveLength(1);
+  expect(JSON.parse(socket.sent[0] ?? '{}')).toEqual({
+    firehose: { namespace_selector: namespace },
+  });
   expect(socketFactory.sockets).toHaveLength(1);
 });
 
@@ -279,29 +281,119 @@ test('manual connect after bounded reconnect exhaustion starts a fresh attempt',
   expect(socketFactory.sockets).toHaveLength(3);
 });
 
-test('filtered subscriptions only dispatch matching namespace and workflow filters', () => {
+test('concurrent subscriptions use distinct sockets and both reconnect independently', () => {
+  const scheduler = new FakeScheduler();
   const socketFactory = new FakeSocketFactory();
-  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
-  const received: AionEvent[] = [];
-  const otherNamespaceEvent: AionEvent = {
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 2 },
+  });
+  const firstReceived: AionEvent[] = [];
+  const secondReceived: AionEvent[] = [];
+  const otherEvent: AionEvent = {
     ...event,
     data: {
       ...event.data,
       envelope: { ...event.data.envelope, workflow_id: otherWorkflowId },
     },
   };
+  const nextEvent = {
+    ...event,
+    data: { ...event.data, envelope: { ...event.data.envelope, seq: 8 } },
+  } as AionEvent;
+  const nextOtherEvent = {
+    ...otherEvent,
+    data: {
+      ...otherEvent.data,
+      envelope: { ...otherEvent.data.envelope, seq: 8 },
+    },
+  } as AionEvent;
 
-  manager.subscribe(
-    { kind: 'filtered', namespace, workflowType: 'checkout', status: 'Running' },
-    (nextEvent) => received.push(nextEvent)
-  );
-  const socket = socketFactory.sockets[0] as FakeSocket;
-  socket.open();
-  socket.message(JSON.stringify({ namespace: 'other', event }));
-  socket.message(JSON.stringify({ namespace, event: otherNamespaceEvent }));
-  socket.message(JSON.stringify({ namespace, event }));
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) => {
+    firstReceived.push(nextEvent);
+    return true;
+  });
+  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, (nextEvent) => {
+    secondReceived.push(nextEvent);
+    return true;
+  });
+  const firstSocket = socketFactory.sockets[0] as FakeSocket;
+  const secondSocket = socketFactory.sockets[1] as FakeSocket;
+  firstSocket.open();
+  secondSocket.open();
 
-  expect(received).toEqual([otherNamespaceEvent, event]);
+  expect(JSON.parse(firstSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: { namespace, workflow_id: workflowId },
+  });
+  expect(JSON.parse(secondSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: { namespace, workflow_id: otherWorkflowId },
+  });
+
+  firstSocket.message(JSON.stringify({ namespace, event }));
+  secondSocket.message(JSON.stringify({ namespace, event: otherEvent }));
+
+  expect(firstReceived).toEqual([event]);
+  expect(secondReceived).toEqual([otherEvent]);
+
+  firstSocket.drop();
+  secondSocket.drop();
+  expect(scheduler.delays).toEqual([10, 10]);
+
+  scheduler.runNext();
+  scheduler.runNext();
+  const reconnectedFirstSocket = socketFactory.sockets[2] as FakeSocket;
+  const reconnectedSecondSocket = socketFactory.sockets[3] as FakeSocket;
+  reconnectedFirstSocket.open();
+  reconnectedSecondSocket.open();
+
+  expect(JSON.parse(reconnectedFirstSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: {
+      namespace,
+      workflow_id: workflowId,
+      resume_from_seq: 8,
+    },
+  });
+  expect(JSON.parse(reconnectedSecondSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: {
+      namespace,
+      workflow_id: otherWorkflowId,
+      resume_from_seq: 8,
+    },
+  });
+
+  reconnectedFirstSocket.message(JSON.stringify({ namespace, event: nextEvent }));
+  reconnectedSecondSocket.message(JSON.stringify({ namespace, event: nextOtherEvent }));
+
+  expect(firstReceived).toEqual([event, nextEvent]);
+  expect(secondReceived).toEqual([otherEvent, nextOtherEvent]);
+});
+
+test('live-only filtered and firehose subscriptions never send a cursor', () => {
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
+
+  manager.subscribe({ kind: 'filtered', namespace, workflowType: 'checkout' }, () => undefined, {
+    lastSeenSequence: 41,
+  });
+  manager.subscribe({ kind: 'firehose', namespace }, () => undefined, {
+    lastSeenSequence: 52,
+  });
+  const filteredSocket = socketFactory.sockets[0] as FakeSocket;
+  const firehoseSocket = socketFactory.sockets[1] as FakeSocket;
+  filteredSocket.open();
+  firehoseSocket.open();
+
+  expect(JSON.parse(filteredSocket.sent[0] ?? '{}')).toEqual({
+    filtered: {
+      namespace,
+      workflow_type: 'checkout',
+      status: null,
+    },
+  });
+  expect(JSON.parse(firehoseSocket.sent[0] ?? '{}')).toEqual({
+    firehose: { namespace_selector: namespace },
+  });
 });
 
 test('closing a still-connecting socket defers the close until it opens (no premature close)', () => {
@@ -324,89 +416,3 @@ test('closing a still-connecting socket defers the close until it opens (no prem
   expect(socket.closeCalls).toBe(1);
   expect(socket.readyState).toBe(3);
 });
-
-class FakeSocketFactory {
-  readonly sockets: FakeSocket[] = [];
-  readonly ctor: new (
-    url: string
-  ) => FakeSocket;
-
-  constructor() {
-    const sockets = this.sockets;
-
-    this.ctor = class extends FakeSocket {
-      constructor(url: string) {
-        super(url);
-        sockets.push(this);
-      }
-    };
-  }
-}
-
-class FakeSocket {
-  readonly sent: string[] = [];
-  readyState = 0;
-  closeCalls = 0;
-  onopen: ((event: Event) => void) | null = null;
-  onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: ((event: { wasClean: boolean }) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-
-  constructor(readonly url: string) {}
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.closeCalls += 1;
-
-    if (this.readyState === 0) {
-      // Mirror the browser: calling close() while CONNECTING is the illegal
-      // teardown this manager must avoid. Surfacing it lets a test catch a
-      // regression that re-introduces the premature close.
-      throw new Error('WebSocket is closed before the connection is established');
-    }
-
-    this.readyState = 3;
-    this.onclose?.({ wasClean: true });
-  }
-
-  open(): void {
-    this.readyState = 1;
-    this.onopen?.({} as Event);
-  }
-
-  message(data: unknown): void {
-    this.onmessage?.({ data });
-  }
-
-  drop(): void {
-    this.readyState = 3;
-    this.onclose?.({ wasClean: false });
-  }
-
-  error(): void {
-    this.readyState = 3;
-    this.onerror?.({} as Event);
-  }
-}
-
-class FakeScheduler {
-  readonly delays: number[] = [];
-  private readonly callbacks: Array<() => void> = [];
-
-  setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout> {
-    this.delays.push(delayMs);
-    this.callbacks.push(callback);
-    return this.callbacks.length as unknown as ReturnType<typeof setTimeout>;
-  }
-
-  clearTimeout(): void {
-    this.callbacks.shift();
-  }
-
-  runNext(): void {
-    this.callbacks.shift()?.();
-  }
-}

@@ -10,7 +10,7 @@ import type {
 import type { Event } from '@/types';
 
 import { tallyExactlyOnce } from '../lib/exactlyOnce';
-import { deriveArity, deriveStatus } from './useFanOutProgress';
+import { affectsFanOutProjection, deriveArity, deriveStatus } from './useFanOutProgress';
 
 const WORKFLOW_ID = '00000000-0000-0000-0000-000000000001';
 const NAMESPACE = 'demo';
@@ -119,6 +119,24 @@ describe('firehose + describe merge', () => {
     expect(deriveStatus([started(1), completed(2, 0)])).toBe('Running');
     expect(deriveStatus([started(1), workflowCompleted(2)])).toBe('Completed');
   });
+
+  test('only target-workflow firehose frames affect the fan-out history projection', () => {
+    const target = scheduled(2, 0);
+    const unrelated = {
+      ...target,
+      data: {
+        ...target.data,
+        envelope: {
+          ...target.data.envelope,
+          workflow_id: '00000000-0000-0000-0000-000000000099',
+        },
+      },
+    } as Event;
+
+    expect(affectsFanOutProjection(target, WORKFLOW_ID)).toBeTrue();
+    expect(affectsFanOutProjection(unrelated, WORKFLOW_ID)).toBeFalse();
+    expect(affectsFanOutProjection(target, null)).toBeFalse();
+  });
 });
 
 describe('reconnect produces NO double-count', () => {
@@ -202,7 +220,10 @@ describe('firehose transport wiring (real manager)', () => {
     });
 
     const received: Event[] = [];
-    manager.subscribe({ kind: 'firehose', namespace: NAMESPACE }, (event) => received.push(event));
+    manager.subscribe({ kind: 'firehose', namespace: NAMESPACE }, (event) => {
+      received.push(event);
+      return true;
+    });
 
     const socket = CapturingSocket.instances[0];
     if (socket === undefined) {
@@ -211,9 +232,9 @@ describe('firehose transport wiring (real manager)', () => {
     socket.open();
 
     const subscribeMessage = JSON.parse(socket.sent[0] ?? '{}') as {
-      subscription?: { firehose?: { namespace_selector?: string } };
+      firehose?: { namespace_selector?: string };
     };
-    expect(subscribeMessage.subscription?.firehose?.namespace_selector).toBe(NAMESPACE);
+    expect(subscribeMessage.firehose?.namespace_selector).toBe(NAMESPACE);
 
     socket.message(JSON.stringify({ namespace: NAMESPACE, event: completed(6, 0) }));
     socket.message(JSON.stringify({ namespace: NAMESPACE, event: completed(7, 1) }));

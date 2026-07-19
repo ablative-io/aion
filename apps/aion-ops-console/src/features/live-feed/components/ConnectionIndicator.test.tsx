@@ -13,9 +13,14 @@ mock.module('../hooks/useConnectionStatus', () => ({
 }));
 
 describe('ConnectionIndicator', () => {
-  test('renders distinct connected, reconnecting, and disconnected states', async () => {
+  test('renders healthy, possible-gap, reconnecting, and disconnected states', async () => {
     const { ConnectionIndicator } = await import('./ConnectionIndicator');
-    const statuses = ['connected', 'reconnecting', 'disconnected'] satisfies ConnectionStatus[];
+    const statuses = [
+      'connected',
+      'resynced-with-possible-gap',
+      'reconnecting',
+      'disconnected',
+    ] satisfies ConnectionStatus[];
     const markups = statuses.map((status) => {
       currentStatus = status;
       return renderToStaticMarkup(<ConnectionIndicator />);
@@ -36,6 +41,7 @@ describe('ConnectionIndicator', () => {
       <ConnectionIndicatorContent
         error={{
           kind: 'frame-decode',
+          subscriptionId: 'aion-events-1',
           message: 'A live event could not be decoded; the feed may be missing entries.',
           cause: null,
         }}
@@ -58,6 +64,8 @@ function connectionLabel(status: ConnectionStatus): string {
   switch (status) {
     case 'connected':
       return 'Connected';
+    case 'resynced-with-possible-gap':
+      return 'Live with possible gap';
     case 'reconnecting':
       return 'Reconnecting';
     case 'disconnected':

@@ -1,9 +1,14 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, type QueryKey, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
 import type { EventSubscriptionManager, EventSubscriptionState } from '@/features/live-feed';
 import { useEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
-import type { FilteredEventSubscriptionFilter, WorkflowPage, WorkflowPageRequest } from '@/lib/api';
+import type {
+  FilteredEventSubscriptionFilter,
+  ResyncContext,
+  WorkflowPage,
+  WorkflowPageRequest,
+} from '@/lib/api';
 import type { Event, WorkflowFilter, WorkflowStatus, WorkflowSummary } from '@/types';
 import { workflowListQueryKey } from './useWorkflowQuery';
 
@@ -68,8 +73,8 @@ export function useLiveListUpdates({
 
   const onEvent = useCallback(
     (event: Event) => {
-      if (!isSelectedNamespace(selectedNamespace)) {
-        return;
+      if (!isSelectedNamespace(selectedNamespace) || !affectsWorkflowSummaryProjection(event)) {
+        return false;
       }
 
       const current = queryClient.getQueryData<WorkflowPage<WorkflowSummary>>(queryKey);
@@ -83,24 +88,30 @@ export function useLiveListUpdates({
         // only when the event truly represents a newly-started matching row.
         if (!isFirstPage && isNewMatchingStart(current, event, filter)) {
           setNewAboveCount((count) => count + 1);
-          return;
+          return true;
         }
 
         void queryClient.invalidateQueries({ queryKey });
-        return;
+        return true;
       }
 
       queryClient.setQueryData(queryKey, patched);
+      return true;
     },
     [filter, isFirstPage, page.limit, queryClient, queryKey, selectedNamespace]
   );
 
-  const onResync = useCallback(() => {
-    if (isSelectedNamespace(selectedNamespace)) {
+  const onResync = useCallback(
+    async (context: ResyncContext) => {
+      if (!isSelectedNamespace(selectedNamespace) || !context.isCurrent()) {
+        return;
+      }
+
       setNewAboveCount(0);
-      void queryClient.invalidateQueries({ queryKey });
-    }
-  }, [queryClient, queryKey, selectedNamespace]);
+      await refetchWorkflowListForRecovery(queryClient, queryKey, context);
+    },
+    [queryClient, queryKey, selectedNamespace]
+  );
 
   const subscription = useEventSubscription({
     enabled: subscriptionFilter !== null,
@@ -111,6 +122,33 @@ export function useLiveListUpdates({
   });
 
   return { ...subscription, newAboveCount, acknowledgeNewAbove };
+}
+
+/**
+ * Await one authoritative list refresh owned by a recovery generation. Cancelling
+ * the generation also cancels React Query, which discards a transport that ignores
+ * abort rather than allowing its late result to replace a newer cache generation.
+ */
+export async function refetchWorkflowListForRecovery(
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  context: ResyncContext
+): Promise<void> {
+  const cancelStaleQuery = () => {
+    void queryClient.cancelQueries({ queryKey });
+  };
+  context.signal.addEventListener('abort', cancelStaleQuery, { once: true });
+
+  try {
+    await queryClient.invalidateQueries({ queryKey }, { throwOnError: true });
+  } finally {
+    context.signal.removeEventListener('abort', cancelStaleQuery);
+  }
+}
+
+/** True only for lifecycle frames that can change a workflow-list summary. */
+export function affectsWorkflowSummaryProjection(event: Event): boolean {
+  return statusFromEvent(event) !== null;
 }
 
 /**
@@ -203,6 +241,7 @@ function patchExistingSummary(summary: WorkflowSummary, event: Event): WorkflowS
   if (event.type === 'WorkflowStarted') {
     return {
       ...summary,
+      ended_at: null,
       started_at: event.data.envelope.recorded_at,
       status: 'Running',
       workflow_type: event.data.workflow_type,
@@ -215,7 +254,11 @@ function patchExistingSummary(summary: WorkflowSummary, event: Event): WorkflowS
 
   return {
     ...summary,
-    ended_at: isTerminalStatus(nextStatus) ? event.data.envelope.recorded_at : summary.ended_at,
+    ended_at: isTerminalStatus(nextStatus)
+      ? event.data.envelope.recorded_at
+      : nextStatus === 'Running'
+        ? null
+        : summary.ended_at,
     status: nextStatus,
   };
 }
@@ -247,6 +290,13 @@ function statusFromEvent(event: Event): WorkflowStatus | null {
       return 'Cancelled';
     case 'WorkflowTimedOut':
       return 'TimedOut';
+    case 'WorkflowContinuedAsNew':
+      return 'ContinuedAsNew';
+    case 'WorkflowPaused':
+      return 'Paused';
+    case 'WorkflowReopened':
+    case 'WorkflowResumed':
+      return 'Running';
     default:
       return null;
   }
@@ -273,7 +323,7 @@ function summaryMatchesFilter(summary: WorkflowSummary, filter: WorkflowFilter):
 }
 
 function isTerminalStatus(status: WorkflowStatus): boolean {
-  return status !== 'Running';
+  return status !== 'Running' && status !== 'Paused';
 }
 
 function normalizeLimit(limit: number | undefined): number {
