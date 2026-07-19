@@ -4,6 +4,7 @@ import type {
   SocketErrorListener,
   SubscriptionRecord,
   TimeoutHandle,
+  TransitionListener,
 } from './websocket-types';
 import { SOCKET_CONNECTING } from './websocket-types';
 
@@ -14,6 +15,15 @@ export type SubscriptionSocketState =
   | 'reconnecting'
   | 'exhausted';
 
+export type RecoveryAttempt = {
+  generation: number;
+  socket: ManagedWebSocket;
+  controller: AbortController;
+  dirty: boolean;
+  kind: 'live-only' | 'durable-notification';
+  timer: TimeoutHandle | null;
+};
+
 export type SubscriptionConnection = {
   subscription: SubscriptionRecord;
   socket: ManagedWebSocket | null;
@@ -21,7 +31,8 @@ export type SubscriptionConnection = {
   hasOpened: boolean;
   reconnectAttempts: number;
   reconnectTimer: TimeoutHandle | null;
-  resyncTimer: TimeoutHandle | null;
+  recoveryGeneration: number;
+  recoveryAttempt: RecoveryAttempt | null;
   error: AionSocketError | null;
   errorSequence: number;
 };
@@ -127,4 +138,10 @@ export function closeWhenSafe(socket: ManagedWebSocket): void {
   }
 
   socket.close();
+}
+
+export function notifyTransitionListeners(listeners: ReadonlySet<TransitionListener>): void {
+  for (const listener of listeners) {
+    listener();
+  }
 }

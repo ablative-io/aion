@@ -121,26 +121,64 @@ export function useFanOutProgress({
   );
 
   const liveSeqs = useRef<Set<number>>(new Set());
+  const historyRequestGeneration = useRef(0);
+  const historyAbort = useRef<AbortController | null>(null);
 
-  const fetchHistory = useCallback(async (): Promise<void> => {
-    if (!enabled || workflowId === null) {
-      return;
-    }
+  const fetchHistory = useCallback(
+    async (recovery?: ResyncContext): Promise<void> => {
+      if (!enabled || workflowId === null) {
+        return;
+      }
 
-    try {
-      const events = await client.getHistory(workflowId, { namespace });
-      setHistoryEvents(events);
-      setError(null);
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : 'describe back-fill failed';
-      setError(reason);
-      throw cause;
-    }
-  }, [client, enabled, namespace, workflowId]);
+      historyRequestGeneration.current += 1;
+      const generation = historyRequestGeneration.current;
+      historyAbort.current?.abort();
+      const controller = new AbortController();
+      historyAbort.current = controller;
+      const abort = () => controller.abort();
+      recovery?.signal.addEventListener('abort', abort, { once: true });
+
+      try {
+        const result = await requestHistory(
+          client,
+          workflowId,
+          namespace,
+          controller,
+          generation,
+          () => historyRequestGeneration.current,
+          recovery
+        );
+        if (result.kind === 'stale') {
+          return;
+        }
+        if (result.kind === 'failed') {
+          const reason =
+            result.cause instanceof Error ? result.cause.message : 'describe back-fill failed';
+          setError(reason);
+          throw result.cause;
+        }
+
+        setHistoryEvents(result.events);
+        setError(null);
+      } finally {
+        recovery?.signal.removeEventListener('abort', abort);
+        if (historyAbort.current === controller) {
+          historyAbort.current = null;
+        }
+      }
+    },
+    [client, enabled, namespace, workflowId]
+  );
 
   // Initial back-fill + whenever the read target or workflow changes.
   useEffect(() => {
     void fetchHistory().catch(() => undefined);
+
+    return () => {
+      historyRequestGeneration.current += 1;
+      historyAbort.current?.abort();
+      historyAbort.current = null;
+    };
   }, [fetchHistory]);
 
   // Live firehose subscription. On reconnect (onResync) we re-fetch describe and the
@@ -155,11 +193,15 @@ export function useFanOutProgress({
 
     const filter: FirehoseEventSubscriptionFilter = { kind: 'firehose', namespace };
 
-    const onResync = async (_context: ResyncContext) => {
+    const onResync = async (context: ResyncContext) => {
+      if (!context.isCurrent()) {
+        return;
+      }
+
       // Firehose has no resume cursor: drop the live buffer and back-fill fresh.
       liveSeqs.current = new Set();
       setLiveEvents([]);
-      await fetchHistory();
+      await fetchHistory(context);
     };
 
     const stopSubscription = manager.subscribe(
@@ -202,4 +244,49 @@ export function useFanOutProgress({
     error,
     refetch: () => void fetchHistory().catch(() => undefined),
   };
+}
+
+type HistoryFetchResult =
+  | { kind: 'current'; events: Event[] }
+  | { kind: 'stale' }
+  | { kind: 'failed'; cause: unknown };
+
+async function requestHistory(
+  client: HistoryClient,
+  workflowId: WorkflowId,
+  namespace: Namespace,
+  controller: AbortController,
+  generation: number,
+  currentGeneration: () => number,
+  recovery?: ResyncContext
+): Promise<HistoryFetchResult> {
+  try {
+    const events = await client.getHistory(workflowId, {
+      namespace,
+      signal: controller.signal,
+    });
+    if (isStaleHistoryRequest(generation, currentGeneration(), recovery)) {
+      return { kind: 'stale' };
+    }
+    if (generation !== currentGeneration() || controller.signal.aborted) {
+      return { kind: 'failed', cause: new Error('history request was superseded') };
+    }
+    return { kind: 'current', events };
+  } catch (cause) {
+    if (isStaleHistoryRequest(generation, currentGeneration(), recovery)) {
+      return { kind: 'stale' };
+    }
+    return { kind: 'failed', cause };
+  }
+}
+
+function isStaleHistoryRequest(
+  generation: number,
+  currentGeneration: number,
+  recovery?: ResyncContext
+): boolean {
+  if (recovery !== undefined) {
+    return !recovery.isCurrent();
+  }
+  return generation !== currentGeneration;
 }

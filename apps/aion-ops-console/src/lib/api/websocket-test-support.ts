@@ -96,3 +96,28 @@ export class FakeScheduler {
     this.callbacks.shift()?.callback();
   }
 }
+
+export function deferred<T>() {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((cause: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+
+  return {
+    promise,
+    resolve(value: T) {
+      resolvePromise?.(value);
+    },
+    reject(cause: unknown) {
+      rejectPromise?.(cause);
+    },
+  };
+}
+
+export async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
+}

@@ -1,5 +1,7 @@
-import type { ClusterEvent, ClusterSnapshot, ClusterStreamError } from '@/types';
+import type { ClusterEvent, ClusterSnapshot } from '@/types';
 
+import { clusterLaggedError, parseClusterFrame } from './cluster-stream-protocol';
+import { closeWhenSafe } from './websocket-connection';
 import {
   browserWebSocketConstructor,
   buildWebSocketUrl,
@@ -12,12 +14,12 @@ import {
   type AionSocketError,
   type ConnectionStatus,
   DEFAULT_RECONNECT,
+  DEFAULT_RESYNC_TIMEOUT_MS,
   type JsonRecord,
   type ManagedWebSocket,
   type ReconnectOptions,
   type Scheduler,
   SOCKET_CLOSING,
-  SOCKET_CONNECTING,
   SOCKET_OPEN,
   type SocketCredentials,
   type SocketErrorListener,
@@ -32,25 +34,15 @@ import {
  *
  * The server keeps `/events/stream` strictly one-subscription-per-socket: the
  * cluster channel is a NEW ARM of the single subscription frame, not a second
- * subscription multiplexed over the workflow socket. So the honest client is a
- * DEDICATED socket that opens `/events/stream`, sends exactly one
- * `{ subscription: { cluster: { after_seq } } }` frame, then receives a priming
- * `cluster_snapshot` followed by live `cluster_event` deltas (and, on overflow,
- * a terminal `cluster_lagged` error frame).
+ * subscription multiplexed over the workflow socket. The dedicated socket sends
+ * `{ subscription: { cluster: { after_seq } } }`, then must receive and apply a
+ * priming `cluster_snapshot` before any live `cluster_event` is accepted.
  *
- * This is the cluster analog of {@link AionEventWebSocketManager}: same reconnect
- * backoff, same typed {@link AionSocketError} no-silent-failure contract, same
- * query-param credential promotion (a browser cannot set WS handshake headers).
- * Reconnect re-requests the snapshot from the last applied `cluster_seq`
- * (`after_seq`), and a `cluster_lagged` terminal discards the cursor so the next
- * connect re-primes from a fresh snapshot (cluster history is non-durable).
+ * Transport open is never recovery proof. On reconnect the retained topology is
+ * explicitly possibly gapped until a fresh snapshot is applied. Snapshot timeout,
+ * malformed/terminal/pre-snapshot frames, and listener failures all fail-stop the
+ * socket and consume one shared bounded reconnect budget.
  */
-
-/** Server-frame discriminators pinned by `aion-proto` (`StreamedCluster*`). */
-const CLUSTER_FRAME = {
-  snapshot: 'cluster_snapshot',
-  event: 'cluster_event',
-} as const;
 
 /** Wire keys on the client subscribe frame (mirrors `ws_subscription.rs`). */
 const CLUSTER_REQUEST = {
@@ -74,33 +66,34 @@ export type ClusterStreamManagerOptions = {
   webSocketImpl?: WebSocketConstructor;
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
+  /** Maximum wait for the fresh snapshot that proves a cluster socket current. */
+  resyncTimeoutMs?: number;
   warn?: WarningLogger;
 };
 
 export type Unsubscribe = () => void;
 
-/**
- * Manages the dedicated cluster-stream socket. A single subscriber drives the
- * socket's lifetime: the first `subscribe()` opens it, the last `unsubscribe()`
- * closes it. (Phase 1 has exactly one consumer — the failover view — but the
- * Set keeps StrictMode's double-mount safe.)
- */
+/** Manages the single-subscriber dedicated cluster-stream socket. */
 export class AionClusterStreamManager {
   private readonly baseUrl: string;
   private readonly credentials: SocketCredentials | undefined;
   private readonly webSocketImpl: WebSocketConstructor;
   private readonly scheduler: Scheduler;
   private readonly reconnect: ReconnectOptions;
+  private readonly resyncTimeoutMs: number;
   private readonly warn: WarningLogger;
   private readonly listeners = new Set<ClusterStreamListener>();
   private readonly statusListeners = new Set<StatusListener>();
   private readonly errorListeners = new Set<SocketErrorListener>();
   private socket: ManagedWebSocket | null = null;
+  private primingSocket: ManagedWebSocket | null = null;
   private status: ConnectionStatus = 'disconnected';
   private lastError: AionSocketError | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: TimeoutHandle | null = null;
+  private primingTimer: TimeoutHandle | null = null;
   private intentionalClose = false;
+  private hasAppliedSnapshot = false;
   /** Highest `cluster_seq` applied; resumes the in-flight backlog on reconnect. */
   private lastAppliedSeq = 0;
 
@@ -113,6 +106,7 @@ export class AionClusterStreamManager {
       clearTimeout: (handle) => clearTimeout(handle),
     };
     this.reconnect = { ...DEFAULT_RECONNECT, ...options.reconnect };
+    this.resyncTimeoutMs = options.resyncTimeoutMs ?? DEFAULT_RESYNC_TIMEOUT_MS;
     this.warn = options.warn ?? consoleWarn;
   }
 
@@ -134,18 +128,12 @@ export class AionClusterStreamManager {
 
   onStatusChange(listener: StatusListener): Unsubscribe {
     this.statusListeners.add(listener);
-
-    return () => {
-      this.statusListeners.delete(listener);
-    };
+    return () => this.statusListeners.delete(listener);
   }
 
   onError(listener: SocketErrorListener): Unsubscribe {
     this.errorListeners.add(listener);
-
-    return () => {
-      this.errorListeners.delete(listener);
-    };
+    return () => this.errorListeners.delete(listener);
   }
 
   getLastError(): AionSocketError | null {
@@ -156,27 +144,21 @@ export class AionClusterStreamManager {
     if (this.socket !== null && this.socket.readyState < SOCKET_CLOSING) {
       return;
     }
-
-    if (this.status === 'disconnected') {
-      this.reconnectAttempts = 0;
-    }
-
     this.intentionalClose = false;
+    this.setStatus('reconnecting');
     this.openSocket();
   }
 
   private close(): void {
     this.intentionalClose = true;
     this.clearReconnectTimer();
-    this.reconnectAttempts = 0;
-
+    this.clearPrimingTimer();
     const currentSocket = this.socket;
     this.socket = null;
 
     if (currentSocket !== null) {
       closeWhenSafe(currentSocket);
     }
-
     this.setStatus('disconnected');
   }
 
@@ -190,37 +172,24 @@ export class AionClusterStreamManager {
         return;
       }
 
-      this.reconnectAttempts = 0;
-      this.clearError();
-      this.setStatus('connected');
-      // Re-request from the last applied seq: the server suppresses buffered
-      // deltas with `cluster_seq <= after_seq` and re-primes with a fresh
-      // snapshot, so a brief drop resumes without re-applying seen deltas.
-      this.sendSubscribe();
+      this.sendSubscribe(socket);
+      this.startPrimingTimeout(socket);
+      this.setStatus(this.hasAppliedSnapshot ? 'resynced-with-possible-gap' : 'reconnecting');
     };
-
     socket.onmessage = (message) => {
-      if (this.socket !== socket) {
-        return;
+      if (this.socket === socket) {
+        this.handleMessage(socket, message.data);
       }
-
-      this.handleMessage(message.data);
     };
-
-    socket.onclose = () => {
-      this.handleUnexpectedDisconnect(socket);
-    };
-
+    socket.onclose = () => this.handleUnexpectedDisconnect(socket);
     socket.onerror = () => {
       this.handleUnexpectedDisconnect(socket);
-      socket.close();
+      closeWhenSafe(socket);
     };
   }
 
-  private sendSubscribe(): void {
-    const socket = this.socket;
-
-    if (socket === null || socket.readyState !== SOCKET_OPEN) {
+  private sendSubscribe(socket: ManagedWebSocket): void {
+    if (socket.readyState !== SOCKET_OPEN) {
       return;
     }
 
@@ -232,51 +201,103 @@ export class AionClusterStreamManager {
         },
       },
     };
-
     socket.send(JSON.stringify(frame));
   }
 
-  private handleMessage(data: unknown): void {
-    let frame: unknown;
+  private startPrimingTimeout(socket: ManagedWebSocket): void {
+    this.clearPrimingTimer();
+    this.primingSocket = socket;
+    const timeout = this.scheduler.setTimeout(() => {
+      if (
+        this.socket !== socket ||
+        this.primingSocket !== socket ||
+        this.primingTimer !== timeout
+      ) {
+        return;
+      }
 
+      this.primingTimer = null;
+      this.failSocket(
+        socket,
+        clusterPrimingError(new Error(`Cluster snapshot timed out after ${this.resyncTimeoutMs}ms`))
+      );
+    }, this.resyncTimeoutMs);
+    this.primingTimer = timeout;
+  }
+
+  private handleMessage(socket: ManagedWebSocket, data: unknown): void {
+    let frame: ReturnType<typeof parseClusterFrame>;
     try {
-      frame = parseJson(data);
+      frame = parseClusterFrame(data);
     } catch (error) {
       this.warn('Unable to parse Aion cluster-stream frame', error);
-      this.emitError(frameDecodeError(error));
+      this.failSocket(socket, frameDecodeError(error));
       return;
     }
 
-    // Terminal `{ "error": { "kind": "ClusterLagged", "skipped": N } }`: the
-    // client lost deltas. Surface it typed, then drop the resume cursor so the
-    // next connect re-primes from a fresh snapshot (no durable history).
-    const lagged = readClusterLagged(frame);
-    if (lagged !== null) {
+    if (frame.kind === 'lagged') {
       this.lastAppliedSeq = 0;
-      this.emitError(clusterLaggedError(lagged));
+      this.failSocket(socket, clusterLaggedError(frame.lagged));
       return;
     }
-
-    if (isSnapshotFrame(frame)) {
-      this.lastAppliedSeq = Math.max(this.lastAppliedSeq, frame.snapshot.as_of_seq);
-      this.clearError();
-      for (const listener of this.listeners) {
-        listener.onSnapshot(frame.snapshot);
+    if (frame.kind === 'snapshot') {
+      if (this.primingSocket !== socket) {
+        this.failSocket(socket, frameDecodeError(new Error('unexpected cluster snapshot')));
+        return;
       }
+      this.applySnapshot(socket, frame.snapshot);
       return;
     }
+    if (this.primingSocket === socket) {
+      this.failSocket(socket, frameDecodeError(new Error('cluster event arrived before snapshot')));
+      return;
+    }
+    this.applyEvent(socket, frame.event);
+  }
 
-    if (isEventFrame(frame)) {
-      this.lastAppliedSeq = Math.max(this.lastAppliedSeq, frame.event.meta.cluster_seq);
+  private applySnapshot(socket: ManagedWebSocket, snapshot: ClusterSnapshot): void {
+    try {
       for (const listener of this.listeners) {
-        listener.onEvent(frame.event);
+        listener.onSnapshot(snapshot);
       }
+    } catch (error) {
+      this.failSocket(socket, clusterApplicationError(error));
+      return;
+    }
+    if (this.socket !== socket || this.primingSocket !== socket) {
       return;
     }
 
-    // An unrecognized frame is a contract drift, not a silent drop.
-    this.warn('Unrecognized Aion cluster-stream frame', frame);
-    this.emitError(frameDecodeError(new Error('unrecognized cluster-stream frame shape')));
+    this.lastAppliedSeq = Math.max(this.lastAppliedSeq, snapshot.as_of_seq);
+    this.hasAppliedSnapshot = true;
+    this.clearPrimingTimer();
+    this.reconnectAttempts = 0;
+    this.clearError();
+    this.setStatus('connected');
+  }
+
+  private applyEvent(socket: ManagedWebSocket, event: ClusterEvent): void {
+    try {
+      for (const listener of this.listeners) {
+        listener.onEvent(event);
+      }
+    } catch (error) {
+      this.failSocket(socket, clusterApplicationError(error));
+      return;
+    }
+    if (this.socket === socket) {
+      this.lastAppliedSeq = Math.max(this.lastAppliedSeq, event.meta.cluster_seq);
+    }
+  }
+
+  private failSocket(socket: ManagedWebSocket, error: AionSocketError): void {
+    if (this.socket !== socket) {
+      return;
+    }
+
+    this.emitError(error);
+    this.handleUnexpectedDisconnect(socket);
+    closeWhenSafe(socket);
   }
 
   private handleUnexpectedDisconnect(socket: ManagedWebSocket): void {
@@ -284,12 +305,9 @@ export class AionClusterStreamManager {
       return;
     }
 
+    this.clearPrimingTimer();
     this.socket = null;
-
-    if (this.status !== 'reconnecting') {
-      this.setStatus('reconnecting');
-    }
-
+    this.setStatus('reconnecting');
     this.scheduleReconnect();
   }
 
@@ -306,13 +324,13 @@ export class AionClusterStreamManager {
     );
     this.reconnectAttempts += 1;
     this.reconnectTimer = this.scheduler.setTimeout(() => {
+      this.reconnectTimer = null;
       this.openSocket();
     }, delayMs);
   }
 
   private emitError(error: AionSocketError): void {
     this.lastError = error;
-
     for (const listener of this.errorListeners) {
       listener(error);
     }
@@ -324,7 +342,6 @@ export class AionClusterStreamManager {
     }
 
     this.lastError = null;
-
     for (const listener of this.errorListeners) {
       listener(null);
     }
@@ -336,115 +353,43 @@ export class AionClusterStreamManager {
     }
 
     this.status = nextStatus;
-
     for (const listener of this.statusListeners) {
       listener(nextStatus);
     }
   }
 
   private clearReconnectTimer(): void {
-    if (this.reconnectTimer === null) {
-      return;
+    if (this.reconnectTimer !== null) {
+      this.scheduler.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
+  }
 
-    this.scheduler.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
+  private clearPrimingTimer(): void {
+    if (this.primingTimer !== null) {
+      this.scheduler.clearTimeout(this.primingTimer);
+      this.primingTimer = null;
+    }
+    this.primingSocket = null;
   }
 }
 
-type SnapshotFrame = { snapshot: ClusterSnapshot };
-type EventFrame = { event: ClusterEvent };
-
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseJson(data: unknown): unknown {
-  if (typeof data === 'string') {
-    return JSON.parse(data) as unknown;
-  }
-
-  if (data instanceof ArrayBuffer) {
-    return JSON.parse(new TextDecoder().decode(data)) as unknown;
-  }
-
-  if (data instanceof Uint8Array) {
-    return JSON.parse(new TextDecoder().decode(data)) as unknown;
-  }
-
-  return data;
-}
-
-function isSnapshotFrame(frame: unknown): frame is SnapshotFrame {
-  if (!isRecord(frame) || frame.kind !== CLUSTER_FRAME.snapshot) {
-    return false;
-  }
-
-  const snapshot = frame.snapshot;
-  return (
-    isRecord(snapshot) &&
-    typeof snapshot.node === 'string' &&
-    typeof snapshot.as_of_seq === 'number' &&
-    Array.isArray(snapshot.peers) &&
-    Array.isArray(snapshot.shards) &&
-    Array.isArray(snapshot.workers)
-  );
-}
-
-function isEventFrame(frame: unknown): frame is EventFrame {
-  if (!isRecord(frame) || frame.kind !== CLUSTER_FRAME.event) {
-    return false;
-  }
-
-  const event = frame.event;
-  if (!isRecord(event) || typeof event.type !== 'string') {
-    return false;
-  }
-
-  const meta = event.meta;
-  return isRecord(meta) && typeof meta.cluster_seq === 'number';
-}
-
-function readClusterLagged(frame: unknown): ClusterStreamError | null {
-  if (!isRecord(frame)) {
-    return null;
-  }
-
-  const error = frame.error;
-  if (!isRecord(error) || error.kind !== 'ClusterLagged' || typeof error.skipped !== 'number') {
-    return null;
-  }
-
-  return { kind: 'ClusterLagged', skipped: error.skipped };
-}
-
-function clusterLaggedError(lagged: ClusterStreamError): AionSocketError {
+function clusterPrimingError(cause: unknown): AionSocketError {
   return {
-    kind: 'frame-decode',
+    kind: 'subscriber-resync',
     subscriptionId: null,
-    message: `The cluster stream fell behind and dropped ${lagged.skipped} update${
-      lagged.skipped === 1 ? '' : 's'
-    }; reconnecting to re-read the topology.`,
-    cause: lagged,
+    message: 'The cluster stream did not produce a fresh snapshot; recovery will retry.',
+    cause,
   };
 }
 
-/**
- * Close a socket without ever calling `close()` while it is still CONNECTING
- * (mirrors {@link AionEventWebSocketManager}'s StrictMode-safe teardown).
- */
-function closeWhenSafe(socket: ManagedWebSocket): void {
-  if (socket.readyState === SOCKET_CONNECTING) {
-    socket.onmessage = null;
-    socket.onclose = null;
-    socket.onerror = null;
-    socket.onopen = () => {
-      socket.close();
-    };
-    return;
-  }
-
-  socket.close();
+function clusterApplicationError(cause: unknown): AionSocketError {
+  return {
+    kind: 'subscriber-application',
+    subscriptionId: null,
+    message: 'A fresh cluster snapshot or event could not be applied; recovery will retry.',
+    cause,
+  };
 }
 
 export function createAionClusterStreamManager(

@@ -113,9 +113,19 @@ export type AionEventContext = {
 
 export type ResyncHandler = (context: ResyncContext) => void | Promise<void>;
 
+/** One manager-owned recovery generation. Consumers must guard state commits with `isCurrent`. */
 export type ResyncContext = AionEventContext & {
   lastSeenSequence: number | null;
   mode: ResyncMode;
+  /** Monotonically increasing within this logical subscription. */
+  generation: number;
+  /** Aborted when this generation times out, disconnects, is superseded, or is cancelled. */
+  signal: AbortSignal;
+  /**
+   * Transport abort is cooperative. Check this immediately before committing fetched state so
+   * a response from an HTTP implementation that ignored `signal` cannot overwrite a newer recovery.
+   */
+  isCurrent: () => boolean;
 };
 
 export type SubscribeOptions = {

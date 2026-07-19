@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from 'react';
 
 import { type EventSubscriptionManager, useEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
-import type { WorkflowEventSubscriptionFilter } from '@/lib/api';
+import type { ResyncHandler, WorkflowEventSubscriptionFilter } from '@/lib/api';
 import type { Event, WorkflowId } from '@/types';
 import {
   eventSequence,
@@ -18,7 +18,7 @@ export type LiveWorkflowEventsOptions = {
   enabled?: boolean;
   history: readonly Event[];
   manager?: EventSubscriptionManager;
-  onResync?: () => void;
+  onResync?: ResyncHandler;
   workflowId: WorkflowId;
 };
 
@@ -70,14 +70,26 @@ export function useLiveWorkflowEvents({
     onEvent: (event) => {
       setLiveEvents((current) => mergeEventsBySequence(current, [event]));
     },
-    onResync: () => {
+    onResync: async (context) => {
       if (isSelectedNamespace(selectedNamespace)) {
-        void queryClient.invalidateQueries({
-          queryKey: workflowHistoryQueryKey(selectedNamespace, workflowId),
-        });
+        const queryKey = workflowHistoryQueryKey(selectedNamespace, workflowId);
+        const cancelStaleQuery = () => {
+          void queryClient.cancelQueries({ queryKey });
+        };
+        context.signal.addEventListener('abort', cancelStaleQuery, { once: true });
+
+        try {
+          await queryClient.invalidateQueries({ queryKey }, { throwOnError: true });
+        } finally {
+          context.signal.removeEventListener('abort', cancelStaleQuery);
+        }
       }
 
-      onResync?.();
+      if (!context.isCurrent()) {
+        return;
+      }
+
+      await onResync?.(context);
     },
   });
 

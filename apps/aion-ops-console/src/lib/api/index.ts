@@ -62,6 +62,7 @@ export type {
   FilteredEventSubscriptionFilter,
   FirehoseEventSubscriptionFilter,
   ResyncContext,
+  ResyncHandler,
   ResyncMode,
   SubscribeOptions,
   WorkflowEventSubscriptionFilter,

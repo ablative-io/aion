@@ -1,9 +1,14 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, type QueryKey, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
 import type { EventSubscriptionManager, EventSubscriptionState } from '@/features/live-feed';
 import { useEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
-import type { FilteredEventSubscriptionFilter, WorkflowPage, WorkflowPageRequest } from '@/lib/api';
+import type {
+  FilteredEventSubscriptionFilter,
+  ResyncContext,
+  WorkflowPage,
+  WorkflowPageRequest,
+} from '@/lib/api';
 import type { Event, WorkflowFilter, WorkflowStatus, WorkflowSummary } from '@/types';
 import { workflowListQueryKey } from './useWorkflowQuery';
 
@@ -95,12 +100,17 @@ export function useLiveListUpdates({
     [filter, isFirstPage, page.limit, queryClient, queryKey, selectedNamespace]
   );
 
-  const onResync = useCallback(async () => {
-    if (isSelectedNamespace(selectedNamespace)) {
+  const onResync = useCallback(
+    async (context: ResyncContext) => {
+      if (!isSelectedNamespace(selectedNamespace) || !context.isCurrent()) {
+        return;
+      }
+
       setNewAboveCount(0);
-      await queryClient.invalidateQueries({ queryKey }, { throwOnError: true });
-    }
-  }, [queryClient, queryKey, selectedNamespace]);
+      await refetchWorkflowListForRecovery(queryClient, queryKey, context);
+    },
+    [queryClient, queryKey, selectedNamespace]
+  );
 
   const subscription = useEventSubscription({
     enabled: subscriptionFilter !== null,
@@ -111,6 +121,28 @@ export function useLiveListUpdates({
   });
 
   return { ...subscription, newAboveCount, acknowledgeNewAbove };
+}
+
+/**
+ * Await one authoritative list refresh owned by a recovery generation. Cancelling
+ * the generation also cancels React Query, which discards a transport that ignores
+ * abort rather than allowing its late result to replace a newer cache generation.
+ */
+export async function refetchWorkflowListForRecovery(
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  context: ResyncContext
+): Promise<void> {
+  const cancelStaleQuery = () => {
+    void queryClient.cancelQueries({ queryKey });
+  };
+  context.signal.addEventListener('abort', cancelStaleQuery, { once: true });
+
+  try {
+    await queryClient.invalidateQueries({ queryKey }, { throwOnError: true });
+  } finally {
+    context.signal.removeEventListener('abort', cancelStaleQuery);
+  }
 }
 
 /**

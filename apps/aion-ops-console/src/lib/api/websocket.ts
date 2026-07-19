@@ -3,6 +3,7 @@ import {
   failFeedBoundary,
   isCurrentConnection,
   type SubscriptionConnection,
+  notifyTransitionListeners,
   SubscriptionErrorState,
 } from './websocket-connection';
 import {
@@ -113,9 +114,15 @@ export class AionEventWebSocketManager {
         updateStatus: () => this.updateStatus(),
         failBoundary: (connection, socket) =>
           failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket)),
+        exhaustBoundary: (connection, socket) => {
+          connection.socket = null;
+          closeWhenSafe(socket);
+          this.updateStatus();
+        },
       },
       this.scheduler,
-      this.resyncTimeoutMs
+      this.resyncTimeoutMs,
+      this.reconnect.maxAttempts
     );
   }
 
@@ -180,7 +187,8 @@ export class AionEventWebSocketManager {
       hasOpened: false,
       reconnectAttempts: 0,
       reconnectTimer: null,
-      resyncTimer: null,
+      recoveryGeneration: 0,
+      recoveryAttempt: null,
       error: null,
       errorSequence: 0,
     };
@@ -310,7 +318,7 @@ export class AionEventWebSocketManager {
         // event from the unchanged cursor is successfully applied.
         connection.state = 'reconnecting';
         this.updateStatus();
-        this.recoveryPolicy.notifyDurable(connection);
+        this.recoveryPolicy.notifyDurable(connection, socket);
         return;
       }
 
@@ -320,7 +328,7 @@ export class AionEventWebSocketManager {
       this.updateStatus();
 
       if (recoveredFromDrop) {
-        this.recoveryPolicy.notifyDurable(connection);
+        this.recoveryPolicy.notifyDurable(connection, socket);
       }
     };
     socket.onmessage = (message) => {
@@ -353,7 +361,7 @@ export class AionEventWebSocketManager {
     this.updateStatus();
 
     if (previousStatus !== 'reconnecting' && this.status === 'reconnecting') {
-      this.notifyListeners(this.disconnectListeners);
+      notifyTransitionListeners(this.disconnectListeners);
     }
 
     this.scheduleReconnect(connection);
@@ -417,6 +425,7 @@ export class AionEventWebSocketManager {
     }
 
     // The durable cursor means "already applied", not merely decoded/delivered.
+    this.recoveryPolicy.markFrameDelivered(connection, socket);
     subscription.lastSeenSequence = frame.event.data.envelope.seq;
     if (
       this.recoveryPolicy.isUnresolved(connection.error) &&
@@ -446,7 +455,7 @@ export class AionEventWebSocketManager {
     this.setStatus(nextStatus);
 
     if (previousStatus !== 'connected' && nextStatus === 'connected') {
-      this.notifyListeners(this.connectListeners);
+      notifyTransitionListeners(this.connectListeners);
     }
   }
 
@@ -469,12 +478,6 @@ export class AionEventWebSocketManager {
 
     this.scheduler.clearTimeout(connection.reconnectTimer);
     connection.reconnectTimer = null;
-  }
-
-  private notifyListeners(listeners: Set<TransitionListener>): void {
-    for (const listener of listeners) {
-      listener();
-    }
   }
 }
 

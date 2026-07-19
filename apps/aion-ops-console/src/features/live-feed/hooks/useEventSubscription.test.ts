@@ -74,6 +74,9 @@ test('adapter rejects recovery if a previously supplied refetch callback disappe
       filter: { kind: 'firehose', namespace },
       lastSeenSequence: null,
       mode: 'full-refetch',
+      generation: 1,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
     })
   ).toThrow('refetch callback became unavailable');
 });

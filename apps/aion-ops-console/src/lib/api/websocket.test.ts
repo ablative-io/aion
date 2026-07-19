@@ -160,15 +160,17 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
       resume_from_seq: 42,
     },
   });
-  expect(resyncs).toEqual([
-    {
-      subscriptionId: 'aion-events-1',
-      namespace,
-      filter: { kind: 'workflow', namespace, workflowId },
-      lastSeenSequence: 41,
-      mode: 'after-sequence',
-    },
-  ]);
+  expect(resyncs).toHaveLength(1);
+  expect(resyncs[0]).toMatchObject({
+    subscriptionId: 'aion-events-1',
+    namespace,
+    filter: { kind: 'workflow', namespace, workflowId },
+    lastSeenSequence: 41,
+    mode: 'after-sequence',
+    generation: 1,
+  });
+  expect(resyncs[0]?.signal).toBeInstanceOf(AbortSignal);
+  expect(resyncs[0]?.isCurrent()).toBeTrue();
 });
 
 test('malformed frame emits a typed decode error to listeners (no silent failure)', () => {

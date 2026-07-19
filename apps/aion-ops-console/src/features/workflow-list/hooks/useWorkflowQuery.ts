@@ -26,17 +26,24 @@ export function queryWorkflowPage(
   apiClient: Pick<ApiClient, 'queryWorkflows'>,
   namespace: Namespace,
   filter: WorkflowFilter,
-  page: WorkflowPageRequest = {}
+  page: WorkflowPageRequest = {},
+  signal?: AbortSignal
 ) {
-  return apiClient.queryWorkflows(filter, page, workflowQueryRequestOptions(namespace));
+  return apiClient.queryWorkflows(filter, page, workflowQueryRequestOptions(namespace, signal));
 }
 
 export function requireWorkflowQueryNamespace(namespace: Namespace | null | undefined): Namespace {
   return requireSelectedNamespace(namespace, 'querying workflows');
 }
 
-export function workflowQueryRequestOptions(namespace: Namespace | null | undefined) {
-  return { namespace: requireWorkflowQueryNamespace(namespace) };
+export function workflowQueryRequestOptions(
+  namespace: Namespace | null | undefined,
+  signal?: AbortSignal
+) {
+  return {
+    namespace: requireWorkflowQueryNamespace(namespace),
+    ...(signal !== undefined && { signal }),
+  };
 }
 
 export function useWorkflowQuery({ apiClient, filter, page = {} }: WorkflowQueryOptions) {
@@ -49,7 +56,13 @@ export function useWorkflowQuery({ apiClient, filter, page = {} }: WorkflowQuery
   return useQuery({
     enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowListQueryKey(selectedNamespace, filter, page),
-    queryFn: () =>
-      queryWorkflowPage(client, requireWorkflowQueryNamespace(selectedNamespace), filter, page),
+    queryFn: ({ signal }) =>
+      queryWorkflowPage(
+        client,
+        requireWorkflowQueryNamespace(selectedNamespace),
+        filter,
+        page,
+        signal
+      ),
   });
 }

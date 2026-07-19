@@ -114,7 +114,10 @@ export function reconnectExhaustedError(
   };
 }
 
-export function buildResyncContext(subscription: SubscriptionRecord): ResyncContext {
+export function buildResyncContext(
+  subscription: SubscriptionRecord,
+  recovery: Pick<ResyncContext, 'generation' | 'signal' | 'isCurrent'>
+): ResyncContext {
   return {
     subscriptionId: subscription.id,
     namespace: subscription.filter.namespace,
@@ -124,6 +127,9 @@ export function buildResyncContext(subscription: SubscriptionRecord): ResyncCont
       subscription.filter.kind === 'workflow' && subscription.lastSeenSequence !== null
         ? 'after-sequence'
         : 'full-refetch',
+    generation: recovery.generation,
+    signal: recovery.signal,
+    isCurrent: recovery.isCurrent,
   };
 }
 

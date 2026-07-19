@@ -7,7 +7,12 @@ import {
   createAionEventWebSocketManager,
   type ResyncContext,
 } from './websocket';
-import { FakeScheduler, type FakeSocket, FakeSocketFactory } from './websocket-test-support';
+import {
+  FakeScheduler,
+  type FakeSocket,
+  FakeSocketFactory,
+  flushMicrotasks,
+} from './websocket-test-support';
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
@@ -72,6 +77,7 @@ test('Running projection keeps a post-completion HTTP snapshot authoritative', a
   const scheduler = new FakeScheduler();
   const socketFactory = new FakeSocketFactory();
   let projection: string[] = [];
+  let resyncCalls = 0;
   let completedWhileRefetchPending = false;
   let resolveResync: (() => void) | undefined;
   const resync = new Promise<void>((resolve) => {
@@ -87,7 +93,7 @@ test('Running projection keeps a post-completion HTTP snapshot authoritative', a
   const manager = createAionEventWebSocketManager({
     webSocketImpl: socketFactory.ctor,
     scheduler,
-    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    reconnect: { initialDelayMs: 10, maxAttempts: 2 },
     warn: () => undefined,
   });
 
@@ -100,7 +106,12 @@ test('Running projection keeps a post-completion HTTP snapshot authoritative', a
       }
       projection = ['w1:Running'];
     },
-    { onResync: () => resync }
+    {
+      onResync: () => {
+        resyncCalls += 1;
+        return resync;
+      },
+    }
   );
   (socketFactory.sockets[0] as FakeSocket).open();
   (socketFactory.sockets[0] as FakeSocket).message(JSON.stringify({ namespace, event }));
@@ -116,11 +127,12 @@ test('Running projection keeps a post-completion HTTP snapshot authoritative', a
 
   resolveResync?.();
   await resync;
-  await Promise.resolve();
+  await flushMicrotasks();
 
   expect(manager.getLastError()).toBeNull();
   expect(manager.getStatus()).toBe('connected');
   expect(completedWhileRefetchPending).toBeTrue();
+  expect(resyncCalls).toBe(2);
   expect(applications).toBe(2);
   // The Running-only HTTP snapshot completed after the older WorkflowStarted
   // frame and remains authoritative. No post-snapshot buffer can reinsert w1.
