@@ -5,6 +5,13 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
 ## Unreleased
 
+- **AWL studio works out of the box.** A stock `aion server` now roots the full
+  document, layout, check-backed editing, direct deploy, revision, run-status,
+  and scaffold experience in the relative `aion-authoring` workspace, creating
+  its document and state directories on first write. Operators can still set
+  `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR` explicitly. CN7 is
+  unchanged: the separate Gleam loop stays unmounted until `gleam_path` is set.
+
 ## 0.9.1 — 2026-07-19
 
 Dependency-alignment release — no aion surface changes.

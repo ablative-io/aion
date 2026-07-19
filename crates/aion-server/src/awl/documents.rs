@@ -164,7 +164,15 @@ fn revision_io(error: &super::revisions::RevisionError) -> DocumentError {
 }
 
 fn list_sync(root: &Path) -> Result<Vec<DocumentEntry>, DocumentError> {
-    let canonical_root = std::fs::canonicalize(root)?;
+    let canonical_root = match std::fs::canonicalize(root) {
+        Ok(root) => root,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // The default workspace is materialized by the first write. Until
+            // then, a fresh studio has no documents rather than an I/O failure.
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(DocumentError::Io(error)),
+    };
     let mut entries = Vec::new();
     visit(&canonical_root, &canonical_root, &mut entries)?;
     entries.sort_by(|left, right| left.path.cmp(&right.path));
@@ -303,6 +311,17 @@ fn tempfile_path(parent: &Path, name: &OsStr) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_workspace_lists_empty_without_materializing_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let workspace = parent.path().join("aion-authoring");
+
+        assert!(list(&workspace).await?.is_empty());
+        assert!(!workspace.exists());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn workspace_list_read_write_round_trip_and_rejects_traversal()

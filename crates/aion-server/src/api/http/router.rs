@@ -164,9 +164,9 @@ pub fn workflow_router(state: ServerState) -> Router {
     } else {
         Router::new().route("/authoring/{*rest}", any(authoring_disabled))
     };
-    // The AWL facade remains mounted when no workspace is configured so the
-    // document API can return its typed `AuthoringWorkspaceUnconfigured`
-    // refusal instead of an ambiguous SPA/route 404.
+    // The full AWL studio is always mounted. Stock config supplies the
+    // `aion-authoring` workspace; the typed unconfigured refusal remains for
+    // manually constructed runtime configs that explicitly omit it.
     let awl_documents = Router::new()
         .route("/awl/documents", get(list_documents).post(create_document))
         .route(

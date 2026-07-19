@@ -71,7 +71,7 @@ pub struct ServerConfig {
     pub workflow_packages: Vec<PathBuf>,
     /// Operator deploy API settings.
     pub deploy: DeployConfig,
-    /// Server-side Gleam authoring API settings.
+    /// AWL studio and optional server-side Gleam authoring settings.
     pub authoring: AuthoringConfig,
     /// Local dev-server surface settings.
     pub dev: DevConfig,
@@ -544,7 +544,10 @@ fn deduplicated_package_key(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{AutoCreate, DEFAULT_MAX_IN_FLIGHT_ACTIVITIES, OpsConsoleAssetSource};
+    use crate::config::{
+        AutoCreate, DEFAULT_AUTHORING_WORKSPACE_DIR, DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
+        OpsConsoleAssetSource,
+    };
 
     use super::{
         CliOverrides, DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES,
@@ -1257,23 +1260,36 @@ mod tests {
         Ok(())
     }
 
-    /// An absent `[authoring]` section leaves the surface dark: no `gleam_path`,
-    /// no `project_root`, and validation does not require either.
+    /// An absent `[authoring]` section commissions the AWL workspace while the
+    /// separate Gleam loop remains dark and requires neither of its paths.
     #[test]
-    fn authoring_absent_leaves_surface_dark() -> Result<(), Box<dyn std::error::Error>> {
-        let config = ServerConfig::from_slice(
-            br"
-                [runtime]
-                query_timeout_ms = 10000
-
-                [websocket]
-                event_broadcast_capacity = 64
-                cluster_broadcast_capacity = 64
-            ",
-        )?;
+    fn authoring_absent_defaults_awl_workspace_but_keeps_gleam_dark()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(b"")?;
 
         assert_eq!(config.authoring.gleam_path, None);
         assert_eq!(config.authoring.project_root, None);
+        assert_eq!(
+            config.authoring.workspace_dir.as_deref(),
+            Some(std::path::Path::new(DEFAULT_AUTHORING_WORKSPACE_DIR))
+        );
+        Ok(())
+    }
+
+    /// An explicit `workspace_dir` wins over the out-of-box relative default.
+    #[test]
+    fn authoring_explicit_workspace_is_honored() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [authoring]
+                workspace_dir = "/srv/aion/studio"
+            "#,
+        )?;
+
+        assert_eq!(
+            config.authoring.workspace_dir.as_deref(),
+            Some(std::path::Path::new("/srv/aion/studio"))
+        );
         Ok(())
     }
 

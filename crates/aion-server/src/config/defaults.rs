@@ -171,6 +171,18 @@ pub(crate) const OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED: &str = "observability
 /// `AION_STORE_DATA_DIR`, or opt out with `backend = "memory"` / `"libsql"`.
 pub const DEFAULT_HAEMATITE_DATA_DIR: &str = "aion-data";
 
+/// Default AWL authoring workspace for the out-of-box studio.
+///
+/// An empty `[authoring]` section (or no config file at all) exposes the full
+/// AWL studio rooted here. As with [`DEFAULT_HAEMATITE_DATA_DIR`], this relative
+/// durable directory is an operator-serving ADR-001 default: `aion server`
+/// starts as a complete experience in its working directory without requiring
+/// configuration that merely names first-use state. Operators override it with
+/// `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR`. This does not
+/// commission the separate Gleam authoring loop, which still requires an
+/// explicit `authoring.gleam_path`.
+pub const DEFAULT_AUTHORING_WORKSPACE_DIR: &str = "aion-authoring";
+
 /// Operator-facing message for an empty or malformed `cors_allowed_origins`
 /// entry.
 pub(crate) const CORS_ALLOWED_ORIGIN_INVALID: &str = "server.cors_allowed_origins entries must each be a valid HTTP origin (scheme://host[:port], e.g. http://localhost:5173) with no path or trailing slash";
