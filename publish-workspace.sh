@@ -32,13 +32,22 @@ set -u -o pipefail
 # Dependency order: a crate only publishes after everything it depends on.
 CRATES=(
   aion-core
+  aion-proto-generated
   aion-store
   aion-package
   aion-proto
   aion-nif
   aion-store-libsql
+  aion-store-haematite
+  aion-toolchain
+  aion-integrations
+  aion-integration-norn
+  aion-awl
+  aion-awl-lsp
+  aion-awl-package
   aion-rs            # directory crates/aion, package name aion-rs
   aion-worker
+  aion-integration-cli
   aion-client
   aion-server
   aion-cli
@@ -114,4 +123,4 @@ for crate in "${CRATES[@]}"; do
 done
 
 echo "=== all ${#CRATES[@]} crates published at ${VERSION} — $(date -u +%FT%TZ) ==="
-echo "    Remember: aion_flow (hex) is separate and stays 0.4.0 this release."
+echo "    Remember: aion_flow (hex) is separate — publish it from gleam/aion_flow with gleam publish."

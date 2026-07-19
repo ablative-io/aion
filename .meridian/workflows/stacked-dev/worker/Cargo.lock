@@ -19,9 +19,9 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.6.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d504eb1ae4dc3c6d7fb34b64b90cafd4fe60661cf15d98544b22240b29b9c7"
+checksum = "bc5ab0c80a44b05c970ad4f84f122b3c0b129c0706fd41694cd9b64dde42a915"
 dependencies = [
  "chrono",
  "serde",
@@ -32,35 +32,65 @@ dependencies = [
 ]
 
 [[package]]
-name = "aion-proto"
-version = "0.6.0"
+name = "aion-integrations"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72fd3fc15fb87d442cace1ac8fd31c51da23a67a58843cf0af4f7bedfb193fb"
+checksum = "953a459267b9d77eeed3f5fd60a6f4be0078eaf8935b80b886081d3935a72030"
 dependencies = [
  "aion-core",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "aion-proto"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "532e8433434a4b5c663f067b8ab343b8d493ceebff5249738e36c3395bc7ab69"
+dependencies = [
+ "aion-core",
+ "aion-proto-generated",
  "chrono",
  "prost",
- "protoc-bin-vendored",
  "serde",
  "serde_json",
  "thiserror",
  "tonic",
- "tonic-build",
  "tonic-prost",
- "tonic-prost-build",
  "uuid",
 ]
 
 [[package]]
-name = "aion-worker"
-version = "0.6.0"
+name = "aion-proto-generated"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "179386c6991e0d322a7d7ff0a2f4b46eaaccb4ea53c70b9a4948e310ecf39418"
+checksum = "f727b949a67ab8b6bac4483f403338a185c9d5bd0ccafd4c7ed3aa6dfcad5ebc"
+dependencies = [
+ "prost",
+ "protoc-bin-vendored",
+ "serde",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "aion-worker"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd9a6d278c8ccf8cd853c52673b3dc69d93bab2bdeed7e40fd613c47eeffc6d7"
 dependencies = [
  "aion-core",
+ "aion-integrations",
  "aion-proto",
  "async-trait",
  "futures",
+ "hostname",
  "prost",
  "serde",
  "serde_json",
@@ -834,6 +864,17 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
 
 [[package]]
 name = "http"
