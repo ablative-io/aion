@@ -11,6 +11,9 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+mod darwin_acl;
+
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, DirBuilder, OpenOptions};
@@ -422,7 +425,12 @@ impl std::error::Error for DataRootAncestorError {}
 
 /// Require every component of a path-ambient Haematite root to be controlled by
 /// the server's effective user (or by root for the immutable system prefix) and
-/// to deny group/world writes.
+/// to deny group/world writes. On macOS, each component's extended ACL is read
+/// without following its final name. An allow ACE for any principal other than
+/// the effective user is refused when it grants directory traversal, entry
+/// creation/removal, child deletion, or ACL/owner mutation. Deny ACEs remain
+/// acceptable because they cannot confer the rename authority this gate removes;
+/// in particular, this admits the stock macOS home `everyone deny delete` ACE.
 ///
 /// This forecloses another principal renaming a parent after startup, replacing
 /// the old name with a symlink, and redirecting Haematite's ambient `DiskStore`
@@ -432,7 +440,8 @@ impl std::error::Error for DataRootAncestorError {}
 /// Haematite-side fix; until then, Unix platforms without traversable procfs fd
 /// paths must fail closed on a renameable ancestor. Sticky directories such as
 /// `/tmp` are intentionally refused because the sticky bit does not make an
-/// ambient child pathname descriptor-authoritative.
+/// ambient child pathname descriptor-authoritative. A macOS ACL that cannot be
+/// read or interpreted is likewise refused rather than treated as absent.
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 pub(crate) fn validate_ambient_backend_ancestors(
     data_root: &Path,
@@ -480,6 +489,9 @@ pub(crate) fn validate_ambient_backend_ancestors(
                 format!("owner uid {owner_uid} is neither server euid {effective_uid} nor root"),
             ));
         }
+
+        #[cfg(target_os = "macos")]
+        darwin_acl::validate_extended_acl(&component_path, effective_uid)?;
     }
     Ok(())
 }

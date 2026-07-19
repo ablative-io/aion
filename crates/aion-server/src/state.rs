@@ -2004,6 +2004,124 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
+    #[test]
+    fn path_ambient_haematite_refuses_mutating_allow_acl_ancestor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let shared = sandbox.path().join("acl-shared");
+        let data_root = shared.join("data");
+        std::fs::create_dir(&shared)?;
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700))?;
+        let acl = "everyone allow list,search,add_file,add_subdirectory,delete_child";
+        let status = std::process::Command::new("chmod")
+            .arg("+a")
+            .arg(acl)
+            .arg(&shared)
+            .status()?;
+        assert!(status.success(), "failed to install Darwin regression ACL");
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let result = super::build_haematite_store(configured, 4, None);
+        let cleanup = std::process::Command::new("chmod")
+            .arg("-RN")
+            .arg(&shared)
+            .status()?;
+        assert!(cleanup.success(), "failed to clean Darwin regression ACL");
+
+        let Err(error) = result else {
+            return Err("mutating non-euid allow ACL ancestor was accepted".into());
+        };
+        let message = error.to_string();
+        let crate::ServerError::UnsafeDataRootAncestor {
+            component, reason, ..
+        } = error
+        else {
+            return Err(format!("expected typed unsafe-ancestor error, got {message}").into());
+        };
+        assert_eq!(component, std::fs::canonicalize(&shared)?);
+        assert!(
+            reason.contains("allow"),
+            "reason did not name the ACE: {reason}"
+        );
+        assert!(
+            reason.contains("everyone"),
+            "reason did not name the ACE principal: {reason}"
+        );
+        assert!(
+            !data_root.join("config.json").exists(),
+            "Haematite touched its ambient path before the ACL refusal"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
+    #[test]
+    fn path_ambient_haematite_accepts_a_deny_only_acl_ancestor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let private_parent = sandbox.path().join("deny-only");
+        let data_root = private_parent.join("data");
+        std::fs::create_dir(&private_parent)?;
+        std::fs::set_permissions(&private_parent, std::fs::Permissions::from_mode(0o700))?;
+        let status = std::process::Command::new("chmod")
+            .arg("+a")
+            .arg("everyone deny delete")
+            .arg(&private_parent)
+            .status()?;
+        assert!(status.success(), "failed to install Darwin deny-only ACL");
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let result = super::build_haematite_store(configured, 4, None);
+        let cleanup = std::process::Command::new("chmod")
+            .arg("-RN")
+            .arg(&private_parent)
+            .status()?;
+        assert!(cleanup.success(), "failed to clean Darwin deny-only ACL");
+
+        let (store, responder) = result?;
+        assert!(responder.is_none());
+        assert!(data_root.join("config.json").is_file());
+        drop(store);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "haematite-backend", target_os = "macos"))]
+    #[test]
+    fn path_ambient_haematite_accepts_the_stock_home_acl_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        use users::os::unix::UserExt as _;
+
+        let effective_uid = rustix::process::geteuid().as_raw();
+        let effective_user = users::get_user_by_uid(effective_uid)
+            .ok_or_else(|| format!("server euid {effective_uid} has no account record"))?;
+        let sandbox = tempfile::Builder::new()
+            .prefix(".aion-acl-home-proof-")
+            .tempdir_in(effective_user.home_dir())?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let data_root = sandbox.path().join("data");
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let (store, responder) = super::build_haematite_store(configured, 4, None)?;
+        assert!(responder.is_none());
+        assert!(data_root.join("config.json").is_file());
+        drop(store);
+        Ok(())
+    }
+
     #[cfg(all(
         feature = "haematite-backend",
         unix,

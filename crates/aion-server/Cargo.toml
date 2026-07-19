@@ -104,6 +104,14 @@ liminal = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Small safe wrapper around Darwin's acl_get_link_np API. The no-follow ACL
+# read closes the path-ambient Haematite ancestor gate without local unsafe FFI.
+exacl = "0.13.0"
+# Resolve a user ACE back to the effective uid so only non-euid mutation grants
+# are refused. Kept macOS-only and without the crate's cache/mock/log features.
+users = { version = "0.11.0", default-features = false }
+
 [dev-dependencies]
 # The libSQL backend is now optional in the production graph (behind
 # `libsql-backend`), but several integration tests (the LSUB-PROD cross-node
