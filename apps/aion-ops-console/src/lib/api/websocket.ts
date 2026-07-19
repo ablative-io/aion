@@ -1,14 +1,10 @@
-import type { Event, Namespace } from '@/types';
-
 import {
   browserWebSocketConstructor,
   buildResyncContext,
   buildSubscribeMessage,
-  buildUnsubscribeMessage,
   buildWebSocketUrl,
   consoleWarn,
   frameDecodeError,
-  matchesSubscription,
   parseFrame,
   reconnectExhaustedError,
   stripTrailingSlash,
@@ -25,7 +21,6 @@ import {
   type Scheduler,
   SOCKET_CLOSING,
   SOCKET_CONNECTING,
-  SOCKET_OPEN,
   type SocketCredentials,
   type SocketErrorListener,
   type StatusListener,
@@ -55,6 +50,16 @@ export type {
   WorkflowEventSubscriptionFilter,
 } from './websocket-types';
 
+type SubscriptionSocketState = 'idle' | 'connected' | 'reconnecting' | 'exhausted';
+
+type SubscriptionConnection = {
+  subscription: SubscriptionRecord;
+  socket: ManagedWebSocket | null;
+  state: SubscriptionSocketState;
+  reconnectAttempts: number;
+  reconnectTimer: TimeoutHandle | null;
+};
+
 export class AionEventWebSocketManager {
   private readonly baseUrl: string;
   private readonly credentials: SocketCredentials | undefined;
@@ -62,16 +67,13 @@ export class AionEventWebSocketManager {
   private readonly scheduler: Scheduler;
   private readonly reconnect: ReconnectOptions;
   private readonly warn: WarningLogger;
-  private readonly subscriptions = new Map<string, SubscriptionRecord>();
+  private readonly connections = new Map<string, SubscriptionConnection>();
   private readonly statusListeners = new Set<StatusListener>();
   private readonly connectListeners = new Set<TransitionListener>();
   private readonly disconnectListeners = new Set<TransitionListener>();
   private readonly errorListeners = new Set<SocketErrorListener>();
-  private socket: ManagedWebSocket | null = null;
   private status: ConnectionStatus = 'disconnected';
   private lastError: AionSocketError | null = null;
-  private reconnectAttempts = 0;
-  private reconnectTimer: TimeoutHandle | null = null;
   private intentionalClose = false;
   private nextSubscriptionId = 1;
 
@@ -88,28 +90,37 @@ export class AionEventWebSocketManager {
   }
 
   connect(): void {
-    if (this.socket !== null && this.socket.readyState < SOCKET_CLOSING) {
-      return;
-    }
-
-    if (this.status === 'disconnected') {
-      this.reconnectAttempts = 0;
-    }
-
     this.intentionalClose = false;
-    this.openSocket();
+
+    for (const connection of this.connections.values()) {
+      if (
+        (connection.socket !== null && connection.socket.readyState < SOCKET_CLOSING) ||
+        connection.reconnectTimer !== null
+      ) {
+        continue;
+      }
+
+      connection.reconnectAttempts = 0;
+      connection.state = 'idle';
+      this.openSocket(connection);
+    }
+
+    this.updateStatus();
   }
 
   close(): void {
     this.intentionalClose = true;
-    this.clearReconnectTimer();
-    this.reconnectAttempts = 0;
 
-    const currentSocket = this.socket;
-    this.socket = null;
+    for (const connection of this.connections.values()) {
+      this.clearReconnectTimer(connection);
+      connection.reconnectAttempts = 0;
+      connection.state = 'idle';
+      const socket = connection.socket;
+      connection.socket = null;
 
-    if (currentSocket !== null) {
-      closeWhenSafe(currentSocket);
+      if (socket !== null) {
+        closeWhenSafe(socket);
+      }
     }
 
     this.setStatus('disconnected');
@@ -121,16 +132,22 @@ export class AionEventWebSocketManager {
     options: SubscribeOptions = {}
   ): Unsubscribe {
     const id = this.allocateSubscriptionId();
-    this.subscriptions.set(id, {
+    const subscription: SubscriptionRecord = {
       id,
       filter,
       handler,
       lastSeenSequence: options.lastSeenSequence ?? null,
       onResync: options.onResync,
+    };
+    this.connections.set(id, {
+      subscription,
+      socket: null,
+      state: 'idle',
+      reconnectAttempts: 0,
+      reconnectTimer: null,
     });
 
     this.connect();
-    this.sendSubscription(id);
 
     return () => {
       this.unsubscribe(id);
@@ -138,15 +155,25 @@ export class AionEventWebSocketManager {
   }
 
   unsubscribe(subscriptionId: string): void {
-    if (!this.subscriptions.delete(subscriptionId)) {
+    const connection = this.connections.get(subscriptionId);
+
+    if (connection === undefined) {
       return;
     }
 
-    this.sendJson(buildUnsubscribeMessage(subscriptionId));
+    this.connections.delete(subscriptionId);
+    this.clearReconnectTimer(connection);
+    const socket = connection.socket;
+    connection.socket = null;
 
-    if (this.subscriptions.size === 0) {
-      this.close();
+    if (socket !== null) {
+      closeWhenSafe(socket);
     }
+
+    if (this.connections.size === 0) {
+      this.intentionalClose = true;
+    }
+    this.updateStatus();
   }
 
   getStatus(): ConnectionStatus {
@@ -196,146 +223,129 @@ export class AionEventWebSocketManager {
   }
 
   updateLastSeenSequence(subscriptionId: string, sequence: number): void {
-    const subscription = this.subscriptions.get(subscriptionId);
+    const connection = this.connections.get(subscriptionId);
 
-    if (subscription !== undefined) {
-      subscription.lastSeenSequence = sequence;
+    if (connection !== undefined) {
+      connection.subscription.lastSeenSequence = sequence;
     }
   }
 
   reset(): void {
-    this.subscriptions.clear();
     this.statusListeners.clear();
     this.connectListeners.clear();
     this.disconnectListeners.clear();
     this.errorListeners.clear();
     this.lastError = null;
     this.close();
+    this.connections.clear();
   }
 
-  private openSocket(): void {
-    this.clearReconnectTimer();
-    const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl, this.credentials));
-    this.socket = socket;
-    socket.onopen = () => {
-      if (this.socket !== socket) {
-        return;
-      }
-
-      const recoveredFromDrop = this.status === 'reconnecting';
-      this.reconnectAttempts = 0;
-      this.clearError();
-      this.setStatus('connected');
-      this.notifyListeners(this.connectListeners);
-      this.resendActiveSubscriptions();
-
-      if (recoveredFromDrop) {
-        this.notifyResyncHandlers();
-      }
-    };
-    socket.onmessage = (message) => {
-      if (this.socket !== socket) {
-        return;
-      }
-
-      this.handleMessage(message.data);
-    };
-    socket.onclose = () => {
-      this.handleUnexpectedDisconnect(socket);
-    };
-    socket.onerror = () => {
-      this.handleUnexpectedDisconnect(socket);
-      socket.close();
-    };
-  }
-
-  private handleUnexpectedDisconnect(socket: ManagedWebSocket): void {
-    if (this.intentionalClose || this.socket !== socket) {
+  private openSocket(connection: SubscriptionConnection): void {
+    if (
+      this.intentionalClose ||
+      this.connections.get(connection.subscription.id) !== connection
+    ) {
       return;
     }
 
-    this.socket = null;
-    const wasAlreadyReconnecting = this.status === 'reconnecting';
+    this.clearReconnectTimer(connection);
+    const recoveredFromDrop = connection.state === 'reconnecting';
+    const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl, this.credentials));
+    connection.socket = socket;
+    socket.onopen = () => {
+      if (!this.isCurrentConnection(connection, socket)) {
+        return;
+      }
 
-    if (!wasAlreadyReconnecting) {
-      this.setStatus('reconnecting');
+      connection.reconnectAttempts = 0;
+      connection.state = 'connected';
+      socket.send(JSON.stringify(buildSubscribeMessage(connection.subscription)));
+      this.clearError();
+      this.updateStatus();
+
+      if (recoveredFromDrop) {
+        connection.subscription.onResync?.(buildResyncContext(connection.subscription));
+      }
+    };
+    socket.onmessage = (message) => {
+      if (!this.isCurrentConnection(connection, socket)) {
+        return;
+      }
+
+      this.handleMessage(connection, message.data);
+    };
+    socket.onclose = () => {
+      this.handleUnexpectedDisconnect(connection, socket);
+    };
+    socket.onerror = () => {
+      this.handleUnexpectedDisconnect(connection, socket);
+      closeWhenSafe(socket);
+    };
+  }
+
+  private handleUnexpectedDisconnect(
+    connection: SubscriptionConnection,
+    socket: ManagedWebSocket
+  ): void {
+    if (this.intentionalClose || !this.isCurrentConnection(connection, socket)) {
+      return;
+    }
+
+    connection.socket = null;
+    connection.state = 'reconnecting';
+    const previousStatus = this.status;
+    this.updateStatus();
+
+    if (previousStatus !== 'reconnecting' && this.status === 'reconnecting') {
       this.notifyListeners(this.disconnectListeners);
     }
 
-    this.scheduleReconnect();
+    this.scheduleReconnect(connection);
   }
 
-  private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.reconnect.maxAttempts) {
+  private scheduleReconnect(connection: SubscriptionConnection): void {
+    if (connection.reconnectAttempts >= this.reconnect.maxAttempts) {
+      connection.state = 'exhausted';
       this.emitError(reconnectExhaustedError(this.reconnect.maxAttempts));
-      this.setStatus('disconnected');
+      this.updateStatus();
       return;
     }
 
     const delayMs = Math.min(
-      this.reconnect.initialDelayMs * 2 ** this.reconnectAttempts,
+      this.reconnect.initialDelayMs * 2 ** connection.reconnectAttempts,
       this.reconnect.maxDelayMs
     );
-    this.reconnectAttempts += 1;
-    this.reconnectTimer = this.scheduler.setTimeout(() => {
-      this.openSocket();
+    connection.reconnectAttempts += 1;
+    connection.reconnectTimer = this.scheduler.setTimeout(() => {
+      connection.reconnectTimer = null;
+      this.openSocket(connection);
     }, delayMs);
   }
 
-  private resendActiveSubscriptions(): void {
-    for (const subscriptionId of this.subscriptions.keys()) {
-      this.sendSubscription(subscriptionId);
-    }
+  private isCurrentConnection(
+    connection: SubscriptionConnection,
+    socket: ManagedWebSocket
+  ): boolean {
+    return (
+      this.connections.get(connection.subscription.id) === connection && connection.socket === socket
+    );
   }
 
-  private notifyResyncHandlers(): void {
-    for (const subscription of this.subscriptions.values()) {
-      subscription.onResync?.(buildResyncContext(subscription));
-    }
-  }
-
-  private sendSubscription(subscriptionId: string): void {
-    const subscription = this.subscriptions.get(subscriptionId);
-
-    if (subscription === undefined) {
-      return;
-    }
-
-    this.sendJson(buildSubscribeMessage(subscription));
-  }
-
-  private sendJson(value: unknown): void {
-    const socket = this.socket;
-
-    if (socket === null || socket.readyState !== SOCKET_OPEN) {
-      return;
-    }
-
-    socket.send(JSON.stringify(value));
-  }
-
-  private handleMessage(data: unknown): void {
+  private handleMessage(connection: SubscriptionConnection, data: unknown): void {
     try {
       const frame = parseFrame(data);
-      this.dispatch(frame.namespace, frame.event);
+      const subscription = connection.subscription;
+      subscription.lastSeenSequence = frame.event.data.envelope.seq;
+      subscription.handler(frame.event, {
+        subscriptionId: subscription.id,
+        namespace: frame.namespace,
+        filter: subscription.filter,
+      });
     } catch (error) {
       // No-silent-failure (M1): surface a typed error to listeners so the UI can
       // show that the feed dropped a frame. The console trail is secondary.
       this.warn('Unable to parse Aion event WebSocket frame', error);
       this.emitError(frameDecodeError(error));
-    }
-  }
-
-  private dispatch(namespace: Namespace, event: Event): void {
-    for (const subscription of this.subscriptions.values()) {
-      if (matchesSubscription(subscription.filter, namespace, event)) {
-        subscription.lastSeenSequence = event.data.envelope.seq;
-        subscription.handler(event, {
-          subscriptionId: subscription.id,
-          namespace,
-          filter: subscription.filter,
-        });
-      }
     }
   }
 
@@ -359,6 +369,28 @@ export class AionEventWebSocketManager {
     }
   }
 
+  private updateStatus(): void {
+    let nextStatus: ConnectionStatus = 'disconnected';
+    const connections = [...this.connections.values()];
+
+    if (!this.intentionalClose && connections.length > 0) {
+      if (connections.some((connection) => connection.state === 'exhausted')) {
+        nextStatus = 'disconnected';
+      } else if (connections.some((connection) => connection.state === 'reconnecting')) {
+        nextStatus = 'reconnecting';
+      } else if (connections.every((connection) => connection.state === 'connected')) {
+        nextStatus = 'connected';
+      }
+    }
+
+    const previousStatus = this.status;
+    this.setStatus(nextStatus);
+
+    if (previousStatus !== 'connected' && nextStatus === 'connected') {
+      this.notifyListeners(this.connectListeners);
+    }
+  }
+
   private setStatus(nextStatus: ConnectionStatus): void {
     if (this.status === nextStatus) {
       return;
@@ -371,13 +403,13 @@ export class AionEventWebSocketManager {
     }
   }
 
-  private clearReconnectTimer(): void {
-    if (this.reconnectTimer === null) {
+  private clearReconnectTimer(connection: SubscriptionConnection): void {
+    if (connection.reconnectTimer === null) {
       return;
     }
 
-    this.scheduler.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
+    this.scheduler.clearTimeout(connection.reconnectTimer);
+    connection.reconnectTimer = null;
   }
 
   private notifyListeners(listeners: Set<TransitionListener>): void {

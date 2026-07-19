@@ -51,19 +51,19 @@ function WebSocketConnection({
   manager: Pick<AionEventWebSocketManager, 'close' | 'connect'>;
 }) {
   // M3: this component is mounted once above the router and never remounts on
-  // navigation, so the single WS manager connects once and is torn down only on
-  // full app unmount — route churn does not close or re-open the socket. The
-  // effect dep is the stable manager identity, never anything route-derived.
+  // navigation, so the WS manager stays active until full app unmount. Each
+  // logical subscription owns one server-filtered socket; route churn does not
+  // close or reopen the manager as a whole. The effect dep is its stable identity.
   useEffect(() => connectWebSocketLifecycle(manager), [manager]);
 
   return <>{children}</>;
 }
 
 /**
- * Connect the shared WS manager and return its teardown. Extracted so the M3
- * invariant (connect once on mount, close only on full unmount, never on route
- * change) is unit-testable without a DOM: the effect's dependency is the stable
- * manager identity, so this runs exactly once per app mount.
+ * Activate the shared WS manager and return its teardown. Extracted so the M3
+ * invariant (activate once on mount, close all subscription sockets only on full
+ * unmount, never on route change) is unit-testable without a DOM: the effect's
+ * dependency is the stable manager identity, so this runs once per app mount.
  */
 export function connectWebSocketLifecycle(
   manager: Pick<AionEventWebSocketManager, 'close' | 'connect'>

@@ -211,9 +211,9 @@ describe('firehose transport wiring (real manager)', () => {
     socket.open();
 
     const subscribeMessage = JSON.parse(socket.sent[0] ?? '{}') as {
-      subscription?: { firehose?: { namespace_selector?: string } };
+      firehose?: { namespace_selector?: string };
     };
-    expect(subscribeMessage.subscription?.firehose?.namespace_selector).toBe(NAMESPACE);
+    expect(subscribeMessage.firehose?.namespace_selector).toBe(NAMESPACE);
 
     socket.message(JSON.stringify({ namespace: NAMESPACE, event: completed(6, 0) }));
     socket.message(JSON.stringify({ namespace: NAMESPACE, event: completed(7, 1) }));

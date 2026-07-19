@@ -49,23 +49,17 @@ test('subscribe sends a per-workflow request and dispatches streamed typed event
   expect(socket.url).toBe('wss://aion.example/events/stream');
   expect(socket.sent.map((message) => JSON.parse(message) as unknown)).toEqual([
     {
-      type: 'subscribe',
-      subscription_id: 'aion-events-1',
-      subscription: {
-        per_workflow: {
-          namespace,
-          workflow_id: workflowId,
-        },
+      per_workflow: {
+        namespace,
+        workflow_id: workflowId,
       },
     },
   ]);
   expect(received).toEqual([event]);
 
   unsubscribe();
-  expect(JSON.parse(socket.sent[1] ?? '{}')).toEqual({
-    type: 'unsubscribe',
-    subscription_id: 'aion-events-1',
-  });
+  expect(socket.sent).toHaveLength(1);
+  expect(socket.closeCalls).toBe(1);
 });
 
 test('streamed wire-envelope payload bytes are decoded before dispatch', () => {
@@ -157,14 +151,10 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
 
   expect(statuses).toEqual(['connected', 'reconnecting', 'connected']);
   expect(JSON.parse(secondSocket.sent[0] ?? '{}')).toEqual({
-    type: 'subscribe',
-    subscription_id: 'aion-events-1',
-    subscription: {
-      per_workflow: {
-        namespace,
-        workflow_id: workflowId,
-        after_seq: 41,
-      },
+    per_workflow: {
+      namespace,
+      workflow_id: workflowId,
+      resume_from_seq: 42,
     },
   });
   expect(resyncs).toEqual([
@@ -232,11 +222,10 @@ test('a single subscription sends exactly one subscribe frame (no double-subscri
   const socket = socketFactory.sockets[0] as FakeSocket;
   socket.open();
 
-  const subscribeFrames = socket.sent
-    .map((message) => JSON.parse(message) as { type?: string })
-    .filter((frame) => frame.type === 'subscribe');
-
-  expect(subscribeFrames).toHaveLength(1);
+  expect(socket.sent).toHaveLength(1);
+  expect(JSON.parse(socket.sent[0] ?? '{}')).toEqual({
+    firehose: { namespace_selector: namespace },
+  });
   expect(socketFactory.sockets).toHaveLength(1);
 });
 
@@ -279,11 +268,17 @@ test('manual connect after bounded reconnect exhaustion starts a fresh attempt',
   expect(socketFactory.sockets).toHaveLength(3);
 });
 
-test('filtered subscriptions only dispatch matching namespace and workflow filters', () => {
+test('concurrent subscriptions use distinct server-filtered sockets and both reconnect', () => {
+  const scheduler = new FakeScheduler();
   const socketFactory = new FakeSocketFactory();
-  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
-  const received: AionEvent[] = [];
-  const otherNamespaceEvent: AionEvent = {
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 2 },
+  });
+  const firstReceived: AionEvent[] = [];
+  const secondReceived: AionEvent[] = [];
+  const otherEvent: AionEvent = {
     ...event,
     data: {
       ...event.data,
@@ -291,17 +286,88 @@ test('filtered subscriptions only dispatch matching namespace and workflow filte
     },
   };
 
-  manager.subscribe(
-    { kind: 'filtered', namespace, workflowType: 'checkout', status: 'Running' },
-    (nextEvent) => received.push(nextEvent)
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
+    firstReceived.push(nextEvent)
   );
-  const socket = socketFactory.sockets[0] as FakeSocket;
-  socket.open();
-  socket.message(JSON.stringify({ namespace: 'other', event }));
-  socket.message(JSON.stringify({ namespace, event: otherNamespaceEvent }));
-  socket.message(JSON.stringify({ namespace, event }));
+  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, (nextEvent) =>
+    secondReceived.push(nextEvent)
+  );
+  const firstSocket = socketFactory.sockets[0] as FakeSocket;
+  const secondSocket = socketFactory.sockets[1] as FakeSocket;
+  firstSocket.open();
+  secondSocket.open();
 
-  expect(received).toEqual([otherNamespaceEvent, event]);
+  expect(JSON.parse(firstSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: { namespace, workflow_id: workflowId },
+  });
+  expect(JSON.parse(secondSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: { namespace, workflow_id: otherWorkflowId },
+  });
+
+  firstSocket.message(JSON.stringify({ namespace, event }));
+  secondSocket.message(JSON.stringify({ namespace, event: otherEvent }));
+
+  expect(firstReceived).toEqual([event]);
+  expect(secondReceived).toEqual([otherEvent]);
+
+  firstSocket.drop();
+  secondSocket.drop();
+  expect(scheduler.delays).toEqual([10, 10]);
+
+  scheduler.runNext();
+  scheduler.runNext();
+  const reconnectedFirstSocket = socketFactory.sockets[2] as FakeSocket;
+  const reconnectedSecondSocket = socketFactory.sockets[3] as FakeSocket;
+  reconnectedFirstSocket.open();
+  reconnectedSecondSocket.open();
+
+  expect(JSON.parse(reconnectedFirstSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: {
+      namespace,
+      workflow_id: workflowId,
+      resume_from_seq: 8,
+    },
+  });
+  expect(JSON.parse(reconnectedSecondSocket.sent[0] ?? '{}')).toEqual({
+    per_workflow: {
+      namespace,
+      workflow_id: otherWorkflowId,
+      resume_from_seq: 8,
+    },
+  });
+
+  reconnectedFirstSocket.message(JSON.stringify({ namespace, event }));
+  reconnectedSecondSocket.message(JSON.stringify({ namespace, event: otherEvent }));
+
+  expect(firstReceived).toEqual([event, event]);
+  expect(secondReceived).toEqual([otherEvent, otherEvent]);
+});
+
+test('live-only filtered and firehose subscriptions never send a cursor', () => {
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
+
+  manager.subscribe({ kind: 'filtered', namespace, workflowType: 'checkout' }, () => undefined, {
+    lastSeenSequence: 41,
+  });
+  manager.subscribe({ kind: 'firehose', namespace }, () => undefined, {
+    lastSeenSequence: 52,
+  });
+  const filteredSocket = socketFactory.sockets[0] as FakeSocket;
+  const firehoseSocket = socketFactory.sockets[1] as FakeSocket;
+  filteredSocket.open();
+  firehoseSocket.open();
+
+  expect(JSON.parse(filteredSocket.sent[0] ?? '{}')).toEqual({
+    filtered: {
+      namespace,
+      workflow_type: 'checkout',
+      status: null,
+    },
+  });
+  expect(JSON.parse(firehoseSocket.sent[0] ?? '{}')).toEqual({
+    firehose: { namespace_selector: namespace },
+  });
 });
 
 test('closing a still-connecting socket defers the close until it opens (no premature close)', () => {

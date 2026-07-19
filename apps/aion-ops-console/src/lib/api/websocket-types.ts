@@ -1,17 +1,10 @@
 import type { Event, Namespace, WorkflowId, WorkflowStatus } from '@/types';
 
-// AW WebSocket contract surface: update this one object when cluster AW pins the
-// endpoint, subscribe/unsubscribe message keys, after-sequence cursor, or frame envelope shape.
+// Aion WebSocket contract surface. The server consumes one raw subscription as
+// the first frame on each socket; it does not multiplex subscription ids.
 export const AW_WEBSOCKET_CONTRACT = {
   endpoint: '/events/stream',
-  messageTypes: {
-    subscribe: 'subscribe',
-    unsubscribe: 'unsubscribe',
-  },
   requestKeys: {
-    type: 'type',
-    subscriptionId: 'subscription_id',
-    subscription: 'subscription',
     perWorkflow: 'per_workflow',
     filtered: 'filtered',
     firehose: 'firehose',
@@ -20,7 +13,7 @@ export const AW_WEBSOCKET_CONTRACT = {
     workflowId: 'workflow_id',
     workflowType: 'workflow_type',
     status: 'status',
-    afterSequence: 'after_seq',
+    resumeFromSequence: 'resume_from_seq',
   },
   frameKeys: {
     namespace: 'namespace',
@@ -93,6 +86,10 @@ export type AionEventSubscriptionFilter =
 
 export type AionEventHandler = (event: Event, context: AionEventContext) => void;
 
+/**
+ * Reconnect recovery is durable only for per-workflow subscriptions. Live-only
+ * filtered and firehose subscriptions always require a history refetch.
+ */
 export type ResyncMode = 'after-sequence' | 'full-refetch';
 
 export type AionEventContext = {
@@ -107,6 +104,11 @@ export type ResyncContext = AionEventContext & {
 };
 
 export type SubscribeOptions = {
+  /**
+   * Highest per-workflow sequence already applied. Per-workflow reconnects ask
+   * the server for the following sequence; filtered and firehose subscriptions
+   * retain it only as refetch context and never put it on the wire.
+   */
   lastSeenSequence?: number | undefined;
   onResync?: ((context: ResyncContext) => void) | undefined;
 };
@@ -114,10 +116,10 @@ export type SubscribeOptions = {
 /**
  * Connection-level credentials for the live-events WebSocket. Browsers cannot
  * set request headers on a WebSocket handshake, so these are sent as query
- * parameters on the socket URL and the server promotes them back to their header
- * form (see `WsCaller` in aion-server). The connection authorizes the full set
- * of namespaces the caller may view; per-subscription filters narrow within it,
- * so switching the selected namespace never requires a reconnect.
+ * parameters on the socket URL and the server promotes them back to their
+ * header form (see `WsCaller` in aion-server). Every logical subscription gets
+ * its own socket and reuses these manager-level credentials; its filter is
+ * enforced by the server on that socket.
  */
 export type SocketCredentials = {
   namespaces?: readonly Namespace[];

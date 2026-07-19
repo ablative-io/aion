@@ -81,14 +81,13 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
   const { selectedNamespace } = useNamespace();
   const active = enabled && filter !== null && isSelectedNamespace(selectedNamespace);
 
-  // The resume cursor (`lastSeenSequence`) advances on every event, and
-  // `onEvent`/`onResync` are fresh closures on every render. If any of these
-  // were in the effect's dependency array the socket would tear down and
-  // re-subscribe on every event — a resubscribe storm. They are held in refs and
-  // read at (re)subscribe time, so the subscription is re-opened only when its
-  // identity genuinely changes (`enabled` / `filter` / `manager` / namespace).
-  // The manager itself tracks the latest sequence internally for reconnect
-  // resume, so dropping the cursor from the deps does not weaken gap recovery.
+  // `lastSeenSequence` advances on every event, and `onEvent`/`onResync` are
+  // fresh closures on every render. If any were in the effect's dependency
+  // array, the socket would tear down and re-subscribe on every event. Refs keep
+  // identity changes (`enabled` / `filter` / `manager` / namespace) as the only
+  // reopen triggers. The manager uses the sequence as a durable cursor only for
+  // per-workflow subscriptions; filtered/firehose reconnect live-only and pass
+  // it back solely as context for the caller's full history refetch.
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const onResyncRef = useRef(onResync);
