@@ -1,42 +1,108 @@
-//! Minimal owned-value wrappers around Darwin's raw ACL qualifier APIs.
+//! Owned-value wrappers around Darwin's native ACL and membership APIs.
 //!
 //! This crate is the sole local unsafe leaf for the path-ambient ACL gate. It
-//! copies native UUID qualifiers into owned [`Uuid`] values and releases every
-//! allocation before returning to safe callers.
+//! reads and decodes each ACL from one owned native snapshot, copies qualifier
+//! UUIDs into owned values, and releases every native allocation before
+//! returning to safe callers.
 
 #![cfg(target_os = "macos")]
 
-use std::ffi::{CString, c_char, c_int, c_uint, c_void};
 use std::io;
-use std::os::unix::ffi::OsStrExt as _;
+use std::ops::{BitOr, BitOrAssign};
 use std::path::Path;
-use std::ptr;
 
 use uuid::Uuid;
 
-type Acl = *mut c_void;
-type AclEntry = *mut c_void;
+mod identity;
+mod native;
 
-const ACL_TYPE_EXTENDED: c_uint = 0x100;
-const ACL_FIRST_ENTRY: c_int = 0;
-const ACL_NEXT_ENTRY: c_int = -1;
-
-unsafe extern "C" {
-    fn acl_get_link_np(path: *const c_char, acl_type: c_uint) -> Acl;
-    fn acl_get_entry(acl: Acl, entry_id: c_int, entry: *mut AclEntry) -> c_int;
-    fn acl_get_qualifier(entry: AclEntry) -> *mut c_void;
-    fn acl_free(object: *mut c_void) -> c_int;
-    fn mbr_uid_to_uuid(uid: u32, uuid: *mut u8) -> c_int;
+/// The resolved Darwin membership kind of an ACL qualifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AclEntryKind {
+    /// A user qualifier.
+    User,
+    /// A group qualifier.
+    Group,
+    /// A qualifier whose successful membership lookup returned an unsupported kind.
+    Unknown,
 }
 
-struct OwnedAcl(Acl);
+/// Darwin extended-ACL permission bits.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Permissions(u32);
 
-impl Drop for OwnedAcl {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` is a live object returned by `acl_get_link_np`, and
-        // this wrapper is its sole owner.
-        let _ = unsafe { acl_free(self.0) };
+impl Permissions {
+    /// No permissions.
+    pub const EMPTY: Self = Self(0);
+    /// Read file data or list a directory.
+    pub const READ: Self = Self(1 << 1);
+    /// Write file data or add a file to a directory.
+    pub const WRITE: Self = Self(1 << 2);
+    /// Execute a file or search a directory.
+    pub const EXECUTE: Self = Self(1 << 3);
+    /// Delete the ACL-protected object.
+    pub const DELETE: Self = Self(1 << 4);
+    /// Append file data or add a subdirectory.
+    pub const APPEND: Self = Self(1 << 5);
+    /// Delete a directory child.
+    pub const DELETE_CHILD: Self = Self(1 << 6);
+    /// Read attributes.
+    pub const READ_ATTRIBUTES: Self = Self(1 << 7);
+    /// Write attributes.
+    pub const WRITE_ATTRIBUTES: Self = Self(1 << 8);
+    /// Read extended attributes.
+    pub const READ_EXTATTRIBUTES: Self = Self(1 << 9);
+    /// Write extended attributes.
+    pub const WRITE_EXTATTRIBUTES: Self = Self(1 << 10);
+    /// Read security information.
+    pub const READ_SECURITY: Self = Self(1 << 11);
+    /// Write security information.
+    pub const WRITE_SECURITY: Self = Self(1 << 12);
+    /// Change ownership.
+    pub const CHANGE_OWNER: Self = Self(1 << 13);
+    /// Synchronize access.
+    pub const SYNCHRONIZE: Self = Self(1 << 20);
+
+    /// Return the raw Darwin permission mask.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
     }
+
+    /// Return whether this set and `other` share at least one permission.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+}
+
+impl BitOr for Permissions {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for Permissions {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// One completely decoded entry from a single owned native ACL snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedAclEntry {
+    /// Whether this is an allow entry (`false` means deny).
+    pub allow: bool,
+    /// The resolved membership kind of the qualifier.
+    pub kind: AclEntryKind,
+    /// The display name resolved from the qualifier's UID or GID, when available.
+    pub display_name: Option<String>,
+    /// The exact raw UUID copied from this native entry's qualifier.
+    pub qualifier_uuid: Uuid,
+    /// The permission set decoded from this same native entry.
+    pub permissions: Permissions,
 }
 
 /// Resolve a Darwin user ID to its membership UUID.
@@ -45,68 +111,22 @@ impl Drop for OwnedAcl {
 ///
 /// Returns the Darwin membership API error when the UID has no resolvable UUID.
 pub fn user_uuid(uid: u32) -> io::Result<Uuid> {
-    let mut bytes = [0_u8; 16];
-    // SAFETY: `bytes` is a writable 16-byte uuid_t destination for the duration
-    // of the call; mbr_uid_to_uuid does not retain the pointer.
-    let result = unsafe { mbr_uid_to_uuid(uid, bytes.as_mut_ptr()) };
-    if result != 0 {
-        return Err(io::Error::from_raw_os_error(result));
-    }
-    Ok(Uuid::from_bytes(bytes))
+    identity::user_uuid(uid)
 }
 
-/// Read every raw UUID qualifier from a path's extended ACL without following
-/// the final path component.
+/// Read and completely decode a path's extended ACL without following its final
+/// component.
 ///
-/// Qualifiers retain native ACL entry order so callers can correlate them with
-/// an ordered safe ACL decode. A present path without an extended ACL yields an
-/// empty vector.
+/// The function obtains the ACL with exactly one `acl_get_link_np` call. Every
+/// entry's tag, permissions, identity kind, display name, and raw qualifier UUID
+/// are derived from that one owned native snapshot. A present path without an
+/// extended ACL yields an empty vector.
 ///
 /// # Errors
 ///
-/// Returns an I/O error when the path or any native qualifier cannot be read or
-/// when a native allocation cannot be released.
-pub fn qualifier_uuids(path: &Path) -> io::Result<Vec<Uuid>> {
-    let c_path = CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: `c_path` is NUL-terminated and remains live for the call. The
-    // returned ACL is owned and released by `OwnedAcl` below.
-    let acl = unsafe { acl_get_link_np(c_path.as_ptr(), ACL_TYPE_EXTENDED) };
-    if acl.is_null() {
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::NotFound && path.symlink_metadata().is_ok() {
-            return Ok(Vec::new());
-        }
-        return Err(error);
-    }
-    let acl = OwnedAcl(acl);
-
-    let mut qualifiers = Vec::new();
-    let mut entry = ptr::null_mut();
-    let mut entry_id = ACL_FIRST_ENTRY;
-    loop {
-        // SAFETY: the ACL remains live in `acl`, and `entry` is a writable
-        // out-pointer. Darwin returns zero for an entry and nonzero at end.
-        if unsafe { acl_get_entry(acl.0, entry_id, &raw mut entry) } != 0 {
-            break;
-        }
-        if entry.is_null() {
-            return Err(io::Error::other("acl_get_entry returned a null entry"));
-        }
-
-        // SAFETY: Darwin allocates one uuid_t qualifier for a live native entry.
-        // Copy it before releasing that allocation with acl_free.
-        let qualifier = unsafe { acl_get_qualifier(entry) };
-        if qualifier.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        let bytes = unsafe { ptr::read_unaligned(qualifier.cast::<[u8; 16]>()) };
-        // SAFETY: `qualifier` is exactly the allocation returned above and has
-        // not previously been released.
-        if unsafe { acl_free(qualifier) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        qualifiers.push(Uuid::from_bytes(bytes));
-        entry_id = ACL_NEXT_ENTRY;
-    }
-    Ok(qualifiers)
+/// Returns an I/O error when the path, an ACL entry, a qualifier, a permission
+/// set, or a membership identity cannot be decoded, or when a qualifier
+/// allocation cannot be released.
+pub fn read_entries(path: &Path) -> io::Result<Vec<DecodedAclEntry>> {
+    native::read_entries(path)
 }

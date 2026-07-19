@@ -105,13 +105,14 @@ liminal = { workspace = true, optional = true }
 rustix.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Audited owned-value wrapper for raw acl_get_qualifier and membership UUIDs;
-# keeps the server crate itself under the workspace unsafe-code denial.
+# Audited owned-value wrapper that decodes every native ACL entry field from one
+# snapshot; keeps the server crate itself under the unsafe-code denial.
 aion-darwin-acl = { version = "0.9.1", path = "../aion-darwin-acl" }
-# Safe decode of Darwin ACL entry kinds, permissions, and display names.
-exacl = "0.13.0"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+# Install ACL fixtures for the Darwin integration proofs; production decoding is
+# exclusively through aion-darwin-acl's single native snapshot.
+exacl = "0.13.0"
 # Resolve the account home for the stock macOS home-ACL integration proof.
 users = { version = "0.11.0", default-features = false }
 

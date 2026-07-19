@@ -110,6 +110,7 @@ The whole-system design lives in
 | `aion` | The engine: lifecycle, durability/replay, timers, signals, queries |
 | `aion-nif` | Rust helper for in-VM activity NIFs |
 | `aion-proto` | Shared wire contract (gRPC + serde) |
+| `aion-darwin-acl` | Single-snapshot native macOS ACL decoder for the server's path-safety gate |
 | `aion-server` | Server library: HTTP/gRPC/WebSocket + worker protocol |
 | `aion-worker` | Rust remote-worker SDK (library — scaffold your own binary) |
 | `aion-client` | Rust caller SDK |
@@ -137,7 +138,9 @@ workspace.json     Machine-readable description of every component
 ## Publishing
 
 Rust crates are published leaf-first; the order is derived from
-`cargo metadata` and validated by
+`cargo metadata`, with `aion-darwin-acl` immediately before its dependent
+`aion-server`. The canonical order is in [`publish-workspace.sh`](publish-workspace.sh)
+and is validated by the alternate
 [`scripts/publish-crates.sh`](scripts/publish-crates.sh) (dry-run by default,
 `--live` to publish). The Gleam SDK (`aion_flow`) is published to Hex.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development workflow.

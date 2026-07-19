@@ -166,6 +166,7 @@ dependencies = [
 name = "aion-darwin-acl"
 version = "0.9.1"
 dependencies = [
+ "libc",
  "uuid",
 ]
 

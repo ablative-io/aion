@@ -3,11 +3,10 @@ name = "aion-darwin-acl"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Audited raw Darwin ACL qualifier bindings for Aion's macOS path-ambient gate."
+description = "Single-snapshot Darwin ACL decoding for Aion's macOS path-safety gate."
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-publish = false
 
 # This crate is the deliberately small unsafe leaf around Darwin's C ACL and
 # membership APIs. All callers receive owned values through safe functions.
@@ -25,3 +24,4 @@ todo = "warn"
 
 [dependencies]
 uuid.workspace = true
+libc = "0.2"

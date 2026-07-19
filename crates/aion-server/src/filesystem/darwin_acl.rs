@@ -2,13 +2,35 @@
 
 use std::path::Path;
 
-use exacl::{AclEntryKind, AclOption, Perm};
+use aion_darwin_acl::{AclEntryKind, DecodedAclEntry, Permissions};
 use uuid::Uuid;
 
 use super::DataRootAncestorError;
 
-fn same_user_principal(effective_user: &Uuid, ace_qualifier: &Uuid) -> bool {
-    effective_user == ace_qualifier
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AceDecision {
+    Ignore,
+    AcceptEffectiveUser,
+    Reject,
+}
+
+fn decide_ace(entry: &DecodedAclEntry, effective_user: &Uuid) -> AceDecision {
+    let mutation_authority = Permissions::EXECUTE
+        | Permissions::WRITE
+        | Permissions::APPEND
+        | Permissions::DELETE_CHILD
+        | Permissions::DELETE
+        | Permissions::WRITE_SECURITY
+        | Permissions::CHANGE_OWNER;
+    if !entry.allow || !entry.permissions.intersects(mutation_authority) {
+        return AceDecision::Ignore;
+    }
+
+    if entry.kind == AclEntryKind::User && entry.qualifier_uuid == *effective_user {
+        AceDecision::AcceptEffectiveUser
+    } else {
+        AceDecision::Reject
+    }
 }
 
 /// Reject non-euid allow ACEs that can mutate an ambient pathname boundary.
@@ -16,35 +38,15 @@ pub(super) fn validate_extended_acl(
     component: &Path,
     effective_uid: u32,
 ) -> Result<(), DataRootAncestorError> {
-    // On Darwin exacl implements SYMLINK_ACL with acl_get_link_np. Although the
-    // caller has already established that this component is a directory, using
-    // the link API preserves the gate's no-follow rule if its name races.
-    let entries = exacl::getfacl(component, AclOption::SYMLINK_ACL).map_err(|error| {
-        DataRootAncestorError::new(
-            component.to_path_buf(),
-            format!("could not read or interpret extended ACL without following links: {error}"),
-        )
-    })?;
-
-    let qualifier_uuids = aion_darwin_acl::qualifier_uuids(component).map_err(|error| {
+    let entries = aion_darwin_acl::read_entries(component).map_err(|error| {
         DataRootAncestorError::new(
             component.to_path_buf(),
             format!(
-                "could not read raw extended ACL qualifier UUIDs without following links: {error}"
+                "could not read and decode one extended ACL snapshot without following links: \
+                 {error}"
             ),
         )
     })?;
-    if qualifier_uuids.len() != entries.len() {
-        return Err(DataRootAncestorError::new(
-            component.to_path_buf(),
-            format!(
-                "could not correlate extended ACL entries with raw qualifier UUIDs: read {} \
-                 entries but {} qualifiers",
-                entries.len(),
-                qualifier_uuids.len()
-            ),
-        ));
-    }
     let effective_user_uuid = aion_darwin_acl::user_uuid(effective_uid).map_err(|error| {
         DataRootAncestorError::new(
             component.to_path_buf(),
@@ -52,30 +54,22 @@ pub(super) fn validate_extended_acl(
         )
     })?;
 
-    let mutation_authority = Perm::EXECUTE
-        | Perm::WRITE
-        | Perm::APPEND
-        | Perm::DELETE_CHILD
-        | Perm::DELETE
-        | Perm::WRITESECURITY
-        | Perm::CHOWN;
-    for (entry, qualifier_uuid) in entries.into_iter().zip(qualifier_uuids) {
-        if !entry.allow || !entry.perms.intersects(mutation_authority) {
+    for entry in entries {
+        if decide_ace(&entry, &effective_user_uuid) != AceDecision::Reject {
             continue;
         }
-
-        let is_effective_user = entry.kind == AclEntryKind::User
-            && same_user_principal(&effective_user_uuid, &qualifier_uuid);
-        if !is_effective_user {
-            return Err(DataRootAncestorError::new(
-                component.to_path_buf(),
-                format!(
-                    "extended ACL allow ACE `{entry}` grants traversal, entry mutation, child \
-                     deletion, or security mutation to a principal other than server euid \
-                     {effective_uid}"
-                ),
-            ));
-        }
+        let display_name = entry.display_name.as_deref().unwrap_or("<unresolved>");
+        return Err(DataRootAncestorError::new(
+            component.to_path_buf(),
+            format!(
+                "extended ACL allow ACE for `{display_name}` ({:?} {}) with permission mask \
+                 {:#x} grants traversal, entry mutation, child deletion, or security mutation \
+                 to a principal other than server euid {effective_uid}",
+                entry.kind,
+                entry.qualifier_uuid,
+                entry.permissions.bits()
+            ),
+        ));
     }
     Ok(())
 }
@@ -89,32 +83,73 @@ pub(super) fn user_uuid_for_test(uid: u32) -> std::io::Result<Uuid> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn distinct_user_uuids_with_identical_display_names_compare_unequal() {
-        struct RenderedPrincipal {
-            display_name: &'static str,
-            qualifier_uuid: Uuid,
+    fn mutating_allow(
+        kind: AclEntryKind,
+        display_name: Option<&str>,
+        qualifier_uuid: Uuid,
+    ) -> DecodedAclEntry {
+        DecodedAclEntry {
+            allow: true,
+            kind,
+            display_name: display_name.map(str::to_owned),
+            qualifier_uuid,
+            permissions: Permissions::WRITE_SECURITY,
         }
-
-        let effective_user = RenderedPrincipal {
-            display_name: "svc",
-            qualifier_uuid: Uuid::from_bytes([0x01; 16]),
-        };
-        let different_user = RenderedPrincipal {
-            display_name: "svc",
-            qualifier_uuid: Uuid::from_bytes([0x02; 16]),
-        };
-
-        assert_eq!(effective_user.display_name, different_user.display_name);
-        assert!(!same_user_principal(
-            &effective_user.qualifier_uuid,
-            &different_user.qualifier_uuid
-        ));
     }
 
     #[test]
-    fn identical_user_uuid_compares_equal() {
+    fn decision_accepts_the_euid_user_uuid() {
         let effective_user = Uuid::from_bytes([0x01; 16]);
-        assert!(same_user_principal(&effective_user, &effective_user));
+        let entry = mutating_allow(AclEntryKind::User, Some("svc"), effective_user);
+
+        assert_eq!(
+            decide_ace(&entry, &effective_user),
+            AceDecision::AcceptEffectiveUser
+        );
+    }
+
+    #[test]
+    fn decision_rejects_a_distinct_user_uuid_with_the_same_display_name() {
+        let effective_user = Uuid::from_bytes([0x01; 16]);
+        let effective_entry = mutating_allow(AclEntryKind::User, Some("svc"), effective_user);
+        let foreign_entry = mutating_allow(
+            AclEntryKind::User,
+            effective_entry.display_name.as_deref(),
+            Uuid::from_bytes([0x02; 16]),
+        );
+
+        assert_eq!(effective_entry.display_name, foreign_entry.display_name);
+        assert_eq!(
+            decide_ace(&foreign_entry, &effective_user),
+            AceDecision::Reject
+        );
+    }
+
+    #[test]
+    fn decision_rejects_a_group_even_when_its_uuid_matches_the_euid() {
+        let effective_user = Uuid::from_bytes([0x01; 16]);
+        let entry = mutating_allow(AclEntryKind::Group, Some("svc"), effective_user);
+
+        assert_eq!(decide_ace(&entry, &effective_user), AceDecision::Reject);
+    }
+
+    #[test]
+    fn decision_rejects_an_unknown_unobtainable_identity() {
+        let effective_user = Uuid::from_bytes([0x01; 16]);
+        let entry = mutating_allow(AclEntryKind::Unknown, None, effective_user);
+
+        assert_eq!(decide_ace(&entry, &effective_user), AceDecision::Reject);
+    }
+
+    #[test]
+    fn decision_ignores_deny_and_non_mutating_entries() {
+        let effective_user = Uuid::from_bytes([0x01; 16]);
+        let mut entry = mutating_allow(AclEntryKind::Unknown, None, Uuid::from_bytes([0x02; 16]));
+        entry.allow = false;
+        assert_eq!(decide_ace(&entry, &effective_user), AceDecision::Ignore);
+
+        entry.allow = true;
+        entry.permissions = Permissions::READ;
+        assert_eq!(decide_ace(&entry, &effective_user), AceDecision::Ignore);
     }
 }

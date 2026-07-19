@@ -49,6 +49,7 @@ CRATES=(
   aion-worker
   aion-integration-cli
   aion-client
+  aion-darwin-acl
   aion-server
   aion-cli
 )

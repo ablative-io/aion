@@ -18,7 +18,8 @@ readonly MODE_LIVE="live"
 #   aion-nif: aion-core
 #   aion: aion-core, aion-package, aion-store
 #   aion-proto: aion-core, aion-store
-#   aion-server: aion, aion-core, aion-package, aion-proto, aion-store, aion-store-libsql
+#   aion-darwin-acl: no Aion crate dependencies
+#   aion-server: aion, aion-core, aion-darwin-acl, aion-package, aion-proto, aion-store, aion-store-libsql
 #   aion-worker: aion-core, aion-proto
 #   aion-client: aion, aion-core, aion-proto, aion-store
 #   aion-cli: aion-client, aion-core, aion-package, aion-proto, aion-server
@@ -30,6 +31,7 @@ readonly PUBLISH_ORDER=(
   aion-nif
   aion-rs
   aion-proto
+  aion-darwin-acl
   aion-server
   aion-worker
   aion-client
