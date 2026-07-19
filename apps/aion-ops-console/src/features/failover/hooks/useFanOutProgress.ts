@@ -122,26 +122,25 @@ export function useFanOutProgress({
 
   const liveSeqs = useRef<Set<number>>(new Set());
 
-  const fetchHistory = useCallback(() => {
+  const fetchHistory = useCallback(async (): Promise<void> => {
     if (!enabled || workflowId === null) {
       return;
     }
 
-    client
-      .getHistory(workflowId, { namespace })
-      .then((events) => {
-        setHistoryEvents(events);
-        setError(null);
-      })
-      .catch((cause: unknown) => {
-        const reason = cause instanceof Error ? cause.message : 'describe back-fill failed';
-        setError(reason);
-      });
+    try {
+      const events = await client.getHistory(workflowId, { namespace });
+      setHistoryEvents(events);
+      setError(null);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : 'describe back-fill failed';
+      setError(reason);
+      throw cause;
+    }
   }, [client, enabled, namespace, workflowId]);
 
   // Initial back-fill + whenever the read target or workflow changes.
   useEffect(() => {
-    fetchHistory();
+    void fetchHistory().catch(() => undefined);
   }, [fetchHistory]);
 
   // Live firehose subscription. On reconnect (onResync) we re-fetch describe and the
@@ -156,11 +155,11 @@ export function useFanOutProgress({
 
     const filter: FirehoseEventSubscriptionFilter = { kind: 'firehose', namespace };
 
-    const onResync = (_context: ResyncContext) => {
+    const onResync = async (_context: ResyncContext) => {
       // Firehose has no resume cursor: drop the live buffer and back-fill fresh.
       liveSeqs.current = new Set();
       setLiveEvents([]);
-      fetchHistory();
+      await fetchHistory();
     };
 
     const stopSubscription = manager.subscribe(
@@ -201,6 +200,6 @@ export function useFanOutProgress({
     status,
     stale,
     error,
-    refetch: fetchHistory,
+    refetch: () => void fetchHistory().catch(() => undefined),
   };
 }

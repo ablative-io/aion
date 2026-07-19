@@ -1,6 +1,6 @@
 import {
+  assertExpectedWorkflowSequence,
   browserWebSocketConstructor,
-  buildResyncContext,
   buildSubscribeMessage,
   buildWebSocketUrl,
   consoleWarn,
@@ -11,9 +11,14 @@ import {
   subscriberApplicationError,
 } from './websocket-protocol';
 import {
+  closeWhenSafe,
+  drainPendingMessages,
+  failFeedBoundary,
+  isCurrentConnection,
   type SubscriptionConnection,
   SubscriptionErrorState,
 } from './websocket-connection';
+import { ApplicationRecoveryPolicy } from './websocket-recovery-policy';
 import {
   type AionEventHandler,
   type AionEventSubscriptionFilter,
@@ -25,7 +30,6 @@ import {
   type ReconnectOptions,
   type Scheduler,
   SOCKET_CLOSING,
-  SOCKET_CONNECTING,
   type SocketCredentials,
   type SocketErrorListener,
   type StatusListener,
@@ -48,12 +52,25 @@ export type {
   FilteredEventSubscriptionFilter,
   FirehoseEventSubscriptionFilter,
   ResyncContext,
+  ResyncHandler,
   ResyncMode,
   SocketCredentials,
   SubscribeOptions,
   WorkflowEventSubscriptionFilter,
 } from './websocket-types';
 
+/**
+ * Owns one fail-stop socket per logical subscription.
+ *
+ * Recovery is proven at the application boundary, never presumed from a
+ * transport handshake: a decode or subscriber failure immediately makes that
+ * socket stale, durable cursors advance only after successful application, and
+ * live-only feeds remain recovering until their full-refetch promise fulfills.
+ * Handshakes opened for an unresolved boundary do not reset its retry budget;
+ * only a replayed durable event or a confirmed live-only resync does. Persistent
+ * decode, application, and refetch failures therefore stop at the configured
+ * bound instead of crossing a cursor gap or reconnecting forever.
+ */
 export class AionEventWebSocketManager {
   private readonly baseUrl: string;
   private readonly credentials: SocketCredentials | undefined;
@@ -66,7 +83,11 @@ export class AionEventWebSocketManager {
   private readonly connectListeners = new Set<TransitionListener>();
   private readonly disconnectListeners = new Set<TransitionListener>();
   private readonly errorListeners = new Set<SocketErrorListener>();
-  private readonly connectionErrors = new SubscriptionErrorState(this.connections, this.errorListeners);
+  private readonly connectionErrors = new SubscriptionErrorState(
+    this.connections,
+    this.errorListeners
+  );
+  private readonly recoveryPolicy: ApplicationRecoveryPolicy;
   private status: ConnectionStatus = 'disconnected';
   private intentionalClose = false;
   private nextSubscriptionId = 1;
@@ -81,6 +102,16 @@ export class AionEventWebSocketManager {
     };
     this.reconnect = { ...DEFAULT_RECONNECT, ...options.reconnect };
     this.warn = options.warn ?? consoleWarn;
+    this.recoveryPolicy = new ApplicationRecoveryPolicy(this.warn, this.connectionErrors, {
+      isCurrent: (connection, socket) => isCurrentConnection(this.connections, connection, socket),
+      updateStatus: () => this.updateStatus(),
+      drainPending: (connection, socket) =>
+        drainPendingMessages(connection, socket, (data) =>
+          this.handleMessage(connection, socket, data)
+        ),
+      failBoundary: (connection, socket) =>
+        failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket)),
+    });
   }
 
   connect(): void {
@@ -127,7 +158,8 @@ export class AionEventWebSocketManager {
     handler: AionEventHandler,
     options: SubscribeOptions = {}
   ): Unsubscribe {
-    const id = this.allocateSubscriptionId();
+    const id = `aion-events-${this.nextSubscriptionId}`;
+    this.nextSubscriptionId += 1;
     const subscription: SubscriptionRecord = {
       id,
       filter,
@@ -140,6 +172,7 @@ export class AionEventWebSocketManager {
       socket: null,
       state: 'idle',
       reconnectAttempts: 0,
+      pendingMessages: [],
       reconnectTimer: null,
       error: null,
       errorSequence: 0,
@@ -227,14 +260,6 @@ export class AionEventWebSocketManager {
     return this.connectionErrors.getLastError();
   }
 
-  updateLastSeenSequence(subscriptionId: string, sequence: number): void {
-    const connection = this.connections.get(subscriptionId);
-
-    if (connection !== undefined) {
-      connection.subscription.lastSeenSequence = sequence;
-    }
-  }
-
   reset(): void {
     this.statusListeners.clear();
     this.connectListeners.clear();
@@ -246,45 +271,59 @@ export class AionEventWebSocketManager {
   }
 
   private openSocket(connection: SubscriptionConnection): void {
-    if (
-      this.intentionalClose ||
-      this.connections.get(connection.subscription.id) !== connection
-    ) {
+    if (this.intentionalClose || this.connections.get(connection.subscription.id) !== connection) {
       return;
     }
 
     this.clearReconnectTimer(connection);
+    connection.pendingMessages = [];
     const recoveredFromDrop = connection.state === 'reconnecting';
     const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl, this.credentials));
     connection.socket = socket;
     socket.onopen = () => {
-      if (!this.isCurrentConnection(connection, socket)) {
+      if (!isCurrentConnection(this.connections, connection, socket)) {
+        return;
+      }
+
+      socket.send(JSON.stringify(buildSubscribeMessage(connection.subscription)));
+
+      if (recoveredFromDrop && connection.subscription.filter.kind !== 'workflow') {
+        // A live-only handshake cannot prove that events missed while disconnected
+        // are present locally. Keep both status and any application error degraded
+        // until the caller's full refetch actually completes.
+        connection.state = 'reconnecting';
+        this.updateStatus();
+        this.recoveryPolicy.recoverLiveOnly(connection, socket);
+        return;
+      }
+
+      if (recoveredFromDrop && this.recoveryPolicy.isUnresolved(connection.error)) {
+        // The workflow socket is usable for replay, but is not healthy until one
+        // event from the unchanged cursor is successfully applied.
+        connection.state = 'reconnecting';
+        this.updateStatus();
+        this.recoveryPolicy.notifyDurable(connection);
         return;
       }
 
       connection.reconnectAttempts = 0;
       connection.state = 'connected';
-      socket.send(JSON.stringify(buildSubscribeMessage(connection.subscription)));
+      this.connectionErrors.clear(connection);
       this.updateStatus();
 
       if (recoveredFromDrop) {
-        connection.subscription.onResync?.(buildResyncContext(connection.subscription));
-      }
-
-      // A durable application failure is not resolved merely by reopening: its
-      // unchanged cursor must replay and successfully apply the missed event.
-      // Live-only streams resolve by initiating their required full refetch.
-      if (
-        connection.error?.kind !== 'subscriber-application' ||
-        (recoveredFromDrop &&
-          connection.subscription.filter.kind !== 'workflow' &&
-          connection.subscription.onResync !== undefined)
-      ) {
-        this.connectionErrors.clear(connection);
+        this.recoveryPolicy.notifyDurable(connection);
       }
     };
     socket.onmessage = (message) => {
-      if (!this.isCurrentConnection(connection, socket)) {
+      if (!isCurrentConnection(this.connections, connection, socket)) {
+        return;
+      }
+      if (
+        connection.state === 'reconnecting' &&
+        connection.subscription.filter.kind !== 'workflow'
+      ) {
+        connection.pendingMessages.push(message.data);
         return;
       }
 
@@ -303,7 +342,7 @@ export class AionEventWebSocketManager {
     connection: SubscriptionConnection,
     socket: ManagedWebSocket
   ): void {
-    if (this.intentionalClose || !this.isCurrentConnection(connection, socket)) {
+    if (this.intentionalClose || !isCurrentConnection(this.connections, connection, socket)) {
       return;
     }
 
@@ -324,10 +363,7 @@ export class AionEventWebSocketManager {
       connection.state = 'exhausted';
       this.connectionErrors.set(
         connection,
-        reconnectExhaustedError(
-          this.reconnect.maxAttempts,
-          connection.subscription.id
-        )
+        reconnectExhaustedError(this.reconnect.maxAttempts, connection.subscription.id)
       );
       this.updateStatus();
       return;
@@ -344,15 +380,6 @@ export class AionEventWebSocketManager {
     }, delayMs);
   }
 
-  private isCurrentConnection(
-    connection: SubscriptionConnection,
-    socket: ManagedWebSocket
-  ): boolean {
-    return (
-      this.connections.get(connection.subscription.id) === connection && connection.socket === socket
-    );
-  }
-
   private handleMessage(
     connection: SubscriptionConnection,
     socket: ManagedWebSocket,
@@ -362,14 +389,13 @@ export class AionEventWebSocketManager {
 
     try {
       frame = parseFrame(data);
+      assertExpectedWorkflowSequence(connection.subscription, frame.event);
     } catch (error) {
       // No-silent-failure (M1): surface a typed error to listeners so the UI can
       // show that the feed dropped a frame. The console trail is secondary.
       this.warn('Unable to parse Aion event WebSocket frame', error);
-      this.connectionErrors.set(
-        connection,
-        frameDecodeError(error, connection.subscription.id)
-      );
+      this.connectionErrors.set(connection, frameDecodeError(error, connection.subscription.id));
+      failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket));
       return;
     }
 
@@ -383,26 +409,19 @@ export class AionEventWebSocketManager {
       });
     } catch (error) {
       this.warn('Aion event subscriber failed to apply a WebSocket frame', error);
-      this.connectionErrors.set(
-        connection,
-        subscriberApplicationError(error, subscription.id)
-      );
+      this.connectionErrors.set(connection, subscriberApplicationError(error, subscription.id));
 
-      // Stop this logical feed immediately so no later frame can overtake the
-      // unapplied event. Per-workflow reconnect uses the unchanged cursor; live
-      // subscriptions invoke onResync with full-refetch after reconnecting.
-      this.handleUnexpectedDisconnect(connection, socket);
-      closeWhenSafe(socket);
+      failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket));
       return;
     }
 
     // The durable cursor means "already applied", not merely decoded/delivered.
     subscription.lastSeenSequence = frame.event.data.envelope.seq;
     if (
-      connection.error?.kind === 'subscriber-application' &&
+      this.recoveryPolicy.isUnresolved(connection.error) &&
       subscription.filter.kind === 'workflow'
     ) {
-      this.connectionErrors.clear(connection);
+      this.recoveryPolicy.complete(connection, socket);
     }
   }
 
@@ -454,40 +473,6 @@ export class AionEventWebSocketManager {
       listener();
     }
   }
-
-  private allocateSubscriptionId(): string {
-    const id = `aion-events-${this.nextSubscriptionId}`;
-    this.nextSubscriptionId += 1;
-    return id;
-  }
-}
-
-/**
- * Close a socket without ever calling `close()` while it is still CONNECTING.
- *
- * Browsers throw `DOMException: WebSocket is closed before the connection is
- * established` (logged as a console error) when `close()` is invoked on a socket
- * in the CONNECTING state — which happens under React StrictMode's double-mount,
- * where the cleanup runs before the just-opened socket has finished connecting.
- *
- * To tear down cleanly we defer the close to the `onopen` transition, then close
- * once the socket is OPEN. We overwrite the socket's listeners with no-op/closing
- * handlers so the abandoned socket can neither dispatch frames nor trigger the
- * manager's reconnect logic. If the connection never opens (it errors/closes
- * first), the deferred close is a harmless no-op on an already-closed socket.
- */
-function closeWhenSafe(socket: ManagedWebSocket): void {
-  if (socket.readyState === SOCKET_CONNECTING) {
-    socket.onmessage = null;
-    socket.onclose = null;
-    socket.onerror = null;
-    socket.onopen = () => {
-      socket.close();
-    };
-    return;
-  }
-
-  socket.close();
 }
 
 export function createAionEventWebSocketManager(

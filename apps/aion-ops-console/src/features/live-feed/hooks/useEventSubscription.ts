@@ -5,7 +5,7 @@ import type { AionEventWebSocketManager } from '@/lib/api';
 import type {
   AionEventHandler,
   AionEventSubscriptionFilter,
-  ResyncContext,
+  ResyncHandler,
 } from '@/lib/api/websocket';
 import { configuredEventSocket } from '@/lib/config';
 import type { Event, Namespace } from '@/types';
@@ -39,7 +39,7 @@ type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilte
   filter: Omit<TFilter, 'namespace'> | null;
   manager?: EventSubscriptionManager | undefined;
   onEvent: (event: Event) => void;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  onResync?: ResyncHandler | undefined;
 };
 
 export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
@@ -58,7 +58,7 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
   onEvent: (event: Event) => void,
   options: {
     afterSeq?: number | undefined;
-    onResync?: ((context: ResyncContext) => void) | undefined;
+    onResync?: ResyncHandler | undefined;
   } = {}
 ) {
   const handler: AionEventHandler = (event) => onEvent(event);

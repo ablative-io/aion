@@ -95,10 +95,10 @@ export function useLiveListUpdates({
     [filter, isFirstPage, page.limit, queryClient, queryKey, selectedNamespace]
   );
 
-  const onResync = useCallback(() => {
+  const onResync = useCallback(async () => {
     if (isSelectedNamespace(selectedNamespace)) {
       setNewAboveCount(0);
-      void queryClient.invalidateQueries({ queryKey });
+      await queryClient.invalidateQueries({ queryKey }, { throwOnError: true });
     }
   }, [queryClient, queryKey, selectedNamespace]);
 

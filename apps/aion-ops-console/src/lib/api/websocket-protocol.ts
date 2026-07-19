@@ -42,7 +42,8 @@ function buildSubscriptionRequest(subscription: SubscriptionRecord): JsonRecord 
       return {
         [AW_WEBSOCKET_CONTRACT.requestKeys.filtered]: {
           [AW_WEBSOCKET_CONTRACT.requestKeys.namespace]: subscription.filter.namespace,
-          [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]: subscription.filter.workflowType ?? null,
+          [AW_WEBSOCKET_CONTRACT.requestKeys.workflowType]:
+            subscription.filter.workflowType ?? null,
           [AW_WEBSOCKET_CONTRACT.requestKeys.status]: subscription.filter.status ?? null,
         },
       };
@@ -90,6 +91,15 @@ export function subscriberApplicationError(
   };
 }
 
+export function subscriberResyncError(cause: unknown, subscriptionId: string): AionSocketError {
+  return {
+    kind: 'subscriber-application',
+    subscriptionId,
+    message: 'Live state could not be resynchronized; recovery will retry within its limit.',
+    cause,
+  };
+}
+
 export function reconnectExhaustedError(
   attempts: number,
   subscriptionId: string | null = null
@@ -132,6 +142,22 @@ export function parseFrame(data: unknown): { namespace: Namespace; event: Event 
     namespace: namespaceValue,
     event,
   };
+}
+
+export function assertExpectedWorkflowSequence(
+  subscription: SubscriptionRecord,
+  event: Event
+): void {
+  const previous = subscription.lastSeenSequence;
+
+  if (subscription.filter.kind !== 'workflow' || previous === null) {
+    return;
+  }
+
+  const received = event.data.envelope.seq;
+  if (received !== previous + 1) {
+    throw new Error(`workflow replay sequence gap: expected ${previous + 1}, received ${received}`);
+  }
 }
 
 function parseJsonData(data: unknown): unknown {

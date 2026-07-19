@@ -46,10 +46,7 @@ export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
  * human-readable cause so a view can render *why* the stream is degraded rather
  * than swallowing the error to the console.
  */
-export type AionSocketErrorKind =
-  | 'frame-decode'
-  | 'subscriber-application'
-  | 'reconnect-exhausted';
+export type AionSocketErrorKind = 'frame-decode' | 'subscriber-application' | 'reconnect-exhausted';
 
 /**
  * A typed live-socket error. M1 (no-silent-failure): instead of warning to the
@@ -103,6 +100,8 @@ export type AionEventContext = {
   filter: AionEventSubscriptionFilter;
 };
 
+export type ResyncHandler = (context: ResyncContext) => void | Promise<void>;
+
 export type ResyncContext = AionEventContext & {
   lastSeenSequence: number | null;
   mode: ResyncMode;
@@ -115,7 +114,12 @@ export type SubscribeOptions = {
    * retain it only as refetch context and never put it on the wire.
    */
   lastSeenSequence?: number | undefined;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  /**
+   * Recovery work performed after a reconnect. Live-only subscriptions must
+   * provide this callback; their connection remains recovering until its promise
+   * fulfills, and a rejection consumes the bounded reconnect budget.
+   */
+  onResync?: ResyncHandler | undefined;
 };
 
 /**
@@ -187,5 +191,5 @@ export type SubscriptionRecord = {
   filter: AionEventSubscriptionFilter;
   handler: AionEventHandler;
   lastSeenSequence: number | null;
-  onResync?: ((context: ResyncContext) => void) | undefined;
+  onResync?: ResyncHandler | undefined;
 };

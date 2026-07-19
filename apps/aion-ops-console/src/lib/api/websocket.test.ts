@@ -7,11 +7,7 @@ import {
   createAionEventWebSocketManager,
   type ResyncContext,
 } from './websocket';
-import {
-  FakeScheduler,
-  type FakeSocket,
-  FakeSocketFactory,
-} from './websocket-test-support';
+import { FakeScheduler, type FakeSocket, FakeSocketFactory } from './websocket-test-support';
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
@@ -141,7 +137,9 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined, {
     lastSeenSequence: 41,
-    onResync: (context) => resyncs.push(context),
+    onResync: (context) => {
+      resyncs.push(context);
+    },
   });
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
   firstSocket.open();
@@ -290,6 +288,17 @@ test('concurrent subscriptions use distinct sockets and both reconnect independe
       envelope: { ...event.data.envelope, workflow_id: otherWorkflowId },
     },
   };
+  const nextEvent = {
+    ...event,
+    data: { ...event.data, envelope: { ...event.data.envelope, seq: 8 } },
+  } as AionEvent;
+  const nextOtherEvent = {
+    ...otherEvent,
+    data: {
+      ...otherEvent.data,
+      envelope: { ...otherEvent.data.envelope, seq: 8 },
+    },
+  } as AionEvent;
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, (nextEvent) =>
     firstReceived.push(nextEvent)
@@ -341,11 +350,11 @@ test('concurrent subscriptions use distinct sockets and both reconnect independe
     },
   });
 
-  reconnectedFirstSocket.message(JSON.stringify({ namespace, event }));
-  reconnectedSecondSocket.message(JSON.stringify({ namespace, event: otherEvent }));
+  reconnectedFirstSocket.message(JSON.stringify({ namespace, event: nextEvent }));
+  reconnectedSecondSocket.message(JSON.stringify({ namespace, event: nextOtherEvent }));
 
-  expect(firstReceived).toEqual([event, event]);
-  expect(secondReceived).toEqual([otherEvent, otherEvent]);
+  expect(firstReceived).toEqual([event, nextEvent]);
+  expect(secondReceived).toEqual([otherEvent, nextOtherEvent]);
 });
 
 test('live-only filtered and firehose subscriptions never send a cursor', () => {

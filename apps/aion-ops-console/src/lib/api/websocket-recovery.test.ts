@@ -7,11 +7,7 @@ import {
   createAionEventWebSocketManager,
   type ResyncContext,
 } from './websocket';
-import {
-  FakeScheduler,
-  type FakeSocket,
-  FakeSocketFactory,
-} from './websocket-test-support';
+import { FakeScheduler, type FakeSocket, FakeSocketFactory } from './websocket-test-support';
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
@@ -35,6 +31,13 @@ const event: AionEvent = {
     package_version: '1.0.0',
   },
 };
+
+function eventAt(sequence: number): AionEvent {
+  return {
+    ...event,
+    data: { ...event.data, envelope: { ...event.data.envelope, seq: sequence } },
+  } as AionEvent;
+}
 
 test('throwing durable subscriber reconnects from the last successfully applied sequence', () => {
   const scheduler = new FakeScheduler();
@@ -60,7 +63,9 @@ test('throwing durable subscriber reconnects from the last successfully applied 
     },
     {
       lastSeenSequence: 6,
-      onResync: (context) => resyncs.push(context),
+      onResync: (context) => {
+        resyncs.push(context);
+      },
     }
   );
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
@@ -102,6 +107,115 @@ test('throwing durable subscriber reconnects from the last successfully applied 
   expect(JSON.parse(thirdSocket.sent[0] ?? '{}').per_workflow.resume_from_seq).toBe(8);
 });
 
+test('malformed durable frame fail-stops the socket and clears only after replay applies', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const applied: number[] = [];
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 2 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe(
+    { kind: 'workflow', namespace, workflowId },
+    (nextEvent) => applied.push(nextEvent.data.envelope.seq),
+    { lastSeenSequence: 6 }
+  );
+  const firstSocket = socketFactory.sockets[0] as FakeSocket;
+  firstSocket.open();
+  firstSocket.message('{not-json');
+
+  expect(firstSocket.closeCalls).toBe(1);
+  expect(manager.getLastError()?.kind).toBe('frame-decode');
+  expect(manager.getStatus()).toBe('reconnecting');
+
+  // No frame can overtake the failed boundary on the now-stale socket.
+  firstSocket.message(JSON.stringify({ namespace, event: eventAt(8) }));
+  expect(applied).toEqual([]);
+
+  scheduler.runNext();
+  const replaySocket = socketFactory.sockets[1] as FakeSocket;
+  replaySocket.open();
+  expect(JSON.parse(replaySocket.sent[0] ?? '{}').per_workflow.resume_from_seq).toBe(7);
+  expect(manager.getLastError()?.kind).toBe('frame-decode');
+
+  // A syntactically valid later frame still cannot prove that the missed range
+  // replayed. Reject the gap and retain the unchanged applied cursor.
+  replaySocket.message(JSON.stringify({ namespace, event: eventAt(8) }));
+  expect(applied).toEqual([]);
+  expect(replaySocket.closeCalls).toBe(1);
+
+  scheduler.runNext();
+  const contiguousReplaySocket = socketFactory.sockets[2] as FakeSocket;
+  contiguousReplaySocket.open();
+  expect(JSON.parse(contiguousReplaySocket.sent[0] ?? '{}').per_workflow.resume_from_seq).toBe(7);
+  contiguousReplaySocket.message(JSON.stringify({ namespace, event: eventAt(7) }));
+
+  expect(applied).toEqual([7]);
+  expect(manager.getLastError()).toBeNull();
+  expect(manager.getStatus()).toBe('connected');
+});
+
+test('deterministically malformed durable replay exhausts the same bounded budget', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined, {
+    lastSeenSequence: 6,
+  });
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).message('{not-json');
+  scheduler.runNext();
+  (socketFactory.sockets[1] as FakeSocket).open();
+  (socketFactory.sockets[1] as FakeSocket).message('{still-not-json');
+
+  expect(socketFactory.sockets).toHaveLength(2);
+  expect(scheduler.delays).toEqual([10]);
+  expect(manager.getStatus()).toBe('disconnected');
+  expect(manager.getLastError()?.kind).toBe('reconnect-exhausted');
+});
+
+test('always-throwing durable subscriber exhausts its application recovery budget', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe(
+    { kind: 'workflow', namespace, workflowId },
+    () => {
+      throw new Error('persistent application failure');
+    },
+    { lastSeenSequence: 6 }
+  );
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).message(JSON.stringify({ namespace, event }));
+  scheduler.runNext();
+  (socketFactory.sockets[1] as FakeSocket).open();
+  (socketFactory.sockets[1] as FakeSocket).message(JSON.stringify({ namespace, event }));
+
+  // A successful handshake is not successful application recovery. The single
+  // configured retry remains spent, so the deterministic replay stops here.
+  expect(socketFactory.sockets).toHaveLength(2);
+  expect(scheduler.delays).toEqual([10]);
+  expect(manager.getStatus()).toBe('disconnected');
+  expect(manager.getLastError()?.kind).toBe('reconnect-exhausted');
+  scheduler.runNext();
+  expect(socketFactory.sockets).toHaveLength(2);
+});
+
 test('throwing live-only subscriber reconnects and requests a full refetch', () => {
   const scheduler = new FakeScheduler();
   const socketFactory = new FakeSocketFactory();
@@ -118,7 +232,11 @@ test('throwing live-only subscriber reconnects and requests a full refetch', () 
     () => {
       throw new Error('transient live projection failure');
     },
-    { onResync: (context) => resyncs.push(context) }
+    {
+      onResync: (context) => {
+        resyncs.push(context);
+      },
+    }
   );
   (socketFactory.sockets[0] as FakeSocket).open();
   (socketFactory.sockets[0] as FakeSocket).message(JSON.stringify({ namespace, event }));
@@ -126,6 +244,113 @@ test('throwing live-only subscriber reconnects and requests a full refetch', () 
   (socketFactory.sockets[1] as FakeSocket).open();
 
   expect(resyncs.map((context) => context.mode)).toEqual(['full-refetch']);
+});
+
+test('live-only application error remains visible until its full refetch fulfills', async () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  let resolveResync: (() => void) | undefined;
+  const resync = new Promise<void>((resolve) => {
+    resolveResync = resolve;
+  });
+  let applications = 0;
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe(
+    { kind: 'filtered', namespace, workflowType: 'checkout' },
+    () => {
+      applications += 1;
+      if (applications === 1) {
+        throw new Error('transient live projection failure');
+      }
+    },
+    { onResync: () => resync }
+  );
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).message(JSON.stringify({ namespace, event }));
+  scheduler.runNext();
+  const recoverySocket = socketFactory.sockets[1] as FakeSocket;
+  recoverySocket.open();
+  recoverySocket.message(JSON.stringify({ namespace, event: eventAt(8) }));
+
+  expect(manager.getLastError()?.kind).toBe('subscriber-application');
+  expect(manager.getStatus()).toBe('reconnecting');
+  expect(applications).toBe(1);
+
+  resolveResync?.();
+  await resync;
+  await Promise.resolve();
+
+  expect(manager.getLastError()).toBeNull();
+  expect(manager.getStatus()).toBe('connected');
+  expect(applications).toBe(2);
+});
+
+test('rejected live-only refetch stays visible and exhausts the bounded recovery', async () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  let rejectResync: ((cause: Error) => void) | undefined;
+  const resync = new Promise<void>((_resolve, reject) => {
+    rejectResync = reject;
+  });
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe(
+    { kind: 'filtered', namespace, workflowType: 'checkout' },
+    () => {
+      throw new Error('transient live projection failure');
+    },
+    { onResync: () => resync }
+  );
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).message(JSON.stringify({ namespace, event }));
+  scheduler.runNext();
+  const recoverySocket = socketFactory.sockets[1] as FakeSocket;
+  recoverySocket.open();
+
+  rejectResync?.(new Error('HTTP refetch failed'));
+  await resync.catch(() => undefined);
+  await Promise.resolve();
+
+  expect(recoverySocket.closeCalls).toBe(1);
+  expect(socketFactory.sockets).toHaveLength(2);
+  expect(scheduler.delays).toEqual([10]);
+  expect(manager.getStatus()).toBe('disconnected');
+  expect(manager.getLastError()).toMatchObject({
+    kind: 'reconnect-exhausted',
+    subscriptionId: 'aion-events-1',
+  });
+});
+
+test('live-only reconnect without a refetch callback fails visibly instead of assuming recovery', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+    warn: () => undefined,
+  });
+
+  manager.subscribe({ kind: 'firehose', namespace }, () => undefined);
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).drop();
+  scheduler.runNext();
+  (socketFactory.sockets[1] as FakeSocket).open();
+
+  expect(socketFactory.sockets).toHaveLength(2);
+  expect(manager.getStatus()).toBe('disconnected');
+  expect(manager.getLastError()?.kind).toBe('reconnect-exhausted');
 });
 
 test('recovering one subscription cannot clear another subscription error', () => {
@@ -141,10 +366,7 @@ test('recovering one subscription cannot clear another subscription error', () =
   manager.onError((error) => errors.push(error));
 
   manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
-  manager.subscribe(
-    { kind: 'workflow', namespace, workflowId: otherWorkflowId },
-    () => undefined
-  );
+  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, () => undefined);
   const firstSocket = socketFactory.sockets[0] as FakeSocket;
   const secondSocket = socketFactory.sockets[1] as FakeSocket;
   firstSocket.open();
@@ -167,7 +389,9 @@ test('recovering one subscription cannot clear another subscription error', () =
   });
   secondSocket.drop();
   scheduler.runNext();
-  (socketFactory.sockets[3] as FakeSocket).open();
+  const recoveredSecondSocket = socketFactory.sockets[3] as FakeSocket;
+  recoveredSecondSocket.open();
+  recoveredSecondSocket.message(JSON.stringify({ namespace, event }));
 
   expect(manager.getStatus()).toBe('disconnected');
   expect(manager.getLastError()).toMatchObject({
@@ -192,10 +416,7 @@ test('adding a subscription does not resurrect an exhausted subscription', () =>
   scheduler.runNext();
   (socketFactory.sockets[1] as FakeSocket).drop();
 
-  manager.subscribe(
-    { kind: 'workflow', namespace, workflowId: otherWorkflowId },
-    () => undefined
-  );
+  manager.subscribe({ kind: 'workflow', namespace, workflowId: otherWorkflowId }, () => undefined);
 
   // Exactly one new socket belongs to the new subscription. A remains stopped
   // at its max-attempt bound until an explicit manager.connect() retry.
