@@ -109,4 +109,4 @@ jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 cap-std = "4.0.2"
 cap-fs-ext = "4.0.2"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }

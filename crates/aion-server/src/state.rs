@@ -1481,14 +1481,15 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
 /// distributed path) its inbound-write responder. Restart-safe: an existing
 /// on-disk database is reused (its shard count wins) rather than re-created.
 ///
-/// On Linux, Haematite receives a `/proc/self/fd` path derived from the checked
-/// `ConfinedDir`, never the configured ambient pathname. On macOS, where
-/// `/dev/fd/N/child` is not traversable, startup resolves the held descriptor's
-/// current path immediately before opening Haematite. Every shard is materialized
-/// before startup returns and the capability is retained for the store's full
-/// lifetime. This eliminates every post-startup lazy-shard window on both systems;
-/// the locked path-only Haematite 0.5 API leaves a residual macOS startup race
-/// between descriptor-path resolution and eager materialization.
+/// Linux/Android give Haematite a descriptor-authoritative `/proc/self/fd` path.
+/// On path-ambient Unix targets such as macOS, startup instead resolves the held
+/// descriptor's current path and refuses any ancestor owned by an unprivileged
+/// principal other than the server euid or writable by group/world. That policy
+/// prevents a second principal from renaming a parent after startup and replacing
+/// the old name with a symlink that redirects Haematite's normal reads/commits.
+/// Every shard is still eagerly materialized and the capability retained, but on
+/// those targets neither action confines later pathname I/O. A descriptor-relative
+/// Haematite constructor and backend I/O remain the long-term fix.
 #[cfg(feature = "haematite-backend")]
 fn build_haematite_store(
     data_dir: &str,
@@ -1557,6 +1558,15 @@ fn build_haematite_store_with_hook(
         .map_err(|error| ServerError::Config {
             message: format!("failed to resolve held store.data_dir `{data_dir}`: {error}"),
         })?;
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+    crate::filesystem::validate_ambient_backend_ancestors(&backend_path).map_err(|error| {
+        let (component, reason) = error.into_parts();
+        ServerError::UnsafeDataRootAncestor {
+            data_root: backend_path.clone(),
+            component,
+            reason,
+        }
+    })?;
     #[cfg(not(unix))]
     let backend_path = std::path::PathBuf::from(data_dir);
 
@@ -1877,6 +1887,149 @@ mod tests {
             );
         }
 
+        drop(store);
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "haematite-backend",
+        any(target_os = "linux", target_os = "android")
+    ))]
+    #[tokio::test]
+    async fn proc_fd_backend_path_survives_a_post_startup_root_swap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        use aion_core::{ContentType, EventEnvelope, PackageVersion, Payload, RunId, WorkflowId};
+        use aion_store::{WritableEventStore as _, WriteToken};
+        use chrono::Utc;
+
+        let sandbox = tempfile::tempdir()?;
+        let configured_root = sandbox.path().join("data");
+        let held_root = sandbox.path().join("held-data");
+        let capture = sandbox.path().join("capture");
+        std::fs::create_dir(&capture)?;
+        let configured = configured_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let (store, responder) = super::build_haematite_store(configured, 4, None)?;
+        assert!(responder.is_none());
+        std::fs::rename(&configured_root, &held_root)?;
+        symlink(&capture, &configured_root)?;
+
+        let workflow_id = WorkflowId::new_v4();
+        let event = aion_core::Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq: 1,
+                recorded_at: Utc::now(),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: String::from("post-startup-root-swap"),
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            run_id: RunId::new_v4(),
+            parent_run_id: None,
+            package_version: PackageVersion::new("a".repeat(64)),
+        };
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id,
+                std::slice::from_ref(&event),
+                0,
+            )
+            .await?;
+
+        let captured = std::fs::read_dir(&capture)?.collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            captured.is_empty(),
+            "post-startup append followed the replacement symlink into capture"
+        );
+        assert!(held_root.join("config.json").is_file());
+        drop(store);
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "haematite-backend",
+        unix,
+        not(any(target_os = "linux", target_os = "android"))
+    ))]
+    #[test]
+    fn path_ambient_haematite_refuses_group_or_world_writable_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+
+        for mode in [0o770, 0o1777] {
+            let shared = sandbox.path().join(format!("shared-{mode:o}"));
+            let data_root = shared.join("data");
+            std::fs::create_dir(&shared)?;
+            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(mode))?;
+            std::fs::create_dir(&data_root)?;
+            std::fs::set_permissions(&data_root, std::fs::Permissions::from_mode(0o700))?;
+            let configured = data_root
+                .to_str()
+                .ok_or("temporary data path was not UTF-8")?;
+
+            let Err(error) = super::build_haematite_store(configured, 4, None) else {
+                return Err(format!("mode {mode:04o} ancestor was accepted").into());
+            };
+            let message = error.to_string();
+            let crate::ServerError::UnsafeDataRootAncestor {
+                data_root: resolved_root,
+                component,
+                reason,
+            } = error
+            else {
+                return Err(format!("expected typed unsafe-ancestor error, got {message}").into());
+            };
+            assert_eq!(resolved_root, std::fs::canonicalize(&data_root)?);
+            assert_eq!(component, std::fs::canonicalize(&shared)?);
+            assert!(
+                reason.contains(&format!("mode {mode:04o}")),
+                "unexpected reason: {reason}"
+            );
+            if mode & 0o1000 != 0 {
+                assert!(reason.contains("sticky bit is not accepted"));
+            }
+            assert!(message.contains("private Aion home"));
+            assert!(
+                !data_root.join("config.json").exists(),
+                "Haematite touched its ambient path before the refusal"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "haematite-backend",
+        unix,
+        not(any(target_os = "linux", target_os = "android"))
+    ))]
+    #[test]
+    fn path_ambient_haematite_accepts_an_owner_controlled_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sandbox = tempfile::tempdir()?;
+        std::fs::set_permissions(sandbox.path(), std::fs::Permissions::from_mode(0o700))?;
+        let private_parent = sandbox.path().join("private");
+        let data_root = private_parent.join("data");
+        std::fs::create_dir(&private_parent)?;
+        std::fs::set_permissions(&private_parent, std::fs::Permissions::from_mode(0o700))?;
+        let configured = data_root
+            .to_str()
+            .ok_or("temporary data path was not UTF-8")?;
+
+        let (store, responder) = super::build_haematite_store(configured, 4, None)?;
+        assert!(responder.is_none());
+        assert!(data_root.join("config.json").is_file());
+        for shard in 0..4 {
+            assert!(data_root.join(format!("shard-{shard}")).is_dir());
+        }
         drop(store);
         Ok(())
     }

@@ -192,10 +192,10 @@ impl Drop for ClusterResponder {
 #[derive(Clone)]
 pub struct HaematiteStore {
     inner: Arc<haematite::EventStore>,
-    /// A caller-supplied data-root capability retained for the lifetime of every
-    /// store clone. Production passes the same checked directory descriptor used
-    /// to derive haematite's descriptor path, so later lazy backend work cannot
-    /// outlive or lose that filesystem authority.
+    /// A caller-supplied data-root capability retained for every store clone. It
+    /// keeps `/proc/self/fd` backend paths authoritative on Linux/Android. On
+    /// platforms where Haematite receives an ordinary resolved path, retention
+    /// does not confine backend I/O; the server separately requires safe ancestors.
     data_root_capability: Option<Arc<dyn Send + Sync>>,
     /// `Some` in distributed mode; `None` in single-node mode (B1, unchanged).
     distribution: Option<DistributedRouting>,

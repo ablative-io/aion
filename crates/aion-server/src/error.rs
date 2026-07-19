@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use aion::EngineError;
 use aion_proto::WireError;
@@ -16,6 +17,23 @@ pub enum ServerError {
     Config {
         /// Redacted, operator-facing failure message.
         message: String,
+    },
+
+    /// A path-ambient store backend was configured beneath a renameable directory.
+    #[error(
+        "unsafe store.data_dir `{}`: ancestor `{}` is not owner-controlled: {reason}; \
+         move store.data_dir beneath the private Aion home (`$AION_HOME`, default `~/.aion`) \
+         and keep its ancestor chain owner-only",
+        .data_root.display(),
+        .component.display()
+    )]
+    UnsafeDataRootAncestor {
+        /// Descriptor-resolved data root that the backend would use by pathname.
+        data_root: PathBuf,
+        /// First unsafe component in the resolved root's ancestor chain.
+        component: PathBuf,
+        /// Ownership, mode, or inspection failure that made the component unsafe.
+        reason: String,
     },
 
     /// A transport listener could not bind or start.
@@ -152,6 +170,7 @@ impl ServerError {
     pub fn to_wire_error(&self) -> WireError {
         match self {
             Self::Config { .. }
+            | Self::UnsafeDataRootAncestor { .. }
             | Self::TransportBind { .. }
             | Self::Transport { .. }
             | Self::SignalListener { .. }
@@ -176,7 +195,10 @@ impl ServerError {
     /// Return true when this is an operator configuration failure.
     #[must_use]
     pub const fn is_config(&self) -> bool {
-        matches!(self, Self::Config { .. })
+        matches!(
+            self,
+            Self::Config { .. } | Self::UnsafeDataRootAncestor { .. }
+        )
     }
 
     /// Construct a namespace-denied error without embedding authorization logic.
@@ -290,6 +312,11 @@ impl ServerError {
                 error_type: Cow::Borrowed("Config"),
                 store_error_type: None,
                 reason: message,
+            },
+            Self::UnsafeDataRootAncestor { reason, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("UnsafeDataRootAncestor"),
+                store_error_type: None,
+                reason,
             },
             Self::TransportBind { message, .. } => ErrorTraceFields {
                 error_type: Cow::Borrowed("TransportBind"),

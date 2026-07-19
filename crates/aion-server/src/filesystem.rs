@@ -137,10 +137,10 @@ impl ConfinedDir {
     /// returned path remains descriptor-authoritative. macOS and other Unix
     /// targets expose a directory descriptor in `/dev/fd` but do not permit
     /// descendant traversal through that name; there we resolve the descriptor's
-    /// current real path immediately before backend startup. Eagerly materializing
-    /// every backend shard closes later lazy races, but a pathname-swap race remains
-    /// between this resolution and completion of startup on those platforms until
-    /// Haematite exposes a descriptor-relative constructor.
+    /// current real path immediately before backend startup. Normal backend reads
+    /// and commits remain ambient pathname operations after startup on those
+    /// platforms, so callers must reject renameable ancestor chains until
+    /// Haematite exposes descriptor-relative I/O.
     #[cfg(unix)]
     pub(crate) fn backend_path(&self) -> io::Result<PathBuf> {
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -381,6 +381,107 @@ fn invalid_relative() -> io::Error {
         io::ErrorKind::InvalidInput,
         "path must be relative and contain only normal components",
     )
+}
+
+/// An unsafe component in a path-ambient backend's resolved ancestor chain.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+#[derive(Debug)]
+pub(crate) struct DataRootAncestorError {
+    component: PathBuf,
+    reason: String,
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+impl DataRootAncestorError {
+    fn new(component: PathBuf, reason: impl Into<String>) -> Self {
+        Self {
+            component,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (PathBuf, String) {
+        (self.component, self.reason)
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+impl std::fmt::Display for DataRootAncestorError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "ancestor `{}` is not owner-controlled: {}",
+            self.component.display(),
+            self.reason
+        )
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+impl std::error::Error for DataRootAncestorError {}
+
+/// Require every component of a path-ambient Haematite root to be controlled by
+/// the server's effective user (or by root for the immutable system prefix) and
+/// to deny group/world writes.
+///
+/// This forecloses another principal renaming a parent after startup, replacing
+/// the old name with a symlink, and redirecting Haematite's ambient `DiskStore`
+/// reads and commits. Linux and Android are exempt because their
+/// `/proc/self/fd/N/...` backend path stays descriptor-authoritative while the
+/// retained directory fd lives. Descriptor-relative backend I/O is the long-term
+/// Haematite-side fix; until then, Unix platforms without traversable procfs fd
+/// paths must fail closed on a renameable ancestor. Sticky directories such as
+/// `/tmp` are intentionally refused because the sticky bit does not make an
+/// ambient child pathname descriptor-authoritative.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+pub(crate) fn validate_ambient_backend_ancestors(
+    data_root: &Path,
+) -> Result<(), DataRootAncestorError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if !data_root.is_absolute() {
+        return Err(DataRootAncestorError::new(
+            data_root.to_path_buf(),
+            "descriptor-resolved backend path is not absolute",
+        ));
+    }
+
+    let effective_uid = rustix::process::geteuid().as_raw();
+    let mut component_path = PathBuf::new();
+    for component in data_root.components() {
+        component_path.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&component_path).map_err(|error| {
+            DataRootAncestorError::new(
+                component_path.clone(),
+                format!("could not inspect ownership and mode: {error}"),
+            )
+        })?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(DataRootAncestorError::new(
+                component_path,
+                "component is not a real directory",
+            ));
+        }
+
+        let mode = metadata.mode() & 0o7777;
+        if mode & 0o022 != 0 {
+            return Err(DataRootAncestorError::new(
+                component_path,
+                format!(
+                    "mode {mode:04o} grants group/world write access (sticky bit is not accepted)"
+                ),
+            ));
+        }
+
+        let owner_uid = metadata.uid();
+        if owner_uid != effective_uid && owner_uid != 0 {
+            return Err(DataRootAncestorError::new(
+                component_path,
+                format!("owner uid {owner_uid} is neither server euid {effective_uid} nor root"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse an existing sensitive root that grants any Unix group/world access.
