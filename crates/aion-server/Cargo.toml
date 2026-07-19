@@ -16,37 +16,37 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
-aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
+aion = { package = "aion-rs", version = "0.9.0", path = "../aion" }
+aion-proto = { version = "0.9.0", path = "../aion-proto", features = ["generated"] }
 # libSQL durable backend. Now OPTIONAL: the ablative stack (haematite + liminal)
 # is the default, so a stock build no longer links libSQL. Enabled only by the
 # `libsql-backend` feature, which lights up the `backend = libsql` arm for a
 # lightweight/embedded opt-out build.
-aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql", optional = true }
-aion-store = { version = "0.8.0", path = "../aion-store" }
+aion-store-libsql = { version = "0.9.0", path = "../aion-store-libsql", optional = true }
+aion-store = { version = "0.9.0", path = "../aion-store" }
 # Single-node haematite event-store backend. OPTIONAL and OFF by default: a
 # default aion-server build does not link aion-store-haematite (nor its
 # transitive haematite engine), so the default dependency surface and backend
 # selection are byte-identical to before. Enabled only by the
 # `haematite-backend` feature, which lights up the `backend = haematite` arm.
-aion-store-haematite = { version = "0.8.0", path = "../aion-store-haematite", optional = true }
-aion-package = { version = "0.8.0", path = "../aion-package" }
+aion-store-haematite = { version = "0.9.0", path = "../aion-store-haematite", optional = true }
+aion-package = { version = "0.9.0", path = "../aion-package" }
 # Server-side authoring toolchain. It embeds NO Gleam compiler — it only
 # spawns the external `gleam` binary — so depending on it adds no compiler to
 # aion-server (CN7/C15). The authoring endpoints stay dark unless
 # `[authoring].gleam_path` is configured.
-aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
+aion-toolchain = { version = "0.9.0", path = "../aion-toolchain" }
 # In-process AWL checker, semantic index, canonical printer, and stopgap emitter
 # used by the browser authoring facade.
-aion-awl = { version = "0.8.0", path = "../aion-awl" }
-aion-awl-package = { version = "0.8.0", path = "../aion-awl-package" }
+aion-awl = { version = "0.9.0", path = "../aion-awl" }
+aion-awl-package = { version = "0.9.0", path = "../aion-awl-package" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-core = { version = "0.9.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
 sha2.workspace = true
@@ -102,21 +102,21 @@ liminal = { workspace = true, optional = true }
 # round-trip, the libSQL outbox e2e) construct a `LibSqlStore` directly. Listing
 # it here keeps it available for ALL `cargo test` builds without forcing the
 # production default to link it.
-aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
+aion-store-libsql = { version = "0.9.0", path = "../aion-store-libsql" }
 # The LSUB-1 cross-node dispatch e2e drives a REAL aion-worker over the liminal
 # push transport, so the test build enables the worker's `liminal-transport`
 # feature. A default (non-test) build never pulls this; the worker feature is OFF
 # in the production dependency graph.
 aion-worker = { path = "../aion-worker", features = ["liminal-transport"] }
-aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-core = { version = "0.9.0", path = "../aion-core" }
 # The NOI-6 intervention-routing e2e drives a live agent session through the
 # neutral `AgentHarness`/`AgentSession` seam; this dev-dep provides the trait for
 # the test's in-proc fake session. A default (non-test) build never links it.
-aion-integrations = { version = "0.8.0", path = "../aion-integrations" }
+aion-integrations = { version = "0.9.0", path = "../aion-integrations" }
 # The SS-5b auto-failover test reuses the aion-rs SS-5 example-build helper,
 # which rebuilds the `hello-world` archive from source and advisory-locks the
 # build dir; these dev-deps back that helper for the haematite test build.
-aion-package = { version = "0.8.0", path = "../aion-package", features = ["test-support"] }
+aion-package = { version = "0.9.0", path = "../aion-package", features = ["test-support"] }
 fs4 = { workspace = true }
 libsql = { workspace = true }
 reqwest = { workspace = true }
@@ -134,7 +134,7 @@ haematite = { workspace = true }
 zip = { workspace = true }
 # Enable the aion-store recording test doubles (ShardSeamSpy) for the
 # decorator forwarding regression tests.
-aion-store = { version = "0.8.0", path = "../aion-store", features = ["test-support"] }
+aion-store = { version = "0.9.0", path = "../aion-store", features = ["test-support"] }
 
 [features]
 # The ablative stack is the out-of-box default: a stock `aion-server` build links

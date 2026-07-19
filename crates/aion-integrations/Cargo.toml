@@ -16,7 +16,7 @@ categories = ["api-bindings", "asynchronous"]
 workspace = true
 
 [dependencies]
-aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-core = { version = "0.9.0", path = "../aion-core" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

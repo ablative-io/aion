@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "aion-awl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "flate2",
  "gleam-types",
  "serde_json",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "aion-awl-lsp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-awl",
  "lsp-server",
@@ -80,11 +80,11 @@ dependencies = [
 
 [[package]]
 name = "aion-awl-package"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-awl",
  "aion-package",
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "aion-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-awl",
  "aion-awl-lsp",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "aion-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "aion-integration-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-integrations",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "aion-integration-norn"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-integrations",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "aion-integrations"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -211,17 +211,17 @@ dependencies = [
 
 [[package]]
 name = "aion-nif"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "aion-package"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "serde",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-proto-generated",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto-generated"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "prost 0.14.3",
  "protoc-bin-vendored",
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "aion-rs"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-awl",
  "aion-awl-package",
@@ -276,7 +276,7 @@ dependencies = [
  "aion-store-haematite",
  "aion-store-libsql",
  "async-trait",
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "chrono",
  "dashmap",
  "fs4",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "aion-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-awl",
  "aion-awl-package",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-haematite"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-libsql"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "aion-toolchain"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-package",
  "serde",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aion-core",
  "aion-integrations",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "beamr"
-version = "0.15.2"
+version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5686169aebff64e53c85a6b4ffb8a6cf4ac07a0d293d780a41cda0d21b1e12"
+checksum = "4ac506fe245e0beb231077ab74edeaca999db06b56c43e2a206b9dc103e736a8"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -2344,7 +2344,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tower-service",
  "tracing",
@@ -2925,7 +2925,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "708e4f2100764a0a0239b7baa40fc2bd82b047fe54f8a4c1f2a88b897c2ff451"
 dependencies = [
  "async-trait",
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "chrono",
  "haematite",
  "jsonschema",
@@ -2958,7 +2958,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e7c0ace714c74fa07fbeeafaf2b6f43f753cbd076a6788b9533335d38f2e621"
 dependencies = [
  "anyhow",
- "beamr 0.15.2",
+ "beamr 0.15.4",
  "clap",
  "haematite",
  "liminal-rs",
@@ -3804,7 +3804,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls 0.23.40",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3842,7 +3842,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.60.2",
 ]

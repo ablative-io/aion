@@ -13,7 +13,7 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-aion-awl = { version = "0.8.0", path = "../aion-awl" }
+aion-awl = { version = "0.9.0", path = "../aion-awl" }
 lsp-server = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

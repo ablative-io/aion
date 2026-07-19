@@ -24,41 +24,41 @@ path = "src/main.rs"
 # what_if_from) the `aion inspect` surface drives. Already in the CLI's graph
 # transitively via aion-server; naming it directly keeps WA-004's projection in
 # the engine where the brief places it, not duplicated in the CLI.
-aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
+aion = { package = "aion-rs", version = "0.9.0", path = "../aion" }
 # The AWL-0 authoring surface (`aion awl check` / `aion awl fmt`): parser,
 # typechecker, and canonical printer. Local-only — the printer is the
 # formatter, one rendering, so `fmt` has no check mode.
-aion-awl = { version = "0.8.0", path = "../aion-awl" }
-aion-awl-lsp = { version = "0.8.0", path = "../aion-awl-lsp" }
-aion-awl-package = { version = "0.8.0", path = "../aion-awl-package" }
-aion-client = { version = "0.8.0", path = "../aion-client" }
-aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-awl = { version = "0.9.0", path = "../aion-awl" }
+aion-awl-lsp = { version = "0.9.0", path = "../aion-awl-lsp" }
+aion-awl-package = { version = "0.9.0", path = "../aion-awl-package" }
+aion-client = { version = "0.9.0", path = "../aion-client" }
+aion-core = { version = "0.9.0", path = "../aion-core" }
 # The first-party Norn adapter, composed in at the binary root behind the
 # default-on `norn` feature (§3A.3). OPTIONAL and depended on ONLY here (the
 # composition root), NEVER by a platform library crate — the same hygiene the
 # `liminal-transport` feature applies to `liminal-sdk`. A `--no-default-features`
 # build drops it entirely and the platform crates carry zero Norn code, enforced
 # by the `no-norn-in-platform` gate (`cargo xtask no-norn-in-platform`).
-aion-integration-norn = { version = "0.8.0", path = "../aion-integration-norn", optional = true }
+aion-integration-norn = { version = "0.9.0", path = "../aion-integration-norn", optional = true }
 # The harness-integration SDK (the trait the worker drives). Present so the
 # composition root can name the neutral `AgentHarness` seam the injected
 # `NornHarness` satisfies; carries no concrete adapter.
-aion-integrations = { version = "0.8.0", path = "../aion-integrations", optional = true }
-aion-package = { version = "0.8.0", path = "../aion-package" }
-aion-server = { version = "0.8.0", path = "../aion-server" }
+aion-integrations = { version = "0.9.0", path = "../aion-integrations", optional = true }
+aion-package = { version = "0.9.0", path = "../aion-package" }
+aion-server = { version = "0.9.0", path = "../aion-server" }
 # The instant authoring loop (`aion dev`) reuses the toolchain's external
 # `gleam build` shell-out (build_project) instead of reinventing it. The
 # toolchain embeds no compiler — it only spawns the operator-named gleam
 # binary — so naming it here adds no compiler to the CLI.
-aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
-aion-worker = { version = "0.8.0", path = "../aion-worker" }
+aion-toolchain = { version = "0.9.0", path = "../aion-toolchain" }
+aion-worker = { version = "0.9.0", path = "../aion-worker" }
 # Event-driven filesystem watcher for `aion dev`. No poll interval: notify
 # delivers OS change events; the watch loop never spins on a timer (ADR-001).
 notify = { workspace = true }
 # Deploy is an operator API: its gRPC stub comes from aion-proto's generated
 # module, never from aion-client (the caller SDK is contract-bound and must
 # not grow operator operations).
-aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
+aion-proto = { version = "0.9.0", path = "../aion-proto", features = ["generated"] }
 prost = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 anyhow = { workspace = true }
@@ -71,7 +71,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "ne
 uuid = { workspace = true }
 
 [dev-dependencies]
-aion-store = { version = "0.8.0", path = "../aion-store" }
+aion-store = { version = "0.9.0", path = "../aion-store" }
 chrono = { workspace = true }
 fs4 = { workspace = true }
 tempfile = { workspace = true }

@@ -54,17 +54,32 @@ fn beam_chunks(bytes: &[u8]) -> Result<Vec<BeamChunk>, Box<dyn std::error::Error
     Ok(chunks)
 }
 
-fn inflate_litt(payload: &[u8]) -> Result<(u32, Vec<u8>), Box<dyn std::error::Error>> {
+/// `LitT` table content behind either container form: a zero u32 size prefix
+/// marks the raw uncompressed table (beamr 0.15.3's ENC-001 determinism form),
+/// while a nonzero prefix declares the decompressed size of the zlib stream
+/// that follows (the pre-0.15.3 form the committed goldens carry).
+fn litt_content(payload: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let declared_bytes: [u8; 4] = payload[..4].try_into()?;
+    let declared = u32::from_be_bytes(declared_bytes);
+    if declared == 0 {
+        return Ok(payload[4..].to_vec());
+    }
     let mut out = Vec::new();
     std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&payload[4..]), &mut out)?;
-    Ok((u32::from_be_bytes(declared_bytes), out))
+    if out.len() != declared as usize {
+        return Err(format!(
+            "LitT declared decompressed size {declared} but the stream inflated to {} bytes",
+            out.len()
+        )
+        .into());
+    }
+    Ok(out)
 }
 
-/// Byte-equality per chunk, except `LitT`: its deflate stream varies with the
-/// cargo feature graph (feature unification selects the flate backend beamr
-/// links, so `-p aion-awl` and `--workspace` builds emit different compressed
-/// bytes for identical literals). The decompressed content is the contract.
+/// Byte-equality per chunk, except `LitT`: its container form varies with the
+/// beamr version (compressed pre-0.15.3, zero-prefix uncompressed after
+/// ENC-001) and its deflate stream varies with the cargo feature graph. The
+/// literal table content is the contract.
 fn beam_equivalent(actual: &[u8], expected: &[u8]) -> TestResult {
     let actual_chunks = beam_chunks(actual)?;
     let expected_chunks = beam_chunks(expected)?;
@@ -84,8 +99,8 @@ fn beam_equivalent(actual: &[u8], expected: &[u8]) -> TestResult {
     {
         if name == "LitT" {
             assert_eq!(
-                inflate_litt(actual_payload)?,
-                inflate_litt(expected_payload)?,
+                litt_content(actual_payload)?,
+                litt_content(expected_payload)?,
                 "LitT literal content drifted from the committed golden"
             );
         } else {
