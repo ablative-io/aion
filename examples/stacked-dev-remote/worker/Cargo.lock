@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc5ab0c80a44b05c970ad4f84f122b3c0b129c0706fd41694cd9b64dde42a915"
+checksum = "63ff43608956b0d6e9a1292e56bbc76511e1392accc22d1d8bc63b1fd1828f90"
 dependencies = [
  "chrono",
  "serde",
@@ -27,9 +27,9 @@ dependencies = [
 
 [[package]]
 name = "aion-integrations"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "953a459267b9d77eeed3f5fd60a6f4be0078eaf8935b80b886081d3935a72030"
+checksum = "1940d85339d48037ff07766c7e86865068e89ab145c2f3a6e1980a32954d21d8"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -42,9 +42,9 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "532e8433434a4b5c663f067b8ab343b8d493ceebff5249738e36c3395bc7ab69"
+checksum = "df61257873634350d40f014f3e8c30035cdda6d1c845e7a84a3e7f54a83d7557"
 dependencies = [
  "aion-core",
  "aion-proto-generated",
@@ -60,9 +60,9 @@ dependencies = [
 
 [[package]]
 name = "aion-proto-generated"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f727b949a67ab8b6bac4483f403338a185c9d5bd0ccafd4c7ed3aa6dfcad5ebc"
+checksum = "78da88df84c40ab765786904d9a2e68efd023010ca0bfb91ad4b9c627abbf700"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -75,9 +75,9 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd9a6d278c8ccf8cd853c52673b3dc69d93bab2bdeed7e40fd613c47eeffc6d7"
+checksum = "28cfe85c0858fb34f342f0b83bfebd6c85df1469963e7a9c8c720edf795b6657"
 dependencies = [
  "aion-core",
  "aion-integrations",
