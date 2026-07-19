@@ -5,6 +5,32 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
 ## Unreleased
 
+- **Aion home centralizes server configuration and state.** `AION_HOME` wins,
+  otherwise the server uses `~/.aion`, without creating it during config reads.
+  Server config discovery is now explicit `--config` > project-local
+  `./aion.toml` > `<AION_HOME>/config.toml` > built-in defaults; every discovered
+  file remains a loud typed failure when unreadable or invalid. Unconfigured
+  haematite data and AWL studio roots are now `<AION_HOME>/data` and
+  `<AION_HOME>/authoring`. If the old CWD-relative `aion-data` or
+  `aion-authoring` directory exists, the corresponding unconfigured default
+  keeps using it and emits an unambiguous startup migration warning naming both
+  paths; explicitly configured paths never activate the guard. Sensitive roots
+  are private by contract: on Unix Aion creates directories as `0700` and files
+  as `0600` independent of umask, and an existing permissive Aion home fails
+  startup with `chmod 700` remediation. Setting `AION_HOME` explicitly does not
+  opt into a shared-home mode; shared Aion homes are unsupported. On non-Unix
+  targets Aion does not claim to install or validate an owner-only ACL: startup
+  fails closed for default home, data, authoring, and authoring-state roots.
+  Operators must pre-provision private directories and explicitly configure
+  `AION_HOME`, `store.data_dir`, and `authoring.workspace_dir`; accepted explicit
+  roots emit a loud startup warning that ACL privacy was not verified.
+- **AWL studio works out of the box.** A stock `aion server` exposes the full
+  document, layout, check-backed editing, direct deploy, revision, run-status,
+  and scaffold experience under the Aion-home authoring root, creating document
+  and state directories on first write. Operators can still set
+  `authoring.workspace_dir` / `AION_AUTHORING_WORKSPACE_DIR` explicitly. CN7 is
+  unchanged: the separate Gleam loop stays unmounted until `gleam_path` is set.
+
 ## 0.9.1 — 2026-07-19
 
 Dependency-alignment release — no aion surface changes.

@@ -133,7 +133,10 @@ pub async fn run(overrides: CliOverrides) -> ExitCode {
 async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     observability::tracing::init()?;
 
-    let config = ServerConfig::load(&cli)?;
+    let loaded = ServerConfig::load_resolved(&cli)?;
+    loaded.resolution.validate_private_home()?;
+    loaded.resolution.log_startup();
+    let config = loaded.config;
     reject_auth_without_feature(&config)?;
     let store_backend = config.store.backend;
     // Static shard assignment (SS-1): read the operator's pinned shard set from

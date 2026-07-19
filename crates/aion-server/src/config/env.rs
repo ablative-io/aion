@@ -94,26 +94,48 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
             "AION_DEV_ENABLED" => {
                 config.dev.enabled = parse_bool(&name, &value)?;
             }
-            "AION_AUTHORING_GLEAM_PATH" => {
-                if value.is_empty() {
-                    return config_error("AION_AUTHORING_GLEAM_PATH must not be empty");
-                }
-                config.authoring.gleam_path = Some(std::path::PathBuf::from(value));
-            }
-            "AION_AUTHORING_PROJECT_ROOT" => {
-                if value.is_empty() {
-                    return config_error("AION_AUTHORING_PROJECT_ROOT must not be empty");
-                }
-                config.authoring.project_root = Some(std::path::PathBuf::from(value));
-            }
-            "AION_NAMESPACES_DEFAULT" => {
-                if value.is_empty() {
-                    return config_error("AION_NAMESPACES_DEFAULT must not be empty");
-                }
-                config.namespaces.default = value;
-            }
-            other => overlay_websocket(config, other, &value)?,
+            other => overlay_authoring(config, other, &value)?,
         }
+    }
+    Ok(())
+}
+
+/// Apply authoring path and default-namespace overrides.
+///
+/// Split out so the three `[authoring]` paths remain visibly consistent and
+/// [`overlay`] stays below the workspace function-length ceiling. Unknown
+/// names continue through the existing overlay chain.
+fn overlay_authoring(
+    config: &mut ServerConfig,
+    name: &str,
+    value: &str,
+) -> Result<(), ServerError> {
+    match name {
+        "AION_AUTHORING_GLEAM_PATH" => {
+            if value.is_empty() {
+                return config_error("AION_AUTHORING_GLEAM_PATH must not be empty");
+            }
+            config.authoring.gleam_path = Some(std::path::PathBuf::from(value));
+        }
+        "AION_AUTHORING_PROJECT_ROOT" => {
+            if value.is_empty() {
+                return config_error("AION_AUTHORING_PROJECT_ROOT must not be empty");
+            }
+            config.authoring.project_root = Some(std::path::PathBuf::from(value));
+        }
+        "AION_AUTHORING_WORKSPACE_DIR" => {
+            if value.is_empty() {
+                return config_error("AION_AUTHORING_WORKSPACE_DIR must not be empty");
+            }
+            config.authoring.workspace_dir = Some(std::path::PathBuf::from(value));
+        }
+        "AION_NAMESPACES_DEFAULT" => {
+            if value.is_empty() {
+                return config_error("AION_NAMESPACES_DEFAULT must not be empty");
+            }
+            value.clone_into(&mut config.namespaces.default);
+        }
+        other => overlay_websocket(config, other, value)?,
     }
     Ok(())
 }

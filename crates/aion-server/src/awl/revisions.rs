@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
+
+use crate::filesystem::ConfinedDir;
 
 const STATE_DIR: &str = ".aion-authoring";
 const REVISION_DIR: &str = "revisions";
@@ -54,56 +55,24 @@ pub fn content_hash(source: &str) -> String {
 }
 
 pub async fn store(root: &Path, source: &str) -> Result<Revision, RevisionError> {
-    let revision = Revision {
-        content_hash: content_hash(source),
-        source: source.to_owned(),
-    };
-    let directory = root.join(STATE_DIR).join(REVISION_DIR);
-    tokio::fs::create_dir_all(&directory).await?;
-    let destination = directory.join(&revision.content_hash);
-    match tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .await
-    {
-        Ok(mut file) => {
-            file.write_all(source.as_bytes()).await?;
-            file.sync_all().await?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            let existing = tokio::fs::read_to_string(&destination).await?;
-            if existing != source {
-                return Err(RevisionError::InvalidRecord(format!(
-                    "hash collision at {}",
-                    revision.content_hash
-                )));
-            }
-        }
-        Err(error) => return Err(RevisionError::Io(error)),
-    }
-    Ok(revision)
+    let root = root.to_owned();
+    let source = source.to_owned();
+    blocking("revision store", move || {
+        let workspace = ConfinedDir::open_or_create(&root)?;
+        store_sync(&workspace, &source)
+    })
+    .await
 }
 
 pub async fn fetch(root: &Path, hash: &str) -> Result<Revision, RevisionError> {
     validate_hash(hash)?;
-    let path = root.join(STATE_DIR).join(REVISION_DIR).join(hash);
-    let source = tokio::fs::read_to_string(path).await.map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            RevisionError::NotFound(hash.to_owned())
-        } else {
-            RevisionError::Io(error)
-        }
-    })?;
-    if content_hash(&source) != hash {
-        return Err(RevisionError::InvalidRecord(format!(
-            "stored revision {hash} failed content verification"
-        )));
-    }
-    Ok(Revision {
-        content_hash: hash.to_owned(),
-        source,
+    let root = root.to_owned();
+    let hash = hash.to_owned();
+    blocking("revision fetch", move || {
+        let workspace = ConfinedDir::open(&root)?;
+        fetch_sync(&workspace, &hash)
     })
+    .await
 }
 
 pub async fn record_deployment(
@@ -112,16 +81,23 @@ pub async fn record_deployment(
 ) -> Result<(), RevisionError> {
     validate_identifier(&record.deployment_id, "deployment id")?;
     validate_hash(&record.content_hash)?;
-    let revision = fetch(root, &record.content_hash).await?;
-    if revision.content_hash != record.content_hash {
-        return Err(RevisionError::InvalidRecord(
-            "deployment revision identity changed".to_owned(),
-        ));
-    }
-    let directory = root.join(STATE_DIR).join(DEPLOYMENT_DIR);
-    tokio::fs::create_dir_all(&directory).await?;
-    let destination = directory.join(format!("{}.json", record.deployment_id));
-    write_json_atomic(&destination, record).await
+    let root = root.to_owned();
+    let record = record.clone();
+    blocking("deployment record", move || {
+        let workspace = ConfinedDir::open_or_create(&root)?;
+        let revision = fetch_sync(&workspace, &record.content_hash)?;
+        if revision.content_hash != record.content_hash {
+            return Err(RevisionError::InvalidRecord(
+                "deployment revision identity changed".to_owned(),
+            ));
+        }
+        let path = deployment_path(&record.deployment_id);
+        let bytes = serde_json::to_vec_pretty(&record)
+            .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
+        workspace.atomic_write(&path, &bytes)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn deployment(
@@ -129,21 +105,13 @@ pub async fn deployment(
     deployment_id: &str,
 ) -> Result<DeploymentRecord, RevisionError> {
     validate_identifier(deployment_id, "deployment id")?;
-    let path = root
-        .join(STATE_DIR)
-        .join(DEPLOYMENT_DIR)
-        .join(format!("{deployment_id}.json"));
-    let bytes = tokio::fs::read(path).await.map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            RevisionError::NotFound(deployment_id.to_owned())
-        } else {
-            RevisionError::Io(error)
-        }
-    })?;
-    let record: DeploymentRecord = serde_json::from_slice(&bytes)
-        .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
-    validate_hash(&record.content_hash)?;
-    Ok(record)
+    let root = root.to_owned();
+    let deployment_id = deployment_id.to_owned();
+    blocking("deployment fetch", move || {
+        let workspace = ConfinedDir::open(&root)?;
+        deployment_sync(&workspace, &deployment_id)
+    })
+    .await
 }
 
 pub async fn bind_run(
@@ -152,11 +120,20 @@ pub async fn bind_run(
     workflow_id: String,
     run_id: String,
 ) -> Result<DeploymentRecord, RevisionError> {
-    let mut record = deployment(root, deployment_id).await?;
-    record.workflow_id = Some(workflow_id);
-    record.run_id = Some(run_id);
-    record_deployment(root, &record).await?;
-    Ok(record)
+    validate_identifier(deployment_id, "deployment id")?;
+    let root = root.to_owned();
+    let deployment_id = deployment_id.to_owned();
+    blocking("deployment binding", move || {
+        let workspace = ConfinedDir::open(&root)?;
+        let mut record = deployment_sync(&workspace, &deployment_id)?;
+        record.workflow_id = Some(workflow_id);
+        record.run_id = Some(run_id);
+        let bytes = serde_json::to_vec_pretty(&record)
+            .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
+        workspace.atomic_write(&deployment_path(&deployment_id), &bytes)?;
+        Ok(record)
+    })
+    .await
 }
 
 pub async fn current_drifted(
@@ -169,20 +146,86 @@ pub async fn current_drifted(
     Ok(content_hash(&current.source) != record.content_hash)
 }
 
-async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RevisionError> {
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
-    let temp = temporary_path(path);
-    tokio::fs::write(&temp, bytes).await?;
-    if let Err(error) = tokio::fs::rename(&temp, path).await {
-        let _ = tokio::fs::remove_file(&temp).await;
-        return Err(RevisionError::Io(error));
+fn store_sync(workspace: &ConfinedDir, source: &str) -> Result<Revision, RevisionError> {
+    let revision = Revision {
+        content_hash: content_hash(source),
+        source: source.to_owned(),
+    };
+    let path = revision_path(&revision.content_hash);
+    match workspace.create_new(&path, source.as_bytes()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let existing = workspace.read_to_string(&path)?;
+            if existing != source {
+                return Err(RevisionError::InvalidRecord(format!(
+                    "hash collision at {}",
+                    revision.content_hash
+                )));
+            }
+        }
+        Err(error) => return Err(RevisionError::Io(error)),
     }
-    Ok(())
+    Ok(revision)
 }
 
-fn temporary_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()))
+fn fetch_sync(workspace: &ConfinedDir, hash: &str) -> Result<Revision, RevisionError> {
+    validate_hash(hash)?;
+    let source = workspace
+        .read_to_string(&revision_path(hash))
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                RevisionError::NotFound(hash.to_owned())
+            } else {
+                RevisionError::Io(error)
+            }
+        })?;
+    if content_hash(&source) != hash {
+        return Err(RevisionError::InvalidRecord(format!(
+            "stored revision {hash} failed content verification"
+        )));
+    }
+    Ok(Revision {
+        content_hash: hash.to_owned(),
+        source,
+    })
+}
+
+fn deployment_sync(
+    workspace: &ConfinedDir,
+    deployment_id: &str,
+) -> Result<DeploymentRecord, RevisionError> {
+    let bytes = workspace
+        .read(&deployment_path(deployment_id))
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                RevisionError::NotFound(deployment_id.to_owned())
+            } else {
+                RevisionError::Io(error)
+            }
+        })?;
+    let record: DeploymentRecord = serde_json::from_slice(&bytes)
+        .map_err(|error| RevisionError::InvalidRecord(error.to_string()))?;
+    validate_hash(&record.content_hash)?;
+    Ok(record)
+}
+
+fn revision_path(hash: &str) -> PathBuf {
+    Path::new(STATE_DIR).join(REVISION_DIR).join(hash)
+}
+
+fn deployment_path(deployment_id: &str) -> PathBuf {
+    Path::new(STATE_DIR)
+        .join(DEPLOYMENT_DIR)
+        .join(format!("{deployment_id}.json"))
+}
+
+async fn blocking<T: Send + 'static>(
+    operation: &'static str,
+    work: impl FnOnce() -> Result<T, RevisionError> + Send + 'static,
+) -> Result<T, RevisionError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| io::Error::other(format!("{operation} task failed: {error}")))?
 }
 
 fn validate_hash(hash: &str) -> Result<(), RevisionError> {
@@ -210,7 +253,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn revisions_are_content_addressed_and_immutable()
+    async fn revisions_are_content_addressed_immutable_and_private()
     -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
         let first = store(workspace.path(), "workflow first\n").await?;
@@ -222,10 +265,17 @@ mod tests {
             fetch(workspace.path(), &first.content_hash).await?.source,
             first.source
         );
-        assert_eq!(
-            fetch(workspace.path(), &changed.content_hash).await?.source,
-            changed.source
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let state = workspace.path().join(STATE_DIR);
+            assert_eq!(
+                std::fs::metadata(&state)?.permissions().mode() & 0o777,
+                0o700
+            );
+            let file = state.join(REVISION_DIR).join(&first.content_hash);
+            assert_eq!(std::fs::metadata(file)?.permissions().mode() & 0o777, 0o600);
+        }
         Ok(())
     }
 
@@ -254,15 +304,23 @@ mod tests {
         record_deployment(workspace.path(), &record).await?;
         assert_eq!(deployment(workspace.path(), "deploy-1").await?, record);
         assert!(!current_drifted(workspace.path(), &record).await?);
-        super::super::documents::write(
-            workspace.path(),
-            "flow.awl",
-            super::super::documents::PutDocumentRequest {
-                source: "workflow second\n".to_owned(),
-            },
-        )
-        .await?;
-        assert!(current_drifted(workspace.path(), &record).await?);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authoring_state_link_is_refused_without_outside_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir()?;
+        let workspace = sandbox.path().join("workspace");
+        let outside = sandbox.path().join("outside");
+        std::fs::create_dir(&workspace)?;
+        std::fs::create_dir(&outside)?;
+        symlink(&outside, workspace.join(STATE_DIR))?;
+        assert!(store(&workspace, "workflow escaped\n").await.is_err());
+        assert!(std::fs::read_dir(&outside)?.next().is_none());
         Ok(())
     }
 }

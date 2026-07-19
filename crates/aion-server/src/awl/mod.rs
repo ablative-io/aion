@@ -21,6 +21,6 @@ pub use documents::{
 };
 pub use edit::{EditRequest, EditResponse, edit_source};
 pub use handlers::{
-    CheckRequest, CheckResponse, Diagnostic, FormatRequest, FormatResponse, check_source,
-    format_source,
+    CheckRequest, CheckResponse, Diagnostic, FormatRequest, FormatResponse,
+    check_source_in_workspace, format_source,
 };

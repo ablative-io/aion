@@ -75,6 +75,11 @@ toml = { workspace = true }
 prometheus = { workspace = true }
 async-trait.workspace = true
 base64 = { workspace = true }
+# Descriptor-relative no-follow access keeps all authoring reads and writes
+# beneath the selected workspace across component swaps on macOS and Linux.
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+tempfile.workspace = true
 # jsonwebtoken 10 panics at validation time unless exactly one crypto-provider
 # feature is selected; rust_crypto is the pure-Rust provider.
 jsonwebtoken = { workspace = true, optional = true }
@@ -95,6 +100,21 @@ liminal-server = { workspace = true, optional = true }
 # on it); named directly only so the in-band registration notifier can reference
 # the wire type. Optional, enabled only by `liminal-transport`.
 liminal = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Audited owned-value wrapper that decodes every native ACL entry field from one
+# snapshot; keeps the server crate itself under the unsafe-code denial.
+aion-darwin-acl = { version = "0.9.1", path = "../aion-darwin-acl" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Install ACL fixtures for the Darwin integration proofs; production decoding is
+# exclusively through aion-darwin-acl's single native snapshot.
+exacl = "0.13.0"
+# Resolve the account home for the stock macOS home-ACL integration proof.
+users = { version = "0.11.0", default-features = false }
 
 [dev-dependencies]
 # The libSQL backend is now optional in the production graph (behind

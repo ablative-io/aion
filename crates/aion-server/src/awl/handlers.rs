@@ -1,7 +1,10 @@
-use std::path::Path;
+use std::io;
+use std::path::{Component, Path};
 
-use aion_awl::{Span, parse, print, semantic};
+use aion_awl::{Span, TypeBody, parse, print, semantic};
 use serde::{Deserialize, Serialize};
+
+use crate::filesystem::ConfinedDir;
 
 #[derive(Debug, Deserialize)]
 pub struct CheckRequest {
@@ -74,6 +77,10 @@ pub struct SourceSpan {
 }
 
 pub fn check_source(request: &CheckRequest) -> CheckResponse {
+    check_source_at(request, None)
+}
+
+fn check_source_at(request: &CheckRequest, root: Option<&Path>) -> CheckResponse {
     let document = match parse(&request.source) {
         Ok(document) => document,
         Err(error) => {
@@ -90,11 +97,6 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
             };
         }
     };
-    let root = request
-        .path
-        .as_deref()
-        .and_then(|path| Path::new(path).parent())
-        .filter(|path| !path.as_os_str().is_empty());
     let analysis = root.map_or_else(
         || semantic::analyze(&document),
         |root| semantic::analyze_in(&document, root),
@@ -142,6 +144,126 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
         diagnostics,
         semantic: Some(semantic),
     }
+}
+
+pub async fn check_source_in_workspace(
+    workspace_root: &Path,
+    request: &CheckRequest,
+) -> Result<CheckResponse, super::documents::DocumentError> {
+    let Some(requested_path) = request.path.as_deref() else {
+        return Ok(check_source(request));
+    };
+    let document_path = super::documents::document_path(requested_path)?;
+    let workspace_root = workspace_root.to_owned();
+    let source = request.source.clone();
+    let requested_path = requested_path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Ok(document) = parse(&source) else {
+            return Ok(check_source(&CheckRequest {
+                source,
+                path: Some(requested_path),
+            }));
+        };
+        let workspace =
+            ConfinedDir::open(&workspace_root).map_err(super::documents::DocumentError::Io)?;
+        let staging = tempfile::Builder::new().prefix("aion-schema-").tempdir()?;
+        let document_parent = document_path.parent().unwrap_or_else(|| Path::new(""));
+        let analysis_root = staging.path().join(document_parent);
+        std::fs::create_dir_all(&analysis_root)?;
+        for declaration in &document.types {
+            let TypeBody::SchemaImport { path, .. } = &declaration.body else {
+                continue;
+            };
+            let import = Path::new(path);
+            if path.is_empty()
+                || import
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                continue;
+            }
+            let workspace_path = document_parent.join(import);
+            let bytes = workspace.read(&workspace_path).map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::NotADirectory
+                ) {
+                    super::documents::DocumentError::InvalidPath(format!(
+                        "schema import `{path}` contains a link: {error}"
+                    ))
+                } else {
+                    super::documents::DocumentError::Io(error)
+                }
+            })?;
+            let staged = analysis_root.join(import);
+            if let Some(parent) = staged.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(staged, bytes)?;
+        }
+        Ok(check_source_at(
+            &CheckRequest {
+                source,
+                path: Some(requested_path),
+            },
+            Some(&analysis_root),
+        ))
+    })
+    .await
+    .map_err(|error| {
+        super::documents::DocumentError::Io(io::Error::other(format!(
+            "AWL check task failed: {error}"
+        )))
+    })?
+}
+
+pub(crate) fn stage_schema_imports(
+    workspace_root: &Path,
+    requested_path: &str,
+    source: &str,
+) -> Result<(tempfile::TempDir, std::path::PathBuf), super::documents::DocumentError> {
+    let document_path = super::documents::document_path(requested_path)?;
+    let document = parse(source)
+        .map_err(|error| super::documents::DocumentError::InvalidPath(error.message))?;
+    let workspace =
+        ConfinedDir::open(workspace_root).map_err(super::documents::DocumentError::Io)?;
+    let staging = tempfile::Builder::new().prefix("aion-schema-").tempdir()?;
+    let document_parent = document_path.parent().unwrap_or_else(|| Path::new(""));
+    let analysis_root = staging.path().join(document_parent);
+    std::fs::create_dir_all(&analysis_root)?;
+    for declaration in &document.types {
+        let TypeBody::SchemaImport { path, .. } = &declaration.body else {
+            continue;
+        };
+        let import = Path::new(path);
+        if path.is_empty()
+            || import
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            continue;
+        }
+        let bytes = workspace
+            .read(&document_parent.join(import))
+            .map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::NotADirectory
+                ) {
+                    super::documents::DocumentError::InvalidPath(format!(
+                        "schema import `{path}` contains a link: {error}"
+                    ))
+                } else {
+                    super::documents::DocumentError::Io(error)
+                }
+            })?;
+        let staged = analysis_root.join(import);
+        if let Some(parent) = staged.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(staged, bytes)?;
+    }
+    Ok((staging, analysis_root))
 }
 
 pub fn format_source(request: &FormatRequest) -> Result<FormatResponse, Diagnostic> {
@@ -232,6 +354,88 @@ mod tests {
         assert!(response.diagnostics.is_empty());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn http_check_confines_document_paths_and_schema_imports()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir()?;
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../aion-awl/tests/fixtures/rev2/schema-doors/valid");
+        let source = std::fs::read_to_string(fixture_dir.join("mixed_doors.awl"))?;
+        let schema = std::fs::read(fixture_dir.join("intake.schema.json"))?;
+        std::fs::create_dir(workspace.path().join("nested"))?;
+        std::fs::write(workspace.path().join("nested/intake.schema.json"), schema)?;
+
+        let valid = check_source_in_workspace(
+            workspace.path(),
+            &CheckRequest {
+                source: source.clone(),
+                path: Some("nested/mixed_doors.awl".to_owned()),
+            },
+        )
+        .await?;
+        assert!(valid.ok, "confined import failed: {:?}", valid.diagnostics);
+
+        let outside = workspace.path().parent().ok_or("workspace had no parent")?;
+        let absolute_source = source.replace(
+            "intake.schema.json",
+            &outside.join("outside.schema.json").to_string_lossy(),
+        );
+        let absolute = check_source_in_workspace(
+            workspace.path(),
+            &CheckRequest {
+                source: absolute_source,
+                path: Some("nested/mixed_doors.awl".to_owned()),
+            },
+        )
+        .await?;
+        assert!(!absolute.ok);
+        assert!(absolute.diagnostics[0].message.contains("relative path"));
+
+        let traversal = check_source_in_workspace(
+            workspace.path(),
+            &CheckRequest {
+                source: source.replace("intake.schema.json", "../outside.schema.json"),
+                path: Some("nested/mixed_doors.awl".to_owned()),
+            },
+        )
+        .await?;
+        assert!(!traversal.ok);
+        assert!(traversal.diagnostics[0].message.contains("no `..`"));
+
+        let absolute_document = check_source_in_workspace(
+            workspace.path(),
+            &CheckRequest {
+                source: source.clone(),
+                path: Some("/tmp/mixed_doors.awl".to_owned()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            absolute_document,
+            Err(super::super::documents::DocumentError::InvalidPath(_))
+        ));
+
+        let external_schema = outside.join("external.schema.json");
+        std::fs::write(&external_schema, b"{\"type\":\"object\"}")?;
+        symlink(
+            &external_schema,
+            workspace.path().join("nested/linked.schema.json"),
+        )?;
+        let linked = check_source_in_workspace(
+            workspace.path(),
+            &CheckRequest {
+                source: source.replace("intake.schema.json", "linked.schema.json"),
+                path: Some("nested/mixed_doors.awl".to_owned()),
+            },
+        )
+        .await;
+        assert!(linked.is_err(), "schema symlink was followed");
+        Ok(())
+    }
+
     #[test]
     fn format_is_canonical_and_idempotent() -> Result<(), Diagnostic> {
         let once = format_source(&FormatRequest {
@@ -259,10 +463,13 @@ mod tests {
                 .map_err(|error| format!("{} did not parse: {}", path.display(), error.message))?;
             let canonical = print(&document);
             assert_eq!(print(&parse(&canonical)?), canonical, "{}", path.display());
-            let response = check_source(&CheckRequest {
-                source: source.clone(),
-                path: Some(path.to_string_lossy().into_owned()),
-            });
+            let response = check_source_at(
+                &CheckRequest {
+                    source: source.clone(),
+                    path: Some(path.to_string_lossy().into_owned()),
+                },
+                path.parent(),
+            );
             assert_eq!(source, original, "projection mutated {}", path.display());
             assert!(
                 response.ok,

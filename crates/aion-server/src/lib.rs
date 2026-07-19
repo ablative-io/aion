@@ -46,6 +46,8 @@ pub mod deploy;
 pub mod dev_ui;
 /// Server error and stream-failure types.
 pub mod error;
+/// Descriptor-relative filesystem confinement for sensitive server roots.
+pub(crate) mod filesystem;
 /// Engine-internal workflow filtering for enumeration surfaces.
 mod internal_workflow;
 /// Namespace resolution and authorization guard types.

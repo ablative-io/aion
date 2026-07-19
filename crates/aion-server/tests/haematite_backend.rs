@@ -51,11 +51,10 @@ fn haematite_config_parses_and_validates() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn haematite_backend_defaults_data_dir_when_absent() -> Result<(), Box<dyn std::error::Error>> {
-    // The ablative stack is the out-of-box durable default, so the haematite
-    // backend now carries a sensible default `data_dir` ("aion-data"): selecting
-    // `backend = "haematite"` without a data_dir is valid and uses the default
-    // rather than failing validation. (An EXPLICITLY empty `data_dir = ""` is
-    // still rejected — see `haematite_config_rejects_empty_data_dir`.)
+    // The ablative stack is the out-of-box durable default. Selecting
+    // `backend = "haematite"` without a data_dir is valid and resolves under
+    // Aion home rather than failing validation. (An EXPLICITLY empty
+    // `data_dir = ""` is still rejected below.)
     let toml = r#"
 [server]
 listen_address = "127.0.0.1:8080"
@@ -71,9 +70,13 @@ query_timeout_ms = 10000
 event_broadcast_capacity = 64
 cluster_broadcast_capacity = 64
 "#;
-    let config = ServerConfig::from_slice(toml.as_bytes())?;
+    let home = tempfile::tempdir()?;
+    let config = ServerConfig::from_slice_with_home(toml.as_bytes(), home.path())?;
     assert_eq!(config.store.backend, StoreBackend::Haematite);
-    assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
+    assert_eq!(
+        config.store.data_dir.as_deref(),
+        home.path().join("data").to_str()
+    );
     Ok(())
 }
 
