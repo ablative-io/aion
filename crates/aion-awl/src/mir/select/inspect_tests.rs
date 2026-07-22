@@ -15,6 +15,8 @@
 //! Two witnesses per claim: a sweep over the full covered ratchet (pinned to
 //! `COVERED`, so silent coverage loss fails), and targeted per-shape fixtures.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use beamr::atom::AtomTable;
 use beamr::loader::decode::{Instruction, Operand};
 use beamr::loader::load::ParsedModule;
@@ -23,7 +25,7 @@ use super::inspect_analysis::{
     assert_live_accuracy, check_framed, check_frameless, check_function, expected_framed,
     flow_named, flow_returns, function_arity, is_known, local_target_arities,
 };
-use super::inspect_cfg::x_safety_violations;
+use super::inspect_cfg::{reachable_from_entry, x_safety_violations};
 use super::inspect_support::{
     decode, decode_bytes, destinations, functions, heap_live, instruction_operands, is_call,
     lowered_fixtures, make_fun_num_free, manifest_dir, operand_has_y, with_explicit_make_fun_reads,
@@ -668,45 +670,100 @@ fn targeted_loop_recursion_is_a_self_tail_call() -> TestResult {
     Ok(())
 }
 
-/// Targeted route-to-step tail call (BC-5 review blocker 7): a route to another
-/// STEP lowers to a region-to-region LOCAL tail call. In
-/// `sequence_region_loopback` (`route push` / `route settle`), some function ends
-/// its transfer in a `call_last` / `call_only` targeting ANOTHER decoded
-/// function's own body label — a real local callee resolved through the module's
-/// `FuncInfo` table, not an unrelated shell `call_ext_last`. A regression from a
-/// tail route to `call … ; return` would remove that local tail.
+/// The body label of a decoded function (the `Label` after its `FuncInfo`, the
+/// target a local call transfers to).
+fn body_label(code: &[Instruction]) -> Option<u32> {
+    match code.get(2) {
+        Some(Instruction::Label { label }) => Some(*label),
+        _ => None,
+    }
+}
+
+/// Every local-body label a decoded function tail-transfers to (a `call_last` /
+/// `call_only` whose label resolves in the module's `FuncInfo` table).
+fn local_tail_targets(code: &[Instruction], local_arities: &BTreeMap<u32, u32>) -> BTreeSet<u32> {
+    code.iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::CallLast {
+                label: Operand::Label(target),
+                ..
+            }
+            | Instruction::CallOnly {
+                label: Operand::Label(target),
+                ..
+            } if local_arities.contains_key(target) => Some(*target),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Targeted route-to-step tail call (BC-5 review blocker 7): the SPECIFIC caller →
+/// target edge in `sequence_region_loopback`. The `confirm` step has two outcomes
+/// — `retry` (`route push`) and `move_on` (`route settle`). `route push` re-enters
+/// the region member `push`, so `step_confirm` LOCAL-TAIL-CALLS `step_push`'s own
+/// body label, on a live branch from entry, with no call-plus-return on that edge.
+/// `route settle` targets the region's `collect`/exit step, which `route_tail`
+/// resolves to `Ok(<collected>)` and RETURNS (`lower/route.rs` exit handling) — so
+/// there is deliberately NO `step_settle` function and NO second step tail call.
+/// The oracle pins the EXACT set of `step_confirm`'s local-tail targets to
+/// `{step_push}`: a regression that turned `route push` into a call-plus-return
+/// would empty the set, and one that turned `route settle` (a region exit) into a
+/// tail call would add a second target — either fails. This replaces the earlier
+/// existential search that any unrelated chain fall-through satisfied.
 #[test]
 fn targeted_route_to_step_is_a_local_tail_call() -> TestResult {
     let (parsed, table) = decode(&fixture_module(
         "flow-shape/valid/sequence_region_loopback",
     )?)?;
     let local_arities = local_target_arities(&parsed);
-    let mut found = false;
-    for function in functions(&parsed, &table) {
-        let own_body = match function.code.get(2) {
-            Some(Instruction::Label { label }) => Some(*label),
-            _ => None,
-        };
-        for instruction in function.code {
-            let (Instruction::CallLast { label, .. } | Instruction::CallOnly { label, .. }) =
-                instruction
-            else {
-                continue;
-            };
-            // A LOCAL tail call to ANOTHER function's body label is a
-            // region-to-region route-to-step (self targets are loop back-edges).
-            if let Operand::Label(target) = label
-                && local_arities.contains_key(target)
-                && Some(*target) != own_body
-            {
-                found = true;
-            }
-        }
+    let decoded = functions(&parsed, &table);
+    let find = |name: &str| decoded.iter().find(|function| function.name == name);
+
+    let confirm = find("awl_r0_ordered_step_confirm")
+        .ok_or("no awl_r0_ordered_step_confirm function decoded")?;
+    let push_body = find("awl_r0_ordered_step_push")
+        .and_then(|function| body_label(function.code))
+        .ok_or("no awl_r0_ordered_step_push body label")?;
+
+    // `route push` is a local tail call to step_push's body, reachable from entry.
+    let reachable = reachable_from_entry(confirm.code);
+    let push_tail = confirm
+        .code
+        .iter()
+        .position(|instruction| {
+            matches!(instruction,
+                Instruction::CallLast { label: Operand::Label(t), .. }
+                | Instruction::CallOnly { label: Operand::Label(t), .. } if *t == push_body)
+        })
+        .ok_or("step_confirm has no local tail call to step_push (route push)")?;
+    if !reachable.contains(&push_tail) {
+        return Err("step_confirm's tail call to step_push is unreachable from entry".into());
     }
-    assert!(
-        found,
-        "no region-to-region local tail call — a route-to-step is not a tail call"
-    );
+
+    // Absence of call-plus-return on the push route edge: no NON-tail `call`
+    // targets step_push (a regressed `call step_push; … ; return` would).
+    let push_call_return = confirm.code.iter().any(|instruction| {
+        matches!(instruction, Instruction::Call { label: Operand::Label(t), .. } if *t == push_body)
+    });
+    if push_call_return {
+        return Err(
+            "step_confirm reaches step_push by a non-tail call-plus-return, not a route \
+             tail call"
+                .into(),
+        );
+    }
+
+    // The EXACT local-tail-target set is {step_push}: route push tail-calls, and
+    // route settle (the region collect exit) returns — it must NOT tail-call.
+    let targets = local_tail_targets(confirm.code, &local_arities);
+    let expected: BTreeSet<u32> = std::iter::once(push_body).collect();
+    if targets != expected {
+        return Err(format!(
+            "step_confirm's local-tail targets are {targets:?}, expected exactly {{step_push={push_body}}} — \
+             route settle (a region collect exit) must Return, not tail-call"
+        )
+        .into());
+    }
     Ok(())
 }
 

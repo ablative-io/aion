@@ -266,6 +266,26 @@ pub(super) fn heap_live_root_count(func: &[Instruction], at: usize) -> u32 {
     roots.iter().next_back().map_or(0, |max| max + 1)
 }
 
+/// The instruction indices reachable from the function entry (index 0) over the
+/// real intra-function successor graph — a forward transitive closure. Used to
+/// prove a specific decoded route transfer is on a live control-flow path from
+/// entry (BC-5 review blocker 7), not dead code a laxer existential search would
+/// still count.
+pub(super) fn reachable_from_entry(func: &[Instruction]) -> BTreeSet<usize> {
+    let succ = successors(func);
+    let mut seen = BTreeSet::new();
+    let mut stack = if func.is_empty() { Vec::new() } else { vec![0] };
+    while let Some(index) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if let Some(targets) = succ.get(index) {
+            stack.extend(targets.iter().copied());
+        }
+    }
+    seen
+}
+
 /// Whether `register` is guaranteed defined on EVERY path reaching the
 /// instruction at `index` — the forward must-define fixed point (intersection at
 /// joins), the same one [`x_safety_violations`] rests on. Used to prove the ABI
