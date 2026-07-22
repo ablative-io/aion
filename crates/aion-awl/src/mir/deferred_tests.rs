@@ -41,26 +41,28 @@ fn bc4_nested_handlers_refuses_on_failure() -> Result<(), Box<dyn std::error::Er
 }
 
 /// BC-4 adversarial fixture `zero_step_workflow` is below BOTH backends' floor:
-/// it checks clean but has no steps, so the direct path refuses with "no start
-/// region" (and the reference emitter likewise refuses "no steps to execute").
-/// It lives outside any `valid/` sweep directory precisely because neither
-/// backend can produce runnable code for it; this pin anchors the direct
-/// refusal at the workflow header (line 1).
+/// it checks clean but has no steps, so the direct path refuses. The refusal is
+/// the span-carrying `Message` variant (`LowerError::new` in `build.rs`), so the
+/// pin asserts the EXACT variant, the exact message, and the span anchored to
+/// the workflow header (line 1) — never a substring. It lives outside any
+/// `valid/` sweep directory because neither backend can produce runnable code
+/// for it (the reference emitter also refuses, "no steps to execute").
 #[test]
 fn bc4_zero_step_workflow_refuses_no_start_region() -> Result<(), Box<dyn std::error::Error>> {
     let path = manifest_dir().join("tests/fixtures/rev2/header-types/zero_step_workflow.awl");
     match lower_fixture(&path)? {
-        Err(error @ (LowerError::Message { .. } | LowerError::Planning { .. })) => {
-            let text = error.to_string();
-            assert!(
-                text.contains("no start region"),
-                "zero_step_workflow refusal drifted: {text}"
+        Err(LowerError::Message { message, span }) => {
+            assert_eq!(
+                message, "the workflow has no start region",
+                "zero_step_workflow refusal message drifted"
             );
+            assert_eq!(span.line, 1, "zero_step_workflow refusal span drifted");
         }
         other => {
-            return Err(
-                format!("zero_step_workflow must refuse (no start region): {other:?}").into(),
-            );
+            return Err(format!(
+                "zero_step_workflow must refuse (Message, no start region): {other:?}"
+            )
+            .into());
         }
     }
     Ok(())
