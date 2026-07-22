@@ -1,6 +1,7 @@
 //! Package staging: validated load units shared by the workflow catalog.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use aion_package::{ContentHash, ManifestDigest, ManifestVersion, Package};
 
@@ -30,21 +31,30 @@ pub struct LoadedWorkflow {
     deployed_entry_module: String,
     entry_function: String,
     version: ContentHash,
+    declared_timeout: Option<Duration>,
 }
 
 impl LoadedWorkflow {
     /// Assembles a loaded-workflow record from already-validated parts.
+    ///
+    /// `declared_timeout` is the entry's explicitly authored workflow timeout,
+    /// or `None` when the package's content-hash identity does not commit to one
+    /// (a legacy or defaulted manifest). It is the sole input the start path
+    /// consults to decide whether to arm a deadline, so a non-declared entry can
+    /// never arm.
     pub(crate) const fn from_parts(
         workflow_type: String,
         deployed_entry_module: String,
         entry_function: String,
         version: ContentHash,
+        declared_timeout: Option<Duration>,
     ) -> Self {
         Self {
             workflow_type,
             deployed_entry_module,
             entry_function,
             version,
+            declared_timeout,
         }
     }
 
@@ -71,6 +81,16 @@ impl LoadedWorkflow {
     pub fn version(&self) -> &ContentHash {
         &self.version
     }
+
+    /// The entry's explicitly authored workflow timeout, or `None`.
+    ///
+    /// `Some` only when the package identity commits to a declared timeout; the
+    /// start path arms a deadline exactly when this is `Some`, so a legacy or
+    /// defaulted manifest — which resolves to `None` here — arms nothing.
+    #[must_use]
+    pub fn declared_timeout(&self) -> Option<Duration> {
+        self.declared_timeout
+    }
 }
 
 /// One workflow entry staged from a package manifest.
@@ -78,6 +98,7 @@ pub(crate) struct StagedWorkflow {
     pub(crate) workflow_type: String,
     pub(crate) deployed_entry_module: String,
     pub(crate) entry_function: String,
+    pub(crate) declared_timeout: Option<Duration>,
 }
 
 /// One package validated and decomposed into deployable module units.
@@ -93,21 +114,29 @@ impl<'a> StagedLoad<'a> {
     pub(crate) fn new(package: &'a Package) -> Result<Self, EngineError> {
         let manifest = package.manifest();
         let version = package.content_hash().clone();
+        // Declaredness is a tamper-evident, package-level property of the
+        // content-hash identity: when the package does not commit to a declared
+        // timeout, EVERY entry's timeout is held non-arming (`None`), so a
+        // legacy or defaulted manifest arms nothing regardless of what value its
+        // `timeout` field happens to carry.
+        let declared = package.has_declared_timeout();
         let mut seen = HashSet::new();
         let mut workflows = Vec::with_capacity(1 + manifest.additional_workflows.len());
         let entries = std::iter::once((
             manifest.entry_module.as_str(),
             manifest.entry_module.as_str(),
             manifest.entry_function.as_str(),
+            manifest.timeout,
         ))
         .chain(manifest.additional_workflows.iter().map(|entry| {
             (
                 entry.workflow_type.as_str(),
                 entry.entry_module.as_str(),
                 entry.entry_function.as_str(),
+                entry.timeout,
             )
         }));
-        for (workflow_type, entry_module, entry_function) in entries {
+        for (workflow_type, entry_module, entry_function, entry_timeout) in entries {
             if !seen.insert(workflow_type) {
                 return Err(load_error(format!(
                     "package declares workflow type `{workflow_type}` more than once"
@@ -122,6 +151,7 @@ impl<'a> StagedLoad<'a> {
                 workflow_type: workflow_type.to_owned(),
                 deployed_entry_module: aion_package::deployed_name(entry_module, &version),
                 entry_function: entry_function.to_owned(),
+                declared_timeout: if declared { entry_timeout } else { None },
             });
         }
         let modules = package
@@ -152,6 +182,7 @@ impl<'a> StagedLoad<'a> {
                     entry.deployed_entry_module.clone(),
                     entry.entry_function.clone(),
                     self.version.clone(),
+                    entry.declared_timeout,
                 )
             })
             .collect()
