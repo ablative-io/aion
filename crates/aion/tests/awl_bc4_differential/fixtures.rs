@@ -168,8 +168,11 @@ fn is_null_schema(schema: &Value) -> bool {
 /// ACTIONS. Declared `child` workflows are launched through `workflow.spawn`,
 /// not the dispatcher (the reference emitter's `CHILD_WITNESS` is a type anchor
 /// the engine never calls), so children are deliberately NOT in this map: their
-/// workflow types are not registered for spawning in the differential's package,
-/// and the 4 child-spawning fixtures fail at that boundary (see `covered.rs`).
+/// workflow types are not registered for spawning in the differential's package.
+/// Three child-spawning fixtures fail AT that boundary with `AwlChildFailed`
+/// (`child_call_awaited`, `child_spawn_combo`, `spawn_detached`); a fourth,
+/// `declarations_combined`, takes a data-driven route-failure first — both
+/// classes proven in `child_boundary.rs` (see `covered.rs`).
 pub fn action_results(document: &Document, root: &Path) -> HashMap<String, String> {
     let mut results = HashMap::new();
     for worker in &document.workers {

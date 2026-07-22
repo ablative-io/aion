@@ -85,6 +85,41 @@ async fn child_spawning_fixtures_fail_at_the_child_boundary() -> TestResult {
     Ok(())
 }
 
+/// `declarations_combined` also declares a child, but under minimal inputs its
+/// synthesized `Build.ok` is `false`, so it routes `aborted` BEFORE reaching the
+/// child — a data-driven route-failure, NOT a child-boundary failure. This
+/// asserts that cause by the SAME failure-detail evidence path: the decoded
+/// `WorkflowFailed.error.details` tag is `AwlOutcomeFailure`, not `AwlChildFailed`
+/// — regression evidence for the round-3 reclassification, not just prose.
+#[tokio::test(flavor = "multi_thread")]
+async fn declarations_combined_fails_via_data_driven_route_failure() -> TestResult {
+    let name = String::from("declarations/valid/declarations_combined");
+    let fixtures = build_spliced(std::slice::from_ref(&name), "decl_combined_boundary").await?;
+    let fixture = fixtures.first().ok_or("no declarations_combined fixture")?;
+    let outcome = run_package(
+        fixture.direct_package.clone(),
+        &fixture.entry_module,
+        &fixture.input,
+        fixture.action_results.clone(),
+        &fixture.entry_bytes,
+    )
+    .await?;
+    assert_eq!(
+        outcome.disposition,
+        Disposition::Failed,
+        "declarations_combined must fail terminally"
+    );
+    let details = child_failure_details(&outcome.trail)
+        .ok_or("declarations_combined: no WorkflowFailed details recorded")?;
+    assert_eq!(
+        details.get("tag").and_then(serde_json::Value::as_str),
+        Some("AwlOutcomeFailure"),
+        "declarations_combined must fail via a data-driven route-failure \
+         (AwlOutcomeFailure), NOT the child boundary (AwlChildFailed), got {details}"
+    );
+    Ok(())
+}
+
 /// The decoded `WorkflowFailed.error.details` JSON object, if present.
 fn child_failure_details(trail: &[Event]) -> Option<serde_json::Value> {
     trail.iter().find_map(|event| match event {

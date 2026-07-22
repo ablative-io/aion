@@ -34,6 +34,7 @@
 
 use beamr::atom::AtomTable;
 use beamr::loader::decode::{Instruction, Literal};
+use beamr::loader::encode::encode_module;
 use beamr::loader::load::ParsedModule;
 use beamr::loader::{load_beam_chunks, parse_beam_chunks};
 
@@ -287,6 +288,67 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
     Ok(())
 }
 
+/// Mutation test for the no-`int_code_end` writer row: injecting the forbidden
+/// terminator (opcode 3) into an otherwise-valid Code stream must be REJECTED by
+/// the writer contract, even though the mutated module still decodes cleanly
+/// (beamr's decoder stops at opcode 3). This is the executable acceptance test
+/// for `assert_code_stream_fully_consumed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn int_code_end_terminator_is_rejected() -> TestResult {
+    let fixtures = build_spliced(&abi_fixtures(), "abi_mutation").await?;
+    let hello = entry_bytes(&fixtures, "awl_hello").ok_or("no awl_hello entry")?;
+
+    // The clean stream is fully consumed.
+    assert_code_stream_fully_consumed(hello)?;
+
+    // Inject `int_code_end` and confirm the module STILL decodes (so it is the
+    // fully-consumed check, not the decoder, that catches the terminator)...
+    let mutated = inject_int_code_end(hello)?;
+    let table = AtomTable::with_common_atoms();
+    assert!(
+        load_beam_chunks(&mutated, &table).is_ok(),
+        "the mutated module must still decode (the decoder stops at opcode 3) — \
+         otherwise the mutation would be caught trivially, not by the row's check"
+    );
+
+    // ...and the writer contract MUST reject it.
+    assert!(
+        assert_code_stream_fully_consumed(&mutated).is_err(),
+        "int_code_end terminator was NOT rejected — the no-terminator row is vacuous"
+    );
+    assert!(
+        assert_writer_contract(&mutated).is_err(),
+        "the writer contract must reject an int_code_end terminator"
+    );
+    Ok(())
+}
+
+/// Appends an `int_code_end` (opcode 3) byte to a module's Code instruction
+/// stream, patching the Code chunk length. The Code body length is bumped by
+/// one, overwriting the first 4-byte-alignment padding byte, so the container's
+/// total size is unchanged (`padded(n) == padded(n + 1)` when `n % 4 != 0`).
+fn inject_int_code_end(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut out = bytes.to_vec();
+    let mut offset = 12; // past "FOR1", form size, "BEAM"
+    while offset + 8 <= out.len() {
+        let length = read_u32_be(&out, offset + 4)? as usize;
+        if &out[offset..offset + 4] == b"Code" {
+            let padded = length.div_ceil(4) * 4;
+            if padded == length {
+                return Err("Code body is 4-aligned; no padding byte to inject into".into());
+            }
+            let terminator_at = offset + 8 + length;
+            *out.get_mut(terminator_at)
+                .ok_or("Code chunk truncated before its padding")? = 3;
+            let new_length = u32::try_from(length + 1)?.to_be_bytes();
+            out[offset + 4..offset + 8].copy_from_slice(&new_length);
+            return Ok(out);
+        }
+        offset += 8 + length.div_ceil(4) * 4;
+    }
+    Err("no Code chunk to mutate".into())
+}
+
 /// The recorded `WorkflowCompleted.result` payload bytes, if any.
 fn completed_result(trail: &[Event]) -> Option<Vec<u8>> {
     trail.iter().find_map(|event| match event {
@@ -399,10 +461,52 @@ fn assert_writer_contract(bytes: &[u8]) -> TestResult {
         label_count, max_label,
         "Code label_count must equal the highest Label in the stream (derived, never hand-set)"
     );
-    // No `int_code_end` terminator (writer-contract row): beamr's decoder stops
-    // at end-of-bytes and models no such opcode, so a total decode whose
-    // function/label counts match the stream carries no trailing terminator.
+    // No `int_code_end` terminator (writer-contract row). A successful decode
+    // does NOT prove this: beamr's decoder reads opcodes until it SEES opcode 3,
+    // then breaks and returns Ok, silently discarding anything after. So instead
+    // prove the ENTIRE Code instruction stream is accounted for.
+    assert_code_stream_fully_consumed(bytes)?;
     Ok(())
+}
+
+/// Proves the Code chunk carries NO trailing bytes for an `int_code_end`
+/// terminator (or any other opcode) to hide in: the decoded instruction stream,
+/// re-encoded by beamr's own encoder, must reproduce the Code chunk body
+/// BYTE-FOR-BYTE. Appending `int_code_end` (opcode 3) makes the original Code
+/// body one byte longer, but the decoder stops at opcode 3 and drops it, so the
+/// re-encode is shorter and this returns `Err`.
+///
+/// Kills the mutation: "append `int_code_end` to the Code instruction stream"
+/// (proven executable by `int_code_end_terminator_is_rejected`).
+///
+/// # Errors
+///
+/// Returns an error when the re-encoded Code body differs from the original.
+fn assert_code_stream_fully_consumed(bytes: &[u8]) -> TestResult {
+    let (table, parsed) = decode(bytes)?;
+    let reencoded = encode_module(&parsed, &table)?;
+    let original_code = code_chunk_body(bytes)?;
+    let reencoded_code = code_chunk_body(&reencoded)?;
+    if original_code != reencoded_code {
+        return Err(format!(
+            "the Code chunk instruction stream is not fully consumed by the decoded \
+             instructions (original {} bytes vs re-encoded {} bytes) — a trailing \
+             terminator or opcode is hiding after the stream",
+            original_code.len(),
+            reencoded_code.len()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The Code chunk body bytes (16-byte sub-header + instruction stream).
+fn code_chunk_body(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    parse_beam_chunks(bytes)?
+        .iter()
+        .find(|(id, _)| id == b"Code")
+        .map(|(_, body)| body.to_vec())
+        .ok_or_else(|| "no Code chunk".into())
 }
 
 /// Reads a big-endian `u32` at `offset` from `bytes`.
