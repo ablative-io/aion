@@ -242,14 +242,59 @@ async fn arm_declared_deadline_or_fail_start(
         return Ok(());
     };
     if let Err(error) = arm_declared_deadline(context, workflow_id, deadline_id, fire_at).await {
-        retract_registry_publication(context, handle);
-        return Err(abort_unmonitored_start(
-            &context.runtime,
-            handle.pid(),
-            error,
-        ));
+        return Err(fail_started_run(context, handle, error));
     }
     Ok(())
+}
+
+/// Fails a partially-started run without orphaning its still-unmonitored process.
+///
+/// Ordering is the invariant: the registry publication (ownership) is retracted
+/// ONLY after the process has been terminated and that termination synchronously
+/// observed by [`RuntimeHandle::abort_unmonitored_process`]. If termination
+/// cannot be guaranteed — the bounded cleanup queue is
+/// `Unavailable`/`Exhausted`/`Poisoned` — the publication is RETAINED so the live
+/// process stays owned rather than becoming an unowned, unmonitored orphan, and a
+/// completion monitor is installed so its eventual exit is reconciled and cleanup
+/// stays retryable. The original `cause` is surfaced either way (a retain-path
+/// abort failure is logged at error level).
+fn fail_started_run(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+    cause: EngineError,
+) -> EngineError {
+    match context.runtime.abort_unmonitored_process(handle.pid()) {
+        Ok(()) => {
+            // The process is terminated and observed; retracting ownership now
+            // cannot orphan anything.
+            retract_registry_publication(context, handle);
+            cause
+        }
+        Err(abort_error) => {
+            tracing::error!(
+                workflow_pid = handle.pid(),
+                error = %abort_error,
+                cause = %cause,
+                "workflow start failed and its process could not be terminated; retaining registry ownership and installing a completion monitor so the run is not orphaned"
+            );
+            retain_ownership_with_monitor(context, handle);
+            cause
+        }
+    }
+}
+
+/// Keeps a failed-start run owned when its process could not be aborted:
+/// installs a completion monitor so the eventual exit is reconciled. A failed
+/// installation is logged — the retained registry publication remains the
+/// cleanup backstop, so ownership is never dropped on the floor.
+fn retain_ownership_with_monitor(context: &StartWorkflowContext, handle: &WorkflowHandle) {
+    if let Err(error) = install_completion_monitor(context, handle.pid(), handle) {
+        tracing::error!(
+            workflow_pid = handle.pid(),
+            error = %error,
+            "failed to install a completion monitor for a retained failed-start run; registry ownership remains the cleanup backstop"
+        );
+    }
 }
 
 /// Record the run's declared-timeout deadline `TimerStarted`, if one is declared.
@@ -371,8 +416,10 @@ fn install_started_monitor(
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
     if let Err(error) = install_completion_monitor(context, handle.pid(), handle) {
-        retract_registry_publication(context, handle);
-        return Err(error);
+        // The handle is already published; do not retract ownership until the
+        // process is confirmed terminated. `fail_started_run` aborts first and
+        // retracts only on success, retaining ownership otherwise.
+        return Err(fail_started_run(context, handle, error));
     }
     Ok(())
 }
@@ -552,7 +599,7 @@ impl EngineHandle for StartResumeEngineHandle<'_> {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
         let _ = (workflow_id, event);
         Err(EngineSeamError::Recorder {
             reason: "start resume handoff cannot record workflow events".to_owned(),
