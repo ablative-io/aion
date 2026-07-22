@@ -534,20 +534,28 @@ async fn fire_wheel_timer(
             tracing::warn!(error = %error, "timer wheel fire callback failed");
             return;
         }
+        // A deadline fire failed. It stays eligible for a bounded retry unless we
+        // can POSITIVELY confirm it is no longer live. A liveness-read error —
+        // e.g. the same store outage that failed the fire — is UNCERTAIN, not a
+        // reason to abandon the same-epoch drive: fall through to the backoff and
+        // the next attempt, whose `fire_timer` performs its own fresh liveness
+        // read and safely no-ops if another actor has since retired the deadline.
         match deadline_remains_live(&bridge, workflow_id, timer_id).await {
+            Ok(false) => return,
             Ok(true) => tracing::warn!(
                 error = %error,
                 attempt,
                 "workflow deadline fire failed while its timer is still live; retrying with backoff"
             ),
-            Ok(false) => return,
-            Err(read_error) => {
-                tracing::warn!(
-                    error = %read_error,
-                    "could not check deadline liveness for wheel retry; leaving it to restart recovery"
-                );
-                return;
-            }
+            Err(read_error) => tracing::warn!(
+                error = %error,
+                %read_error,
+                attempt,
+                "workflow deadline fire failed and its liveness could not be read (store outage?); treating as still-eligible and retrying with backoff"
+            ),
+        }
+        if attempt == MAX_ATTEMPTS {
+            break;
         }
         tokio::time::sleep(backoff).await;
         backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
@@ -581,3 +589,7 @@ fn event_kind(event: &Event) -> &'static str {
         _ => "non-timer",
     }
 }
+
+#[cfg(test)]
+#[path = "nif_timer_bridge_tests.rs"]
+mod tests;
