@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use aion_core::{
-    Event, Payload, RunId, TimerCancelCause, WorkflowError, WorkflowId, current_lease_terminal,
-    run_segment,
+    Event, Payload, RunId, WorkflowError, WorkflowId, current_lease_terminal, run_segment,
 };
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
@@ -77,6 +76,14 @@ async fn handle_process_exit_async(
         let mut recorder = recorder.lock().await;
         let history = context.store.read_history(handle.workflow_id()).await?;
         if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
+            // Resume an interrupted terminal transition: the terminal append and
+            // its deadline cancellation are two durable writes, so a crash
+            // between them (in ANY terminal writer) leaves the deadline
+            // outstanding. Re-encountering this run's own terminal, complete the
+            // cancellation under the recorder lock so whole-history recovery never
+            // re-arms the predecessor deadline. Idempotent: an already-cancelled
+            // (or never-armed) deadline records nothing.
+            crate::time::retire_run_deadline(&mut recorder, &history, handle.run_id()).await?;
             Err(existing)
         } else {
             let outcome = match outcome {
@@ -105,22 +112,13 @@ async fn handle_process_exit_async(
             };
             // LAW 1 + D5: this monitor recorded the terminal, so it permanently
             // retires the run's declared-timeout deadline under the SAME recorder
-            // lock. The deadline id is read from history (no speculative minting)
-            // and matched to exactly this run, so a timeout-less run — which has
-            // no such `TimerStarted` — retires nothing and touches no deadline
-            // object at all. `WorkflowIntent` keeps reopen from resurrecting it and
-            // closes the whole-history `outstanding_future_timers` re-arm hazard.
-            if let Some(deadline_id) =
-                crate::time::outstanding_deadline_timer(&history, handle.run_id())
-            {
-                recorder
-                    .record_timer_cancelled(
-                        Utc::now(),
-                        deadline_id,
-                        TimerCancelCause::WorkflowIntent,
-                    )
-                    .await?;
-            }
+            // lock, via the shared `retire_run_deadline` primitive. The deadline
+            // id is read from history (no speculative minting) and matched to
+            // exactly this run, so a timeout-less run — which has no such
+            // `TimerStarted` — retires nothing and touches no deadline object at
+            // all. `WorkflowIntent` keeps reopen from resurrecting it and closes
+            // the whole-history `outstanding_future_timers` re-arm hazard.
+            crate::time::retire_run_deadline(&mut recorder, &history, handle.run_id()).await?;
             Ok(outcome)
         }
     };
@@ -133,11 +131,11 @@ async fn handle_process_exit_async(
     let terminal = match recorded {
         Err(existing) => {
             handle.completion().notify(existing.clone());
-            // A pre-recorded terminal already retired this run's deadline at the
-            // transition that recorded it: `Engine::cancel` cancels it before the
-            // cancel terminal, both continue-as-new paths cancel the predecessor
-            // deadline under the recorder lock, and a fired deadline retires its
-            // own timers during timeout teardown. So nothing to cancel here.
+            // Any deadline retirement this pre-recorded terminal needed was
+            // already completed above, under the recorder lock, by the resume call
+            // — so a transition interrupted between its terminal append and its
+            // deadline cancellation is repaired here rather than leaving the
+            // deadline live for whole-history recovery to re-arm.
             reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
             if let TerminalOutcome::ContinuedAsNew {
                 input,
@@ -456,6 +454,58 @@ mod tests {
         assert_eq!(
             terminal_outcome_from_history(&events, &new_run_id),
             Some(TerminalOutcome::Completed(result))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_exit_resumes_interrupted_deadline_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An interrupted terminal transition: the terminal committed but its
+        // deadline cancellation did not, leaving the deadline outstanding. The
+        // process-exit monitor, re-encountering the run's own terminal, completes
+        // the interrupted cancellation under the recorder lock — closing the
+        // whole-history re-arm hazard.
+        let active = active_workflow().await?;
+        let run_id = active.handle.run_id().clone();
+        let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+        let result = payload("result")?;
+        {
+            let recorder = active.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_timer_started(chrono::Utc::now(), deadline_id.clone(), chrono::Utc::now())
+                .await?;
+            recorder
+                .record_workflow_completed(chrono::Utc::now(), result.clone())
+                .await?;
+        }
+        let before = active
+            .context
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert!(
+            crate::time::outstanding_deadline_timer(&before, &run_id).is_some(),
+            "the deadline is outstanding before the resume"
+        );
+
+        handle_process_exit_async(
+            active.context.clone(),
+            active.handle.clone(),
+            Ok(WorkflowProcessOutcome::Completed(result.clone())),
+        )
+        .await?;
+
+        let history = active
+            .context
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert_eq!(
+            crate::time::outstanding_deadline_timer(&history, &run_id),
+            None,
+            "re-encountering the own terminal completes the deadline cancellation: {history:#?}"
         );
         Ok(())
     }

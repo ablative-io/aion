@@ -3,9 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use aion_core::{
-    ActivityId, Event, Payload, RunId, SearchAttributeSchema, TimerCancelCause, WorkflowId,
-};
+use aion_core::{ActivityId, Event, Payload, RunId, SearchAttributeSchema, WorkflowId};
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
@@ -101,16 +99,13 @@ pub async fn continue_as_new(
             .await?;
         // D5: retire the predecessor's declared-timeout deadline as part of the
         // continue-as-new transition — under the same recorder lock, after the
-        // terminal append and before the successor is published. The deadline id
-        // comes from history (no minting) and is matched to exactly this
-        // predecessor run, so the successor's fresh deadline is untouched. Without
-        // it, `outstanding_future_timers` (whole-history scoped) would re-arm the
+        // terminal append and before the successor is published, via the shared
+        // `retire_run_deadline` primitive. The deadline id comes from history (no
+        // minting) and is matched to exactly this predecessor run, so the
+        // successor's fresh deadline is untouched. Without it,
+        // `outstanding_future_timers` (whole-history scoped) would re-arm the
         // predecessor deadline after failover and time out a run that continued.
-        if let Some(deadline_id) = crate::time::outstanding_deadline_timer(&history, run) {
-            recorder
-                .record_timer_cancelled(Utc::now(), deadline_id, TimerCancelCause::WorkflowIntent)
-                .await?;
-        }
+        crate::time::retire_run_deadline(&mut recorder, &history, run).await?;
     }
 
     let new_handle = start::start_workflow_with_options(

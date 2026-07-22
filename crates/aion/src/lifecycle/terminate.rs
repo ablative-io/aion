@@ -42,10 +42,16 @@ pub async fn complete(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
-        ensure_no_recorded_terminal(&context.store, id, run).await?;
+        let history = context.store.read_history(id).await?;
+        reject_if_recorded_terminal(&history, id, run)?;
         recorder
             .record_workflow_completed(Utc::now(), result.clone())
             .await?;
+        // D5: retire this run's declared-timeout deadline as part of the terminal
+        // transition — under the same recorder lock, on the pre-terminal history
+        // so the deadline still reads live. Shared with every other terminal
+        // writer via `retire_run_deadline`.
+        crate::time::retire_run_deadline(&mut recorder, &history, run).await?;
     }
     upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
@@ -73,10 +79,13 @@ pub async fn fail(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
-        ensure_no_recorded_terminal(&context.store, id, run).await?;
+        let history = context.store.read_history(id).await?;
+        reject_if_recorded_terminal(&history, id, run)?;
         recorder
             .record_workflow_failed(Utc::now(), error.clone())
             .await?;
+        // D5: retire this run's declared-timeout deadline (see `complete`).
+        crate::time::retire_run_deadline(&mut recorder, &history, run).await?;
     }
     upsert_workflow_visibility(context.store, context.visibility_store, id, run).await?;
 
@@ -107,10 +116,13 @@ pub async fn cancel(
     {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
-        ensure_no_recorded_terminal(&context.store, id, run).await?;
+        let history = context.store.read_history(id).await?;
+        reject_if_recorded_terminal(&history, id, run)?;
         recorder
             .record_workflow_cancelled(Utc::now(), reason.clone())
             .await?;
+        // D5: retire this run's declared-timeout deadline (see `complete`).
+        crate::time::retire_run_deadline(&mut recorder, &history, run).await?;
     }
     if let Err(error) = context.runtime.cancel_pid(handle.pid()) {
         // The process exited between the durable cancel record and the kill;
@@ -133,16 +145,17 @@ pub async fn cancel(
 
 /// Rejects a terminal transition when the run already recorded one.
 ///
-/// Must be called while holding the handle's recorder lock: the exit monitor
-/// records terminal events through the same recorder, and only the lock makes
-/// this check-then-record atomic against it.
-async fn ensure_no_recorded_terminal(
-    store: &Arc<dyn EventStore>,
+/// Must be called on the history read while holding the handle's recorder lock:
+/// the exit monitor records terminal events through the same recorder, and only
+/// the lock makes this check-then-record atomic against it. Taking `history` (the
+/// same read used to derive the deadline for retirement) keeps the transition to
+/// a single locked history read.
+fn reject_if_recorded_terminal(
+    history: &[aion_core::Event],
     id: &WorkflowId,
     run: &RunId,
 ) -> Result<(), EngineError> {
-    let history = store.read_history(id).await?;
-    if super::completion::terminal_outcome_from_history(&history, run).is_some() {
+    if super::completion::terminal_outcome_from_history(history, run).is_some() {
         return Err(EngineError::Runtime {
             reason: format!("workflow {id} run {run} already recorded a terminal event"),
         });
@@ -415,6 +428,55 @@ mod tests {
             }
             other => return Err(format!("expected started then cancelled, found {other:?}").into()),
         }
+        active.runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_cancels_an_armed_deadline() -> Result<(), Box<dyn std::error::Error>> {
+        // Universality of D5: the public `complete` terminal writer retires the
+        // run's declared-timeout deadline as part of its transition, so no
+        // terminal writer leaves a deadline outstanding.
+        let active = active_workflow().await?;
+        let run_id = active.handle.run_id().clone();
+        let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+        {
+            let recorder = active.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_timer_started(chrono::Utc::now(), deadline_id.clone(), chrono::Utc::now())
+                .await?;
+        }
+
+        complete(
+            context(
+                &active.runtime,
+                active.store.clone(),
+                active.visibility_store.clone(),
+                &active.registry,
+            ),
+            active.handle.workflow_id(),
+            active.handle.run_id(),
+            payload("result")?,
+        )
+        .await?;
+
+        let history = active
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert_eq!(
+            crate::time::outstanding_deadline_timer(&history, &run_id),
+            None,
+            "complete retires the declared-timeout deadline: {history:#?}"
+        );
+        assert!(
+            history.iter().any(|event| matches!(
+                event,
+                Event::TimerCancelled { timer_id, .. } if timer_id == &deadline_id
+            )),
+            "a TimerCancelled for the deadline is recorded: {history:#?}"
+        );
         active.runtime.shutdown()?;
         Ok(())
     }

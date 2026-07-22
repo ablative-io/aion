@@ -12,6 +12,7 @@ pub mod timer_service;
 pub use deadline::{
     DEADLINE_TIMER_PREFIX, DeadlineHandler, DeadlineHandlerError, WORKFLOW_TIMEOUT_DESCRIPTOR,
     deadline_run_id, deadline_timer_id, is_deadline_timer, outstanding_deadline_timer,
+    retire_run_deadline,
 };
 pub use named::{SleepTimer, SleepTimerError, cancel_timer, sleep, start_timer};
 pub use recovery::{TimerRecovery, TimerRecoveryError};

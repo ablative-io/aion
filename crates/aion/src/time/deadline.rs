@@ -15,8 +15,11 @@
 //! registers a handler holding whatever weak references it needs at construction
 //! time.
 
-use aion_core::{Event, RunId, TimerId};
+use aion_core::{Event, RunId, TimerCancelCause, TimerId};
+use chrono::Utc;
 use uuid::Uuid;
+
+use crate::durability::{DurabilityError, Recorder};
 
 /// Reserved name prefix for a workflow's declared-timeout deadline timer.
 ///
@@ -92,6 +95,50 @@ pub fn outstanding_deadline_timer(history: &[Event], run_id: &RunId) -> Option<T
         };
     }
     live
+}
+
+/// Cancels a run's still-live declared-timeout deadline as part of a terminal
+/// transition, under the caller's already-held recorder lock.
+///
+/// This is the ONE deadline-retirement primitive EVERY terminal writer shares —
+/// `complete`, `fail`, `cancel`, and continue-as-new on both the API and NIF
+/// paths — so D5 ("a recorded terminal permanently retires the run's deadline")
+/// is enforced uniformly instead of re-implemented, or forgotten, per writer.
+///
+/// It derives the deadline id purely from `history` (never minted): a
+/// timeout-less run recorded no deadline `TimerStarted`, so it retires nothing
+/// and touches no deadline object (LAW 1). It is IDEMPOTENT — a run whose
+/// deadline was already cancelled (or never armed) has no outstanding deadline,
+/// so a re-entry records nothing. That idempotence is what makes a terminal
+/// transition RESUMABLE: because the terminal append and this cancellation are
+/// two separate durable writes, a crash between them leaves the deadline
+/// outstanding, and the next terminal writer — or the process-exit monitor
+/// re-encountering the run's own terminal — completes the cancellation. Without
+/// it, whole-history `outstanding_future_timers` recovery would keep re-arming a
+/// predecessor deadline after failover.
+///
+/// `history` MUST be the history read under the same recorder lock. On the happy
+/// path it is read BEFORE the terminal append so the deadline still reads live
+/// and is retired; on a resume it is read after the terminal, where an
+/// already-cancelled deadline is a clean no-op and an uncancelled one is
+/// completed.
+///
+/// # Errors
+///
+/// Returns [`DurabilityError`] when the `TimerCancelled` append fails; the caller
+/// propagates it so the interrupted transition is retried rather than silently
+/// leaving the deadline live.
+pub async fn retire_run_deadline(
+    recorder: &mut Recorder,
+    history: &[Event],
+    run_id: &RunId,
+) -> Result<(), DurabilityError> {
+    if let Some(deadline_id) = outstanding_deadline_timer(history, run_id) {
+        recorder
+            .record_timer_cancelled(Utc::now(), deadline_id, TimerCancelCause::WorkflowIntent)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Errors surfaced by a [`DeadlineHandler`] to the timer service.
