@@ -18,6 +18,7 @@ use crate::loader::WorkflowCatalog;
 use crate::registry::{
     CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
 };
+use crate::runtime::monitor::UnmonitoredProcessAbortError;
 use crate::runtime::{RuntimeHandle, RuntimeInput};
 use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
 use crate::{
@@ -263,23 +264,98 @@ fn fail_started_run(
     handle: &WorkflowHandle,
     cause: EngineError,
 ) -> EngineError {
-    match context.runtime.abort_unmonitored_process(handle.pid()) {
+    let pid = handle.pid();
+    match context.runtime.abort_unmonitored_process(pid) {
         Ok(()) => {
-            // The process is terminated and observed; retracting ownership now
-            // cannot orphan anything.
+            // Terminated and synchronously observed; retracting cannot orphan.
             retract_registry_publication(context, handle);
-            cause
         }
-        Err(abort_error) => {
+        Err(UnmonitoredProcessAbortError::CleanupFailed { reason, .. }) => {
+            // The abort DID terminate the process — `terminate_process` runs
+            // before the ancillary cleanup that failed — so the retained
+            // publication is now stale: retract it. The ancillary cleanup failure
+            // is the runtime's own to retry; surface it loudly.
             tracing::error!(
-                workflow_pid = handle.pid(),
-                error = %abort_error,
+                workflow_pid = pid,
+                %reason,
                 cause = %cause,
-                "workflow start failed and its process could not be terminated; retaining registry ownership and installing a completion monitor so the run is not orphaned"
+                "failed-start abort terminated the process but ancillary cleanup failed; retracting stale ownership"
+            );
+            retract_registry_publication(context, handle);
+        }
+        Err(UnmonitoredProcessAbortError::TimedOut { .. }) => {
+            // The abort job is still in flight and WILL terminate the process.
+            // Defer retraction to the job's completion finalizer rather than
+            // racing a monitor install the in-flight job would reject.
+            defer_retraction_to_abort_job(context, handle, pid);
+        }
+        Err(
+            error @ (UnmonitoredProcessAbortError::ExecutorUnavailable { .. }
+            | UnmonitoredProcessAbortError::ExecutorExhausted { .. }
+            | UnmonitoredProcessAbortError::ExecutorPoisoned { .. }),
+        ) => {
+            // No abort job was submitted (the reservation was released) and the
+            // process is still live and unmonitored: retain ownership and install
+            // a completion monitor so its eventual exit is reconciled.
+            tracing::error!(
+                workflow_pid = pid,
+                %error,
+                cause = %cause,
+                "failed-start abort could not be submitted; retaining ownership and installing a completion monitor"
             );
             retain_ownership_with_monitor(context, handle);
-            cause
         }
+        Err(error) => {
+            // Poisoned/degraded abort state: termination cannot be proven, so
+            // retain ownership rather than orphan. The typed cause already reaches
+            // the caller.
+            tracing::error!(
+                workflow_pid = pid,
+                %error,
+                cause = %cause,
+                "failed-start abort returned a degraded state; retaining ownership as the safe cleanup backstop"
+            );
+        }
+    }
+    cause
+}
+
+/// Defer failed-start registry retraction to the in-flight abort job's
+/// completion: when the job proves termination it runs the retraction finalizer.
+/// If no job is found the abort completed between the wait timeout and here, so
+/// the process is already terminated and retraction runs now. A poisoned attach
+/// retains ownership (the safe backstop).
+fn defer_retraction_to_abort_job(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+    pid: crate::Pid,
+) {
+    let registry = Arc::clone(&context.registry);
+    let workflow_id = handle.workflow_id().clone();
+    let run_id = handle.run_id().clone();
+    let finalizer = move || {
+        if let Err(error) = registry.remove(&workflow_id, &run_id) {
+            tracing::warn!(
+                workflow_pid = pid,
+                %error,
+                "failed to retract failed-start ownership after its abort job terminated the process"
+            );
+        }
+    };
+    match context
+        .runtime
+        .attach_unmonitored_abort_finalizer(pid, finalizer)
+    {
+        Ok(true) => tracing::warn!(
+            workflow_pid = pid,
+            "failed-start abort timed out; registry retraction deferred to the abort job's termination"
+        ),
+        Ok(false) => retract_registry_publication(context, handle),
+        Err(error) => tracing::error!(
+            workflow_pid = pid,
+            %error,
+            "could not attach failed-start retraction to the abort job; retaining ownership"
+        ),
     }
 }
 
