@@ -344,24 +344,67 @@ step one\n\
     Ok(())
 }
 
-/// The gleam target is byte-identical to the pre-`--target` behaviour: the real
-/// `emit_command` writing `--target gleam` produces exactly the bytes the
-/// legacy `emit_source` seam does — the target split changed no gleam output.
+/// The committed golden-fixture directory (`tests/golden/`): matched
+/// `<name>.awl` source and `<name>.gleam` / `<name>.awl.json` expected-output
+/// pairs, frozen on disk so the regression compares the live emitter against
+/// bytes it cannot itself rewrite.
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
+}
+
+/// The gleam target is byte-identical to the pre-`--target` behaviour, proven
+/// against a COMMITTED golden rather than the emitter compared with itself: the
+/// real `emit_command` writing `--target gleam` reproduces the frozen
+/// `golden/probe.gleam` bytes exactly. A mutation to the gleam emitter changes
+/// the freshly written bytes but never the committed golden, so this regression
+/// is mutation-sensitive where the old self-referential `emit_source == written`
+/// form was not (BC-5 review blocker 1).
 #[test]
-fn emit_gleam_target_is_byte_identical_to_the_legacy_seam() -> anyhow::Result<()> {
+fn emit_gleam_target_reproduces_the_committed_golden() -> anyhow::Result<()> {
+    let source_path = golden_dir().join("probe.awl");
+    let golden = fs::read(golden_dir().join("probe.gleam"))?;
     let temp = tempfile::tempdir()?;
-    let source_path = temp.path().join("probe.awl");
     let output_path = temp.path().join("probe.gleam");
-    fs::write(&source_path, VALID_DOC)?;
     assert_eq!(
         emit_command(&source_path, Some(&output_path), EmitTarget::Gleam),
         ExitCode::SUCCESS,
         "the gleam emit path failed"
     );
-    let written = fs::read_to_string(&output_path)?;
-    let legacy = emit_source(&source_path, VALID_DOC)
-        .map_err(|d| anyhow::anyhow!("legacy emit failed: {d:?}"))?;
-    assert_eq!(written, legacy, "gleam target output drifted from the seam");
+    let written = fs::read(&output_path)?;
+    assert_eq!(
+        written, golden,
+        "gleam output drifted from the committed golden golden/probe.gleam"
+    );
+    Ok(())
+}
+
+/// The synthesized-children gleam path is byte-frozen too: emitting the
+/// committed `golden/cli_parallel.awl` (a `distribute` step, so an implicit
+/// child module and its packaging sidecar) reproduces both `cli_parallel.gleam`
+/// AND the `cli_parallel.awl.json` sidecar bytes exactly. Covers the synthesized
+/// entry path the plain `probe` golden does not (BC-5 review blocker 1).
+#[test]
+fn emit_gleam_synthesized_children_reproduce_the_committed_goldens() -> anyhow::Result<()> {
+    let source_path = golden_dir().join("cli_parallel.awl");
+    let golden_source = fs::read(golden_dir().join("cli_parallel.gleam"))?;
+    let golden_sidecar = fs::read(golden_dir().join("cli_parallel.awl.json"))?;
+    let temp = tempfile::tempdir()?;
+    let output_path = temp.path().join("cli_parallel.gleam");
+    assert_eq!(
+        emit_command(&source_path, Some(&output_path), EmitTarget::Gleam),
+        ExitCode::SUCCESS,
+        "the gleam emit path failed"
+    );
+    assert_eq!(
+        fs::read(&output_path)?,
+        golden_source,
+        "gleam output drifted from golden/cli_parallel.gleam"
+    );
+    assert_eq!(
+        fs::read(output_path.with_extension("awl.json"))?,
+        golden_sidecar,
+        "sidecar drifted from golden/cli_parallel.awl.json"
+    );
     Ok(())
 }
 

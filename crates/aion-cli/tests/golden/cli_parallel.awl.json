@@ -1,0 +1,29 @@
+{
+  "entry_module": "cli_parallel",
+  "format_version": 1,
+  "synthesized_workflows": [
+    {
+      "entry_function": "aion_internal_awl_child_cli_parallel_fan_0_run",
+      "entry_module": "cli_parallel",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "item": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "type": "object"
+      },
+      "internal": true,
+      "output_schema": {
+        "type": "string"
+      },
+      "timeout_seconds": 3600,
+      "workflow_type": "aion_internal_awl_child_cli_parallel_fan_0"
+    }
+  ]
+}

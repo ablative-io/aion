@@ -1,0 +1,21 @@
+//! CLI structured artifact proof.
+workflow cli_parallel
+  input items: [String]
+  outcome done: type Done, route success
+
+type Done { count: Int }
+
+worker proof
+  action first(item: String) -> String
+  action second(item: String) -> String
+
+step fan
+  distribute item in items
+step one
+  first(item: item) -> prepared
+step two
+  second(item: prepared) -> result
+step gather
+  collect result -> results
+  results |> count -> total
+  route done(count: total)
