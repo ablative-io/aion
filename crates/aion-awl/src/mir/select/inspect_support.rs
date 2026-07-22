@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use beamr::atom::{Atom, AtomTable};
-use beamr::loader::decode::{BifOp, Instruction, Operand, decode_instructions};
+use beamr::loader::decode::{BifOp, Instruction, LambdaEntry, Operand, decode_instructions};
 use beamr::loader::load::ParsedModule;
 use beamr::loader::{load_beam_chunks, parse_beam_chunks};
 
@@ -227,6 +227,67 @@ pub(super) fn name_of(table: &AtomTable, atom: Atom) -> String {
     table.resolve(atom).unwrap_or("<?>").to_owned()
 }
 
+/// The physical capture count (`num_free`) of the `FunT` a decoded `make_fun2`
+/// names, resolved through the module's `lambdas` table — the implicit inputs
+/// `x0..x(num_free-1)` the closure reads (BC-5 review blocker 3). `None` for a
+/// non-`MakeFun` instruction.
+///
+/// # Errors
+///
+/// Fails when a `MakeFun`'s lambda-index operand is absent or out of range (a
+/// decoder/emitter disagreement, surfaced rather than swallowed).
+pub(super) fn make_fun_num_free(
+    lambdas: &[LambdaEntry],
+    instruction: &Instruction,
+) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let Instruction::MakeFun { operands } = instruction else {
+        return Ok(None);
+    };
+    let index = operands
+        .first()
+        .and_then(operand_index)
+        .ok_or("make_fun2 carries no lambda-index operand")?;
+    let entry = lambdas
+        .get(index)
+        .ok_or_else(|| format!("make_fun2 lambda index {index} out of range in FunT"))?;
+    Ok(Some(entry.num_free))
+}
+
+/// Rewrites every `make_fun2` in `code` so its implicit capture inputs
+/// `x0..x(num_free-1)` become EXPLICIT `X` operands (resolved through `lambdas`),
+/// leaving every other instruction untouched. The production selector marshals
+/// captures into `x0..` and then emits `MakeFun { operands: [Unsigned(lambda)] }`
+/// with the count stored only as the `FunT`'s `num_free` (`select/emit.rs`
+/// `MakeClosure`; `builder.rs` `lambda`), so a raw decoded one-operand `make_fun2`
+/// contributes ZERO reads to the register-safety/`Live` analyses — a deleted or
+/// stale capture register would be invisible. Making the reads explicit here
+/// feeds them into the metadata-free CFG ([`super::inspect_cfg`]) uniformly,
+/// without threading `lambdas` through every transfer function (BC-5 review
+/// blocker 3).
+///
+/// # Errors
+///
+/// Propagates a `make_fun2` whose lambda index does not resolve in `lambdas`.
+pub(super) fn with_explicit_make_fun_reads(
+    code: &[Instruction],
+    lambdas: &[LambdaEntry],
+) -> Result<Vec<Instruction>, Box<dyn std::error::Error>> {
+    let mut out = Vec::with_capacity(code.len());
+    for instruction in code {
+        if let Instruction::MakeFun { operands } = instruction {
+            let num_free = make_fun_num_free(lambdas, instruction)?
+                .ok_or("make_fun2 lost its capture count during expansion")?;
+            let mut expanded = Vec::with_capacity(operands.len() + num_free as usize);
+            expanded.extend((0..num_free).map(Operand::X));
+            expanded.extend(operands.iter().cloned());
+            out.push(Instruction::MakeFun { operands: expanded });
+        } else {
+            out.push(instruction.clone());
+        }
+    }
+    Ok(out)
+}
+
 /// One decoded function: its name and the contiguous instruction slice from its
 /// entry `Label` (the one immediately preceding its `FuncInfo`) up to the next
 /// function's entry label (or end of stream).
@@ -421,8 +482,12 @@ fn x_reads(instruction: &Instruction) -> Vec<u32> {
             }
         }
         // A `make_fun` reads every captured `X` register (its environment); its
-        // result lands in `x0` (a write, not a read). Counting captures keeps the
-        // cross-call X-safety and `Live` analyses complete (BC-5 review blocker 3).
+        // result lands in `x0` (a write, not a read). The raw decoded op carries
+        // only the lambda index; the capture reads `x0..x(num_free-1)` are made
+        // EXPLICIT by [`with_explicit_make_fun_reads`] (resolved through the
+        // module's `FunT`) before analysis, so `collect_x` sees them here and the
+        // cross-call X-safety / `Live` analyses stay complete (BC-5 review
+        // blocker 3).
         Instruction::MakeFun { operands } => {
             for operand in operands {
                 collect_x(operand, &mut reads);

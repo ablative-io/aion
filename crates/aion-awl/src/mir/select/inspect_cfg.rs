@@ -266,6 +266,18 @@ pub(super) fn heap_live_root_count(func: &[Instruction], at: usize) -> u32 {
     roots.iter().next_back().map_or(0, |max| max + 1)
 }
 
+/// Whether `register` is guaranteed defined on EVERY path reaching the
+/// instruction at `index` — the forward must-define fixed point (intersection at
+/// joins), the same one [`x_safety_violations`] rests on. Used to prove the ABI
+/// result register `x0` is defined at a `Return` on every edge to the shared exit
+/// (BC-5 review blocker 5), rather than the prefix-wide no-violations proxy.
+/// An out-of-range or unreachable node answers `false`.
+pub(super) fn x_defined_at(func: &[Instruction], index: usize, register: u32) -> bool {
+    available_x(func, entry_arity(func))
+        .get(index)
+        .is_some_and(|defined| defined.contains(&register))
+}
+
 /// Every cross-call / cross-join `X`-safety violation in `func`: an `X` register
 /// read where it is NOT defined on all paths since the function's arguments —
 /// i.e. read after a call (or a control-flow join) without a redefinition on

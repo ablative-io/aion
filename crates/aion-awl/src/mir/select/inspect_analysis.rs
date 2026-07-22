@@ -11,10 +11,10 @@ use beamr::atom::AtomTable;
 use beamr::loader::decode::{Instruction, Operand};
 use beamr::loader::load::ParsedModule;
 
-use super::inspect_cfg::{heap_live_root_count, x_safety_violations};
+use super::inspect_cfg::{heap_live_root_count, x_defined_at, x_safety_violations};
 use super::inspect_support::{
     as_unsigned, heap_live, import_target, instruction_operands, is_call, operand_has_y,
-    reads_writes,
+    reads_writes, with_explicit_make_fun_reads,
 };
 use crate::mir::{Block, FlowFn, MirFn, Stmt, Tail};
 
@@ -138,6 +138,13 @@ pub(super) fn check_function(
     local_arities: &BTreeMap<u32, u32>,
 ) -> TestResult {
     let where_ = format!("{label}::{name}");
+    // Make each `make_fun2`'s implicit capture reads `x0..x(num_free-1)` explicit
+    // (resolved through the module's `FunT`) before any register analysis, so a
+    // deleted or stale capture reload is visible to the CFG (BC-5 review
+    // blocker 3). All other instructions are untouched, so the framing/exit/
+    // marshaling checks below see the real decoded shape.
+    let analysis = with_explicit_make_fun_reads(code, &parsed.lambdas)?;
+    let code = analysis.as_slice();
     let arity = function_arity(code)
         .ok_or_else(|| format!("{where_}: function has no decodable FuncInfo arity"))?;
     let framed = code
@@ -320,10 +327,17 @@ fn check_framed_exit(code: &[Instruction], frame_size: u64, where_: &str) -> Tes
                 )
                 .into());
             }
-            // The returned value is in x0 by ABI: x0 must be defined at the exit.
-            let defined_x0 = x_safety_violations(&code[..=index]).is_empty();
-            if !defined_x0 {
-                return Err(format!("{where_}: the return value is not defined in x0").into());
+            // The returned value is in `x0` by ABI: `x0` must be defined on EVERY
+            // path reaching this exit — the forward must-define fixed point over
+            // the whole function (intersection at joins), not the prefix-wide
+            // no-violations proxy that a stale unrelated `x0` could satisfy (BC-5
+            // review blocker 5). The exact reload identity is pinned on the
+            // targeted fixtures (`framed_return_reloads_the_return_value_into_x0`).
+            if !x_defined_at(code, index, 0) {
+                return Err(format!(
+                    "{where_}: the return value is not defined in x0 on all paths to the exit"
+                )
+                .into());
             }
         }
     }

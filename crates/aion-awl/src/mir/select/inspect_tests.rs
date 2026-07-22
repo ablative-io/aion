@@ -23,9 +23,10 @@ use super::inspect_analysis::{
     assert_live_accuracy, check_framed, check_frameless, check_function, expected_framed,
     flow_named, flow_returns, function_arity, is_known, local_target_arities,
 };
+use super::inspect_cfg::x_safety_violations;
 use super::inspect_support::{
     decode, decode_bytes, destinations, functions, heap_live, instruction_operands, is_call,
-    lowered_fixtures, manifest_dir, operand_has_y,
+    lowered_fixtures, make_fun_num_free, manifest_dir, operand_has_y, with_explicit_make_fun_reads,
 };
 use crate::mir::covered::COVERED;
 use crate::mir::{
@@ -291,6 +292,204 @@ fn targeted_frameless_body_uses_no_frame_or_y() -> TestResult {
         "a frameless tail import must be call_ext_only"
     );
     check_frameless(function.code, 0, "targeted::frameless")?;
+    Ok(())
+}
+
+/// Focused oracle (BC-5 review blocker 3): a real closure's implicit captures
+/// `x0..x(num_free-1)` must be visible to the register-safety analysis. The raw
+/// decoded `make_fun2` carries only its `FunT` index, so its capture reads are
+/// invisible until [`with_explicit_make_fun_reads`] resolves `num_free` and makes
+/// them explicit. Scan the covered fixtures for a clean witness — a closure whose
+/// top capture register is defined ONLY by the marshal reload right before the
+/// `make_fun2` — then prove: the emitted closure is X-safe; deleting that reload
+/// is INVISIBLE to the raw analysis (the hole); and it is CAUGHT once the implicit
+/// reads are explicit (the fix).
+#[test]
+fn make_fun_capture_reads_are_modeled_and_a_removed_reload_is_caught() -> TestResult {
+    for (_label, module) in lowered_fixtures()? {
+        let (parsed, table) = decode(&module)?;
+        for function in functions(&parsed, &table) {
+            let Some(at) = function
+                .code
+                .iter()
+                .position(|instruction| matches!(instruction, Instruction::MakeFun { .. }))
+            else {
+                continue;
+            };
+            let Some(num_free) = make_fun_num_free(&parsed.lambdas, &function.code[at])? else {
+                continue;
+            };
+            if num_free == 0 {
+                continue;
+            }
+            // The emitted closure must be register-safe once captures are explicit.
+            if !x_safety_violations(&with_explicit_make_fun_reads(
+                function.code,
+                &parsed.lambdas,
+            )?)
+            .is_empty()
+            {
+                continue;
+            }
+            // Try each capture register: a clean witness is one whose marshal reload
+            // is the SOLE definition reaching the `make_fun2`, so deleting it is
+            // invisible to the raw one-operand op (its captures are unmodeled) yet
+            // undefined-at-`make_fun2` once the implicit reads are explicit. A
+            // register the emitter happens to define elsewhere (a stale value) is
+            // the source problem (blocker 6), not this definedness problem, so it is
+            // skipped here.
+            for register in (0..num_free).rev() {
+                let Some(reload) = marshal_reload_of(function.code, at, register) else {
+                    continue;
+                };
+                let mut mutated = function.code.to_vec();
+                mutated.remove(reload);
+                let invisible_raw = x_safety_violations(&mutated).is_empty();
+                let caught_explicit =
+                    !x_safety_violations(&with_explicit_make_fun_reads(&mutated, &parsed.lambdas)?)
+                        .is_empty();
+                if invisible_raw && caught_explicit {
+                    // Witness found: the deletion is invisible to the raw op but
+                    // caught once `num_free` makes the capture reads explicit —
+                    // proving the implicit captures are modeled (blocker 3).
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(
+        "no covered closure has a capture register whose reload deletion is invisible to the raw \
+         make_fun2 yet caught once implicit captures are explicit — blocker 3 is unexercised"
+            .into(),
+    )
+}
+
+/// The index of the marshal `move <src> -> x(register)` that loads a capture into
+/// `register` for the `make_fun2` at `make_fun`, searching the marshal block back
+/// to the previous call/label. `None` when no such reload is found.
+fn marshal_reload_of(code: &[Instruction], make_fun: usize, register: u32) -> Option<usize> {
+    for index in (0..make_fun).rev() {
+        match code.get(index)? {
+            Instruction::Move {
+                destination: Operand::X(reg),
+                ..
+            } if *reg == register => return Some(index),
+            instruction
+                if is_call(instruction) || matches!(instruction, Instruction::Label { .. }) =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The shared-exit label of a framed function: the `Label` immediately preceding
+/// its single standalone `Deallocate` (the `Lexit: Deallocate F; Return` block).
+fn exit_label(code: &[Instruction]) -> Option<u32> {
+    let dealloc = code
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Deallocate { .. }))?;
+    match code.get(dealloc.checked_sub(1)?) {
+        Some(Instruction::Label { label }) => Some(*label),
+        _ => None,
+    }
+}
+
+/// Asserts that on EVERY edge to the shared exit (`jump exit`), the returned
+/// value is reloaded into `x0` immediately beforehand — `move <src> -> x0` — and,
+/// when `expected_home` is given, that `<src>` is exactly the return var's frame
+/// home `Y(expected_home)`. Pins the selector's `reload(return_src, 0); jump
+/// Lexit` shape with SOURCE identity (BC-5 review blocker 5), so a reload
+/// redirected off `x0` or sourced from the wrong home is rejected.
+fn assert_return_reload_into_x0(
+    code: &[Instruction],
+    exit: u32,
+    expected_home: Option<u32>,
+) -> TestResult {
+    let mut edges = 0_usize;
+    for (index, instruction) in code.iter().enumerate() {
+        if !matches!(instruction, Instruction::Jump { target: Operand::Label(t) } if *t == exit) {
+            continue;
+        }
+        edges += 1;
+        let prior = index.checked_sub(1).and_then(|p| code.get(p));
+        let Some(Instruction::Move {
+            source,
+            destination: Operand::X(0),
+        }) = prior
+        else {
+            return Err(format!(
+                "the jump to the shared exit at {index} is not preceded by a `move <src> -> x0` \
+                 return reload (got {prior:?})"
+            )
+            .into());
+        };
+        if let Some(home) = expected_home
+            && !matches!(source, Operand::Y(h) if *h == home)
+        {
+            return Err(format!(
+                "the return reload before the exit jump sources {source:?}, not the return var's \
+                 home y{home}"
+            )
+            .into());
+        }
+    }
+    if edges == 0 {
+        return Err("no jump to the shared exit — cannot pin the return reload".into());
+    }
+    Ok(())
+}
+
+/// Targeted (BC-5 review blocker 5): the value a framed function returns is
+/// reloaded into `x0` on the edge to the shared exit, sourced from the return
+/// var's own frame home. `execute(x0)` builds a record into `Var(1)` (homed at
+/// `y1`) and returns it, so the exit edge is `move y1 -> x0; jump Lexit`. Redirect
+/// that reload to `x1` — the exact emitter regression the review names — and the
+/// oracle must reject it, proving source identity is pinned, not just "some x0".
+#[test]
+fn framed_return_reloads_the_return_value_into_x0() -> TestResult {
+    let one = flow(
+        "execute",
+        FnOrigin::Execute,
+        &[0],
+        vec![Stmt::RecordNew {
+            dst: Var(1),
+            tag: AtomRef(0),
+            args: vec![Value::Var(Var(0))],
+            span: Span { line: 0, column: 0 },
+        }],
+        Tail::Return(Value::Var(Var(1))),
+    );
+    let built = module("framed_return", &["ok"], vec![one]);
+    let (parsed, table) = decoded_module(&built)?;
+    let function = functions(&parsed, &table)
+        .into_iter()
+        .find(|function| function.name == "execute")
+        .ok_or("no execute function")?;
+    let exit = exit_label(function.code).ok_or("framed function has no shared exit label")?;
+    // `Var(1)` is the sole def, homed at `y1` (params first, then defs in order).
+    assert_return_reload_into_x0(function.code, exit, Some(1))?;
+
+    // Redirect the return reload away from x0 (move y1 -> x1): must be rejected.
+    let mut mutated = function.code.to_vec();
+    let jump = mutated
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Jump { target: Operand::Label(t) } if *t == exit))
+        .ok_or("no exit jump to mutate")?;
+    let reload = jump.checked_sub(1).ok_or("exit jump has no predecessor")?;
+    if let Some(Instruction::Move { source, .. }) = mutated.get(reload) {
+        mutated[reload] = Instruction::Move {
+            source: source.clone(),
+            destination: Operand::X(1),
+        };
+    }
+    assert!(
+        assert_return_reload_into_x0(&mutated, exit, Some(1)).is_err(),
+        "a return reload redirected off x0 was accepted — the exit reload's source identity is \
+         not pinned"
+    );
     Ok(())
 }
 
