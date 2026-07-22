@@ -239,15 +239,19 @@ pub(super) async fn sweep_continued_as_new_replacements(
 /// teardown, and `recover_due` re-fires it to drive `ResumeTeardown`. A run with
 /// no terminal yet keeps its live deadline. Idempotent.
 ///
-/// Single-writer discipline (never a second recorder against a live head): each
-/// retirement goes through the registered handle's recorder when one exists, and
-/// otherwise through an independent recorder guarded by a `SequenceConflict`
-/// re-read. On cold boot this sweep runs BEFORE repopulation and continue-as-new
-/// successor start, so no local recorder yet exists; on live adoption it runs
-/// after repopulation, where a workflow with a live successor already holds a
-/// registered recorder.
+/// Single-writer discipline: this sweep NEVER appends around a live workflow
+/// recorder. It runs where no local recorder exists for its candidates — on cold
+/// boot BEFORE repopulation and continue-as-new successor start, and on adoption
+/// BEFORE the acquired shards' workflows are repopulated — so every retirement
+/// goes through an independent recorder, guarded by a `SequenceConflict` re-read.
+/// [`SweepScope`] selects what a live registered handle at candidate time means:
+/// on cold boot it is an ordering-invariant breach (typed error); on adoption it
+/// is an already-owned resident workflow that is out of scope (skipped — its
+/// deadline lifecycle is this engine's normal-operation concern, and the acquired
+/// workflows it is here to repair have no local handle yet).
 pub(super) async fn sweep_uncancelled_terminal_deadlines(
     context: &StartupRecoveryContext,
+    scope: SweepScope,
 ) -> Result<(), EngineError> {
     let horizon = Utc::now()
         .checked_add_signed(chrono::Duration::days(3_652_500))
@@ -257,48 +261,53 @@ pub(super) async fn sweep_uncancelled_terminal_deadlines(
         let Some(run_id) = crate::time::deadline_run_id(&entry.timer_id) else {
             continue;
         };
-        retire_orphaned_terminal_deadline(context, &entry.workflow_id, &run_id).await?;
+        repair_orphaned_terminal_deadline(context, &entry.workflow_id, &run_id, scope).await?;
     }
     Ok(())
 }
 
-/// Retire one run's uncancelled non-timeout-terminal deadline with single-writer
-/// discipline. When a registered handle exists for the workflow (its live run —
-/// e.g. a continue-as-new successor, or an adopted active run), append through
-/// THAT handle's recorder under its lock; otherwise use an independent recorder
-/// with `SequenceConflict` reconciliation. A no-longer-orphaned run is a no-op.
-async fn retire_orphaned_terminal_deadline(
+/// Whether this sweep runs at cold boot (full scope, no local recorders exist
+/// yet) or at live shard adoption (scoped implicitly to the not-yet-repopulated
+/// acquired workflows — those without a live registered handle).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SweepScope {
+    /// Cold boot before repopulation: NO candidate may have a live handle.
+    ColdBoot,
+    /// Live adoption before repopulating the acquired shards' workflows: an
+    /// already-owned resident workflow legitimately has a live handle and is out
+    /// of scope.
+    Adoption,
+}
+
+/// Repair one candidate's uncancelled non-timeout-terminal deadline, upholding
+/// the single-writer invariant.
+///
+/// A live registered handle means a live local recorder exists for the workflow.
+/// On cold boot that is an ordering-invariant breach (the sweep must precede
+/// repopulation), surfaced as a typed [`EngineError`] rather than an append
+/// around the live recorder or a silent skip. On adoption it is an out-of-scope
+/// already-owned workflow, skipped. Otherwise no local recorder exists, so the
+/// retirement uses an independent recorder as the sole writer, with
+/// `SequenceConflict` reconciliation guarding against any cross-actor writer.
+async fn repair_orphaned_terminal_deadline(
     context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,
     run_id: &RunId,
+    scope: SweepScope,
 ) -> Result<(), EngineError> {
-    if let Some(handle) = registered_handle_for_workflow(context, workflow_id)? {
-        let recorder = handle.recorder();
-        let mut recorder = recorder.lock().await;
-        let history = context.store.as_ref().read_history(workflow_id).await?;
-        if is_orphaned_terminal_deadline(&history, run_id) {
-            tracing::info!(
-                %workflow_id,
-                %run_id,
-                "retiring an orphaned non-timeout terminal deadline through the live workflow recorder"
-            );
-            crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
-        }
-        return Ok(());
+    // Resolve the workflow's live run through the live index (never `list().find`,
+    // which can select a superseded run's stale handle).
+    if context.registry.live_run_pid(workflow_id)?.is_some() {
+        return match scope {
+            SweepScope::ColdBoot => Err(EngineError::Runtime {
+                reason: format!(
+                    "terminal-deadline sweep found a live registered handle for workflow {workflow_id} on cold boot, which must run before repopulation: the sweep ordering invariant is broken"
+                ),
+            }),
+            SweepScope::Adoption => Ok(()),
+        };
     }
     retire_orphaned_terminal_deadline_independent(context, workflow_id, run_id).await
-}
-
-/// The registered handle for any live run of `workflow_id`, if one exists.
-fn registered_handle_for_workflow(
-    context: &StartupRecoveryContext,
-    workflow_id: &aion_core::WorkflowId,
-) -> Result<Option<crate::registry::WorkflowHandle>, EngineError> {
-    Ok(context
-        .registry
-        .list()?
-        .into_iter()
-        .find(|handle| handle.workflow_id() == workflow_id))
 }
 
 /// Whether `run_id`'s history shows a NON-timeout terminal with a still-outstanding

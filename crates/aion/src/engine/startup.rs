@@ -25,7 +25,7 @@ use super::api_schedule::{
     schedule_coordinator_workflow_id, schedule_coordinator_workflow_type,
 };
 use super::startup_sweeps::{
-    sweep_continued_as_new_replacements, sweep_recorded_children,
+    SweepScope, sweep_continued_as_new_replacements, sweep_recorded_children,
     sweep_uncancelled_terminal_deadlines,
 };
 
@@ -76,7 +76,7 @@ pub(super) async fn recover_active_workflows_on_startup(
     // workflows and BEFORE starting continue-as-new successors: at this point no
     // local workflow recorder exists, so the sweep's independent recorder is the
     // sole writer and cannot stale a recovered or successor recorder's head.
-    sweep_uncancelled_terminal_deadlines(&context).await?;
+    sweep_uncancelled_terminal_deadlines(&context, SweepScope::ColdBoot).await?;
     let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
             &context.runtime,
@@ -108,20 +108,24 @@ pub(super) async fn recover_adopted_shards(
         Arc::clone(&context.visibility_store),
     )
     .await?;
+    // Repair a dead owner's orphaned non-timeout terminal deadline on the
+    // surviving adopter BEFORE repopulating/spawning the acquired shards'
+    // recovered processes — under the established shard fence. At this point the
+    // adopter holds NO local handle for any acquired-shard workflow (they were the
+    // dead owner's), so the independent recorder is the sole writer, exactly like
+    // cold boot. `SweepScope::Adoption` skips an already-owned resident workflow
+    // (which legitimately holds a live handle) rather than writing around it, so
+    // an already-owned workflow's live recorder is never staled. Covers both due
+    // and future deadline rows, which `rearm_future_from_active_histories`
+    // (list_active only) would miss.
+    sweep_uncancelled_terminal_deadlines(&context, SweepScope::Adoption).await?;
     let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
             &context.runtime,
         ))) as Arc<dyn ActiveWorkflowRecoverySeam>
     });
     repopulate_active_workflows(&context, recovery.as_ref()).await?;
-    sweep_continued_as_new_replacements(&context).await?;
-    // Repair a dead owner's orphaned non-timeout terminal deadline on the
-    // surviving adopter, BEFORE timer recovery (the caller's next step) — under
-    // the established shard fence. Runs after repopulation, so a workflow with a
-    // live successor is retired through its registered recorder, not an
-    // uncoordinated second writer. Covers both due and future deadline rows,
-    // which `rearm_future_from_active_histories` (list_active only) would miss.
-    sweep_uncancelled_terminal_deadlines(&context).await
+    sweep_continued_as_new_replacements(&context).await
 }
 
 async fn seed_schedule_coordinator_history(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
