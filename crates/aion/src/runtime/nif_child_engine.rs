@@ -330,13 +330,14 @@ impl EngineHandle for NifChildEngine {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
         if workflow_id != self.parent.workflow_id() {
             return Err(EngineSeamError::Recorder {
                 reason: format!("cannot record child event for unrelated workflow {workflow_id}"),
             });
         }
         record_child_event(&self.bridge.tokio_handle, &self.parent, event)
+            .map(|()| crate::engine_seam::RecordOutcome::Recorded)
     }
 }
 

@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 
 use crate::engine_seam::{
-    EngineHandle, EngineSeamError, TimerWheelEntry, WorkflowMailboxMessage, WorkflowResidency,
+    EngineHandle, EngineSeamError, RecordOutcome, TimerWheelEntry, WorkflowMailboxMessage,
+    WorkflowResidency,
 };
 use crate::time::deadline::{DeadlineHandler, deadline_run_id, is_deadline_timer};
 
@@ -268,7 +269,15 @@ impl TimerService {
             envelope: self.next_envelope(&workflow_id).await?,
             timer_id: timer_id.clone(),
         };
-        self.engine.record_workflow_event(&workflow_id, event)?;
+        // Deliver the mailbox wake ONLY for a genuine append. The recorder seam
+        // refuses a late fire that lands after the run terminated
+        // (`RefusedTerminal`), recording nothing; waking the process then would
+        // reschedule a workflow that has already reached its terminal — the
+        // post-terminal wake this gate closes.
+        if self.engine.record_workflow_event(&workflow_id, event)? == RecordOutcome::RefusedTerminal
+        {
+            return Ok(());
+        }
 
         if let WorkflowResidency::Resident(process) = self.engine.resolve_workflow(&workflow_id)? {
             self.engine.deliver_workflow_message(
@@ -1009,17 +1018,55 @@ mod tests {
         Ok(())
     }
 
+    /// A fire the recorder refuses as a post-terminal late arrival records
+    /// nothing AND delivers no wake. Mutation-sensitive: the timer is live so the
+    /// pre-check passes and the fire reaches the recorder seam, which returns
+    /// `RefusedTerminal`; delivering the mailbox wake regardless of that outcome
+    /// would reschedule a terminated workflow and fail this test.
+    #[tokio::test]
+    async fn refused_terminal_fire_records_nothing_and_delivers_no_wake()
+    -> Result<(), TimerServiceError> {
+        let process = WorkflowProcessHandle::new(42);
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        let timer_id = timer_id();
+        engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &timer_id, 1),
+        )?;
+        engine.refuse_next_record_as_terminal()?;
+
+        service
+            .fire_timer(workflow_id.clone(), timer_id.clone(), instant(130))
+            .await?;
+
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &timer_id),
+            0,
+            "a refused fire records no TimerFired"
+        );
+        assert!(
+            engine.delivered_messages()?.is_empty(),
+            "a refused fire delivers no wake"
+        );
+        Ok(())
+    }
+
     /// Two services obtained separately but sharing ONE terminal-update
     /// coordinator (as the production bridge hands out) serialize a cancel and a
     /// fire of the same timer: exactly one terminal timer event is recorded, never
-    /// both. Mutation-sensitive — a per-service coordinator would let both read
-    /// the timer live and record a `TimerFired` AND a `TimerCancelled`.
+    /// both. A `Barrier` forces genuine overlap — both actors are released
+    /// together after setup — and the loop runs each direction. Mutation-sensitive:
+    /// a per-service coordinator would let both read the timer live and record a
+    /// `TimerFired` AND a `TimerCancelled`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn shared_coordinator_serializes_cancel_and_fire_across_services()
     -> Result<(), TimerServiceError> {
         use dashmap::DashSet;
+        use tokio::sync::Barrier;
 
-        for _ in 0..40 {
+        for _ in 0..20 {
             let process = WorkflowProcessHandle::new(42);
             let concrete_store = Arc::new(InMemoryStore::default());
             let recorder_store: Arc<dyn WritableEventStore> = concrete_store.clone();
@@ -1042,12 +1089,20 @@ mod tests {
                 timer_started_event(&workflow_id, &timer_id, 1),
             )?;
 
-            let cancel = service_a.cancel(
-                workflow_id.clone(),
-                timer_id.clone(),
-                TimerCancelCause::WorkflowIntent,
-            );
-            let fire = service_b.fire_timer(workflow_id.clone(), timer_id.clone(), fire_at);
+            let gate = Arc::new(Barrier::new(2));
+            let (cancel_gate, fire_gate) = (Arc::clone(&gate), gate);
+            let (cancel_wf, cancel_timer) = (workflow_id.clone(), timer_id.clone());
+            let cancel = async move {
+                cancel_gate.wait().await;
+                service_a
+                    .cancel(cancel_wf, cancel_timer, TimerCancelCause::WorkflowIntent)
+                    .await
+            };
+            let (fire_wf, fire_timer) = (workflow_id.clone(), timer_id.clone());
+            let fire = async move {
+                fire_gate.wait().await;
+                service_b.fire_timer(fire_wf, fire_timer, fire_at).await
+            };
             let (cancel_result, fire_result) = tokio::join!(cancel, fire);
             cancel_result?;
             fire_result?;

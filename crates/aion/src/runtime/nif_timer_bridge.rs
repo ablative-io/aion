@@ -17,7 +17,8 @@ use tokio::task::JoinHandle;
 
 use crate::engine_seam::{
     ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
-    TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
+    RecordOutcome, TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle,
+    WorkflowResidency,
 };
 use crate::registry::Registry;
 use crate::runtime::nif_state::EngineNifState;
@@ -340,7 +341,7 @@ impl EngineHandle for TimerNifBridge {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<RecordOutcome, EngineSeamError> {
         let recorded_at = *event.recorded_at();
         let outcome = match event {
             Event::TimerFired { timer_id, .. } => TimerOutcome::Fired(timer_id),
@@ -378,7 +379,9 @@ impl EngineHandle for TimerNifBridge {
             // deadline case.
             let history = store.read_history(&workflow_id).await?;
             if active_run_has_terminal(&history) {
-                return Ok(());
+                // Late fire/cancel after the run terminated: append nothing and
+                // report the refusal so the caller withholds the mailbox wake.
+                return Ok(RecordOutcome::RefusedTerminal);
             }
             match outcome {
                 TimerOutcome::Fired(timer_id) => {
@@ -390,7 +393,7 @@ impl EngineHandle for TimerNifBridge {
                         .await?;
                 }
             }
-            Ok(())
+            Ok(RecordOutcome::Recorded)
         })
         .map_err(|error: Box<dyn std::error::Error + Send + Sync>| {
             EngineSeamError::Recorder {

@@ -221,7 +221,7 @@ mod tests {
             &self,
             workflow_id: &WorkflowId,
             event: Event,
-        ) -> Result<(), EngineSeamError> {
+        ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
             Err(EngineSeamError::Recorder {
                 reason: format!(
                     "queries must not record event {} for {workflow_id}",

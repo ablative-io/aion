@@ -247,7 +247,7 @@ impl EngineHandle for QueryMailboxEngine {
         &self,
         workflow_id: &WorkflowId,
         event: aion_core::Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
         Err(EngineSeamError::Recorder {
             reason: format!(
                 "queries must not record event {} for workflow {workflow_id}",
