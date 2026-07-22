@@ -22,7 +22,7 @@
       "output_schema": {
         "type": "string"
       },
-      "timeout_seconds": 3600,
+      "timeout_seconds": null,
       "workflow_type": "aion_internal_awl_child_cli_parallel_fan_0"
     }
   ]
