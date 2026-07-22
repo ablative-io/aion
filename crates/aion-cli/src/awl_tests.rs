@@ -206,7 +206,7 @@ step gather\n\
     let output_path = temp.path().join("cli_parallel.gleam");
     fs::write(&source_path, source)?;
     assert_eq!(
-        emit_command(&source_path, Some(&output_path)),
+        emit_command(&source_path, Some(&output_path), EmitTarget::Gleam),
         ExitCode::SUCCESS,
         "the real CLI emit path failed"
     );
@@ -341,5 +341,115 @@ step one\n\
             "unexpected diagnostic: {line}"
         );
     }
+    Ok(())
+}
+
+/// The gleam target is byte-identical to the pre-`--target` behaviour: the real
+/// `emit_command` writing `--target gleam` produces exactly the bytes the
+/// legacy `emit_source` seam does — the target split changed no gleam output.
+#[test]
+fn emit_gleam_target_is_byte_identical_to_the_legacy_seam() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("probe.awl");
+    let output_path = temp.path().join("probe.gleam");
+    fs::write(&source_path, VALID_DOC)?;
+    assert_eq!(
+        emit_command(&source_path, Some(&output_path), EmitTarget::Gleam),
+        ExitCode::SUCCESS,
+        "the gleam emit path failed"
+    );
+    let written = fs::read_to_string(&output_path)?;
+    let legacy = emit_source(&source_path, VALID_DOC)
+        .map_err(|d| anyhow::anyhow!("legacy emit failed: {d:?}"))?;
+    assert_eq!(written, legacy, "gleam target output drifted from the seam");
+    Ok(())
+}
+
+/// `--target beam` refuses without `--output`: BEAM bytes are never written to
+/// stdout, so a missing output is a typed failure, not a stdout dump.
+#[test]
+fn emit_beam_refuses_without_output() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("probe.awl");
+    fs::write(&source_path, VALID_DOC)?;
+    assert_eq!(
+        emit_command(&source_path, None, EmitTarget::Beam),
+        ExitCode::FAILURE,
+        "beam emit to stdout must be refused"
+    );
+    Ok(())
+}
+
+/// `--target beam` writes one BEAM container and a beam-shaped sidecar: the
+/// module bytes lead with the `FOR1` magic, and the sidecar carries the derived
+/// contracts and action requirements — never the Gleam `project_metadata`
+/// shape (no `format_version`/`entry_module` keys next to `.beam` bytes).
+#[test]
+fn emit_beam_writes_a_module_and_a_beam_shaped_sidecar() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("probe.awl");
+    let output_path = temp.path().join("probe.beam");
+    fs::write(&source_path, VALID_DOC)?;
+    assert_eq!(
+        emit_command(&source_path, Some(&output_path), EmitTarget::Beam),
+        ExitCode::SUCCESS,
+        "the beam emit path failed"
+    );
+
+    let module = fs::read(&output_path)?;
+    assert!(
+        module.starts_with(b"FOR1"),
+        "the beam output is not a BEAM container"
+    );
+
+    let sidecar_path = output_path.with_file_name("probe.beam.json");
+    let sidecar: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar_path)?)?;
+    assert_eq!(sidecar["target"], "beam");
+    assert_eq!(sidecar["workflow_name"], "probe");
+    assert_eq!(sidecar["input_schema"]["type"], "object");
+    assert!(sidecar["output_schema"].is_object());
+    assert!(sidecar["actions"].is_array(), "action requirements missing");
+    assert!(
+        sidecar.get("format_version").is_none() && sidecar.get("entry_module").is_none(),
+        "beam sidecar leaked the Gleam project_metadata shape: {sidecar}"
+    );
+    Ok(())
+}
+
+/// The ops-console compatibility proof (the operator's condition): the bytes the
+/// CLI writes for `--target beam` are byte-identical to the entry module bytes
+/// inside `compile_and_assemble_awl`'s archive for the same source. One seam,
+/// zero drift — CLI output and console-deployed output can never diverge.
+#[test]
+fn emit_beam_bytes_equal_the_archive_entry_module() -> anyhow::Result<()> {
+    use aion_package::{ExtractionLimits, Package};
+
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("probe.awl");
+    let output_path = temp.path().join("probe.beam");
+    fs::write(&source_path, VALID_DOC)?;
+    assert_eq!(
+        emit_command(&source_path, Some(&output_path), EmitTarget::Beam),
+        ExitCode::SUCCESS,
+        "the beam emit path failed"
+    );
+    let cli_bytes = fs::read(&output_path)?;
+
+    let root = source_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("source path has no parent"))?;
+    let prepared = aion_awl_package::compile_and_assemble_awl(VALID_DOC, root)?;
+    let package = Package::load_from_bytes(prepared.archive, ExtractionLimits::unbounded())?;
+    let entry_module = package.manifest().entry_module.clone();
+    let archive_bytes = package
+        .beams()
+        .get(&entry_module)
+        .ok_or_else(|| anyhow::anyhow!("archive lost its entry module {entry_module}"))?;
+
+    assert_eq!(
+        cli_bytes.as_slice(),
+        archive_bytes,
+        "CLI beam bytes drifted from the archive entry module — the seam split"
+    );
     Ok(())
 }

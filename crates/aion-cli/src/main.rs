@@ -1161,13 +1161,21 @@ mod tests {
     fn awl_emit_parses_the_file_path_and_optional_output() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "awl", "emit", "flows/report.awl"])?;
         let Command::Awl {
-            command: awl::AwlCommand::Emit { file, output },
+            command:
+                awl::AwlCommand::Emit {
+                    file,
+                    output,
+                    target,
+                },
         } = cli.command
         else {
             anyhow::bail!("expected awl emit command");
         };
         assert_eq!(file, Path::new("flows/report.awl"));
         assert_eq!(output, None);
+        // The default target is Gleam (byte-identical to the pre-`--target`
+        // behaviour).
+        assert_eq!(target, awl::EmitTarget::Gleam);
 
         let cli = Cli::try_parse_from([
             "aion",
@@ -1175,16 +1183,24 @@ mod tests {
             "emit",
             "flows/report.awl",
             "-o",
-            "flows/report.gleam",
+            "flows/report.beam",
+            "--target",
+            "beam",
         ])?;
         let Command::Awl {
-            command: awl::AwlCommand::Emit { file, output },
+            command:
+                awl::AwlCommand::Emit {
+                    file,
+                    output,
+                    target,
+                },
         } = cli.command
         else {
             anyhow::bail!("expected awl emit command");
         };
         assert_eq!(file, Path::new("flows/report.awl"));
-        assert_eq!(output, Some(PathBuf::from("flows/report.gleam")));
+        assert_eq!(output, Some(PathBuf::from("flows/report.beam")));
+        assert_eq!(target, awl::EmitTarget::Beam);
         Ok(())
     }
 

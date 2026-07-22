@@ -16,12 +16,13 @@
 //! reporting contract (diagnostics to stderr, a one-line summary to stdout)
 //! instead of the client commands' JSON rendering.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use aion_awl::Span;
-use clap::Subcommand;
+use aion_awl::{CompileError, CompiledWorkflow, Span};
+use clap::{Subcommand, ValueEnum};
 
 /// The `aion awl` authoring subcommands.
 #[derive(Debug, Subcommand)]
@@ -47,22 +48,38 @@ pub(crate) enum AwlCommand {
         /// Path to the `.awl` document.
         file: PathBuf,
     },
-    /// Generate a Gleam workflow module from an AWL document (the stopgap
-    /// execution target until AWL bytecode lands).
+    /// Emit an executable artifact from an AWL document.
+    ///
+    /// `--target gleam` (the default) lowers the document to Gleam source (the
+    /// stopgap execution target) and writes it to `--output`, or to stdout when
+    /// `--output` is omitted. `--target beam` compiles the document to direct
+    /// BEAM bytecode through the SAME `aion_awl::compile` seam the server's
+    /// `POST /awl/deploy` path uses, so CLI output can never diverge from a
+    /// console deploy.
     ///
     /// Parses and typechecks the document first — emission requires a clean
-    /// typecheck, since generated code quality depends on it — then lowers
-    /// the steps, forks, loops, and outcome routes onto the aion Gleam SDK.
-    /// A parse error, a typecheck error, or an emit error all print
+    /// typecheck, since generated code quality depends on it. A parse error, a
+    /// typecheck error, or a compile/emit error all print
     /// `<file>:<line>:<column>: error: <message>` diagnostics to stderr and
-    /// exit non-zero. On success the generated module is written to
-    /// `--output` if given, otherwise to stdout.
+    /// exit non-zero.
+    ///
+    /// File layout: the direct compiler emits exactly ONE BEAM module (implicit
+    /// per-item `distribute` children are additional workflow entry points
+    /// compiled INTO that same module, recorded in the sidecar — never separate
+    /// modules), so `--target beam` writes a single `.beam` file at `--output`
+    /// and a `<output>.json` beam-shaped sidecar (workflow name, contracts,
+    /// action requirements, synthesized entries, timeout). Binary bytes are
+    /// never written to stdout: `--target beam` requires `--output`.
     Emit {
         /// Path to the `.awl` document.
         file: PathBuf,
-        /// Path to write the generated Gleam module. Defaults to stdout.
+        /// Path to write the emitted artifact. Optional for `--target gleam`
+        /// (defaults to stdout); REQUIRED for `--target beam`.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Output form: `gleam` source (default) or `beam` bytecode.
+        #[arg(long, value_enum, default_value_t = EmitTarget::Gleam)]
+        target: EmitTarget,
     },
     /// Emit JSON Schema draft 2020-12 for a declared AWL type.
     Schema {
@@ -76,12 +93,28 @@ pub(crate) enum AwlCommand {
     Lsp,
 }
 
+/// The output form of `aion awl emit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub(crate) enum EmitTarget {
+    /// Gleam source (the stopgap execution target until AWL bytecode is the
+    /// only path). Writes to `--output` or stdout.
+    #[default]
+    Gleam,
+    /// Direct BEAM bytecode via `aion_awl::compile` — the same seam the ops
+    /// console's deploy path uses. Requires `--output`.
+    Beam,
+}
+
 /// Runs an `aion awl` subcommand.
 pub(crate) fn run(command: &AwlCommand) -> ExitCode {
     match command {
         AwlCommand::Check { file } => check_command(file),
         AwlCommand::Fmt { file } => fmt_command(file),
-        AwlCommand::Emit { file, output } => emit_command(file, output.as_deref()),
+        AwlCommand::Emit {
+            file,
+            output,
+            target,
+        } => emit_command(file, output.as_deref(), *target),
         AwlCommand::Schema { file, r#type } => schema_command(file, r#type.as_deref()),
         AwlCommand::Lsp => match aion_awl_lsp::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
@@ -124,7 +157,20 @@ fn fmt_command(file: &Path) -> ExitCode {
     }
 }
 
-fn emit_command(file: &Path, output: Option<&Path>) -> ExitCode {
+/// Dispatches `aion awl emit` on its target: Gleam source (default) or direct
+/// BEAM bytecode. The two targets never share output bytes — `beam` reuses the
+/// server's `aion_awl::compile` seam, `gleam` the legacy `emit_artifact_in`
+/// path — so the gleam behaviour is byte-identical to before this target split.
+fn emit_command(file: &Path, output: Option<&Path>, target: EmitTarget) -> ExitCode {
+    match target {
+        EmitTarget::Gleam => emit_gleam_command(file, output),
+        EmitTarget::Beam => emit_beam_command(file, output),
+    }
+}
+
+/// Emits Gleam source, unchanged from the pre-`--target` behaviour: writes to
+/// `output` (with the Gleam-project entry sidecar) or prints to stdout.
+fn emit_gleam_command(file: &Path, output: Option<&Path>) -> ExitCode {
     let Some(source) = read_source(file) else {
         return ExitCode::FAILURE;
     };
@@ -146,6 +192,120 @@ fn emit_command(file: &Path, output: Option<&Path>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(diagnostics) => report(&diagnostics),
+    }
+}
+
+/// Emits direct BEAM bytecode through the shared `aion_awl::compile` seam. The
+/// binary is never written to stdout, so `output` is required; the schema root
+/// is the document's own directory, matching the server's staged-imports root
+/// so `schema("…")` resolution is identical on both surfaces.
+fn emit_beam_command(file: &Path, output: Option<&Path>) -> ExitCode {
+    let Some(output) = output else {
+        eprintln!(
+            "error: `--target beam` requires `--output` \
+             (BEAM bytes are never written to stdout)"
+        );
+        return ExitCode::FAILURE;
+    };
+    let Some(source) = read_source(file) else {
+        return ExitCode::FAILURE;
+    };
+    let compiled = match aion_awl::compile(&source, document_root(file)) {
+        Ok(compiled) => compiled,
+        Err(error) => return report(&compile_diagnostics(file, &error)),
+    };
+    if let Err(error) = write_beam_artifact(output, &compiled) {
+        eprintln!("error: failed to write {}: {error}", output.display());
+        return ExitCode::FAILURE;
+    }
+    println!("emitted: {}", output.display());
+    ExitCode::SUCCESS
+}
+
+/// Writes the compiled workflow's single BEAM module to `output` and its
+/// beam-shaped sidecar alongside. The direct compiler produces exactly one
+/// module (its entry function plus every synthesized `distribute` child entry),
+/// so a single file carries the whole compilation; the sidecar records the
+/// derived contracts, action requirements, synthesized entries, and timeout.
+fn write_beam_artifact(
+    output: &Path,
+    compiled: &CompiledWorkflow,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(output, &compiled.beam_bytes)?;
+    let mut sidecar_path = OsString::from(output.as_os_str());
+    sidecar_path.push(".json");
+    fs::write(
+        sidecar_path,
+        serde_json::to_vec_pretty(&beam_sidecar(compiled))?,
+    )?;
+    Ok(())
+}
+
+/// The beam-shaped emit sidecar, derived from [`CompiledWorkflow`]. Distinct by
+/// construction from the Gleam `project_metadata` shape: it carries the derived
+/// start/outcome contracts, the effective action requirements, the synthesized
+/// child workflow entries, and the document-declared timeout.
+fn beam_sidecar(compiled: &CompiledWorkflow) -> serde_json::Value {
+    let actions = compiled
+        .actions
+        .iter()
+        .map(|action| {
+            serde_json::json!({
+                "task_queue": action.task_queue,
+                "action": action.action,
+                "node": action.node,
+            })
+        })
+        .collect::<Vec<_>>();
+    let synthesized = compiled
+        .synthesized_workflows
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "workflow_type": entry.workflow_type,
+                "entry_module": entry.entry_module,
+                "entry_function": entry.entry_function,
+                "timeout_seconds": entry.timeout_seconds,
+                "input_schema": entry.input_schema,
+                "output_schema": entry.output_schema,
+                "internal": entry.internal,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "target": "beam",
+        "workflow_name": compiled.workflow_name,
+        "timeout_seconds": compiled.timeout.map(|timeout| timeout.as_secs()),
+        "input_schema": compiled.input_schema,
+        "output_schema": compiled.output_schema,
+        "actions": actions,
+        "synthesized_workflows": synthesized,
+    })
+}
+
+/// Renders a [`CompileError`] into the same `<file>:<line>:<column>: error:
+/// <message>` diagnostic lines the emit surface uses. Span-anchored stages
+/// (parse, check, schema, unsupported, lower) carry a source position; the
+/// span-free planning and backend stages render as a file-level diagnostic.
+fn compile_diagnostics(file: &Path, error: &CompileError) -> Vec<String> {
+    match error {
+        CompileError::Parse(parse) => vec![diagnostic(file, parse.span, &parse.message)],
+        CompileError::Check(errors) => errors
+            .iter()
+            .map(|check| diagnostic(file, check.span, &check.message))
+            .collect(),
+        CompileError::Schema(schema) => vec![diagnostic(file, schema.span(), &schema.to_string())],
+        CompileError::Unsupported { shape, span } => {
+            vec![diagnostic(
+                file,
+                *span,
+                &format!("does not yet lower {shape}"),
+            )]
+        }
+        CompileError::Lower { message, span } => vec![diagnostic(file, *span, message)],
+        CompileError::Planning { message } | CompileError::Backend { message } => {
+            vec![format!("{}: error: {message}", file.display())]
+        }
     }
 }
 
