@@ -712,7 +712,7 @@ is annotated otherwise (IR-14):
 | IR-11 | `Codec(a)` | record whose `encode`/`decode` fields are funs (T-ACTRAW's `call_fun` depends on this row; pinned by test) | `wrappers.rs:121-138` |
 | IR-12 | module reference | mangled atom (`aion@workflow`, `gleam@dynamic@decode`, …) | draft §4; capstone imports |
 | IR-13 | entry ABI | `run/1` receives the raw input payload term; returns `{ok, ResultBinary}` — bytes recorded verbatim as `WorkflowCompleted.result`; error path `{error, AwlErrorTerm}` | capstone obs. 8 |
-| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate` (never `trim`, R6); routes/loop recursion are tail calls. **Asserted at the instruction level by BC-5 codegen inspection** (`aion-awl` `mir::select::inspect_tests`): the covered-ratchet sweep `covered_ratchet_upholds_ir14_and_section_11` plus the targeted `targeted_framed_function_brackets_and_single_exits`, `targeted_frameless_body_uses_no_frame_or_y`, `targeted_loop_recursion_is_a_self_tail_call`, and `targeted_route_lowers_to_a_tail_call`. Decodes `select()` output with the beamr 0.15.4 decoder and proves: args marshaled into `x0..x(k-1)` (fun in `x(arity)` for `call_fun`), result stored from `x0`; framed↔`frame_size>0` (R8) with a single leading `Allocate F`, prologue param spills `move x_i→y_i`, one shared `Deallocate F; Return` linearly last (R7) or frame-tearing tail calls; no `Trim` (R6); `TestHeap`/`GcBif` `Live` equals the recomputed live-`X` root high-water (R8, 2101 heap ops, zero drift); routes/loop recursion are `call_(ext_)last`/`call_(ext_)only` tails. **One §11.2 wording DIVERGENCE stopped and recorded (see §11.9):** "Y touched only by `move`" holds for WRITES, but guard/heap ops (`Comparison`/`TypeTest`/`IsTaggedTuple`/`SelectVal`/`GetTupleElement`) READ `Y` homes directly — the inspection asserts the byte-true form (Y written only by `move`; no `Y` on any call) rather than the overstated §11.2 claim. Structurally still exercised by aion-awl's `select` tests; the durable trail cannot witness IR-14 (BC-4 round-3 ruling) | draft §4; capstone B; validator recon 4; §11.9 |
+| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate` (never `trim`, R6); routes/loop recursion are tail calls. **Asserted at the instruction level by BC-5 codegen inspection** (`aion-awl` `mir::select::inspect_tests`): the covered-ratchet sweep `covered_ratchet_upholds_ir14_and_section_11` (pinned to the `COVERED` ratchet count, with a ratcheted floor on the recognised heap-op inventory) plus the targeted `targeted_framed_function_brackets_and_single_exits`, `targeted_frameless_body_uses_no_frame_or_y`, `targeted_heap_ops_declare_accurate_live`, `wrong_live_expectation_goes_red`, `targeted_loop_recursion_is_a_self_tail_call`, `targeted_route_to_step_is_a_local_tail_call`, and `awl_hello_outcome_route_returns_not_tail_calls`. Every inspection routes through one witnessed decode path (`decode_bytes`: the BC-4 declared-`Code`-length + truncated-last-byte witness plus a sub-header `function_count` == decoded `FuncInfo` count check, so no conclusion rests on a decoded prefix). Decodes `select()` output with the beamr 0.15.4 decoder and proves, from facts carried INDEPENDENTLY into the check (the input MIR's shape, the module's import/local target metadata, and a real CFG dataflow — not the emitted shape restated): args marshaled into `x0..x(k-1)` (fun in `x(arity)` for `call_fun`) with each call's arity checked against its resolved target's metadata, result stored from `x0`; framed↔`frame_size>0` (R8) with a single leading `Allocate F` (its `live` == arity), prologue param spills `move x_i→y_i` (both indices pinned), one shared `Deallocate F; Return` linearly last (R7) or frame-tearing tail calls; no live `X` value survives a call or a control-flow join without a redefinition (forward must-define fixed point); no `Trim` (R6); `TestHeap`/`GcBif` `Live` equals the recomputed live-`X` root high-water from a backward-liveness fixed point over the real successors — a `Label` is a jump target, never a clobber (R8, a committed ratchet floor of `MIN_RECOGNISED_HEAP_OPS`, with `wrong_live_expectation_goes_red` proving the oracle is mutation-sensitive); routes-to-STEP and loop recursion are `call_(ext_)last`/`call_(ext_)only` tails, while a success-OUTCOME route is a `Return` (not a tail call — divergence recorded in the test). **One §11.2 wording DIVERGENCE stopped and recorded (see §11.9):** "Y touched only by `move`" holds for WRITES, but guard/heap ops (`Comparison`/`TypeTest`/`IsTaggedTuple`/`SelectVal`/`GetTupleElement`) READ `Y` homes directly — the inspection asserts the byte-true form (Y written only by `move`; no `Y` on any call) rather than the overstated §11.2 claim. Structurally still exercised by aion-awl's `select` tests; the durable trail cannot witness IR-14 (BC-4 round-3 ruling) | draft §4; capstone B; validator recon 4; §11.9 |
 | IR-15 | export set | exactly `definition/0`, `run/1`, `execute/1`; no `module_info/0,1` | decision 12; capstone obs. 4 |
 | IR-16 | error propagation | `result.try` sites lower structurally as flattened `TryBind` (§2.2); trail-invariant; instruction streams intentionally differ from erlc's; fallback R1 | capstone B |
 | IR-17 | durations | constructed only via `aion@duration:milliseconds/1` from precomputed ms; no duration wire codec exists or can be constructed | codec design §2; `exprs.rs:23-34` |
@@ -1414,14 +1414,28 @@ compiler lowers) plus targeted per-shape fixtures.
   last, and no `Y` operand survives it; every `Return` is a deallocated return;
   framed tails (`call_last`/`call_ext_last`) deallocate exactly `F`.
 - **R8 `Live` accuracy.** For every `TestHeap`/`GcBif` heap op, the declared
-  `Live` equals the live-`X` root high-water recomputed directly from the decoded
-  stream (GC clears `X` at/above `Live`, §11.1 fact 4). **2101 heap ops across
-  the ratchet, zero drift.** The emitter emits `Live` as a constant (0 where `X`
-  is empty at the emission point, 1 where `x0` holds a call/encode result), and
-  that constant is exactly the recomputed high-water in every case.
-- **Tail calls.** Routes lower to `call_ext_last`/`call_ext_only`; a counted
-  loop's back-edge is a self `call_last`/`call_only` targeting the loop
-  function's own body label.
+  `Live` equals the live-`X` root high-water recomputed from a backward-liveness
+  fixed point over the decoded function's real successors — a `Label` is a jump
+  target, never a register clobber (GC clears `X` at/above `Live`, §11.1 fact 4).
+  The recognised heap-op inventory the sweep compares is pinned by a committed
+  ratchet floor `MIN_RECOGNISED_HEAP_OPS` (`mir::select::inspect_tests`; the
+  sweep fails if fewer are examined, so the R8 scope cannot silently go vacuous —
+  superseding the earlier uncommitted one-off count), and
+  `wrong_live_expectation_goes_red` proves a deliberately wrong `Live` makes the
+  assertion go red. The emitter emits `Live` as a constant, and that constant is
+  exactly the recomputed high-water in every case.
+- **Cross-call / cross-join `X` safety.** No live `X` value survives an
+  `X`-clobbering call, and none survives a control-flow join in `X` without a
+  redefinition on every path — a forward must-define fixed point over the real
+  successors (`x_safety_violations`), the register-safety guarantee the narrowed
+  `Y` assertions alone did not establish.
+- **Tail calls.** A route-to-STEP (region chaining) and a counted loop's
+  back-edge lower to a `call_last`/`call_only` targeting a local function's body
+  label. A success-OUTCOME route, by contrast, is NOT a tail call: it builds
+  `Ok(Ctor(payload))` and RETURNS it (`lower/route.rs`), exiting through the
+  shared `Deallocate; Return` — recorded so the "routes are tail calls" wording
+  is not overread (`awl_hello`'s `route shouted` is a `Return`, not a
+  `call_ext_last`).
 
 **DIVERGENCE stopped and recorded (not weakened to green):** §11.2's X-discipline
 paragraph states "Y slots are touched **only by `move`** … every other

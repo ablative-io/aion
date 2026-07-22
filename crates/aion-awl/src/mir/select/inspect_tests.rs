@@ -4,24 +4,30 @@
 //! BC-4 round-3 ruling deferred here (IR-14 is not observable at the durable
 //! trail level).
 //!
-//! Two witnesses per claim: a sweep over the full covered ratchet (every
-//! `valid/` fixture the direct compiler lowers) applying the module-wide
-//! invariants, and targeted per-shape fixtures — one framed function, one
-//! frameless body, one loop (self tail-call), one route (tail-call) — that
-//! isolate a single shape. Where a §11 claim proves false against the bytes it
-//! is a divergence to adjudicate, never weakened to match the emitter.
+//! Every oracle rests on facts carried INDEPENDENTLY into the decoded check,
+//! not restated from the emitted shape (the BC-5 review's core correction):
+//! the register-safety facts come from a real CFG dataflow ([`super::inspect_cfg`]);
+//! framing/exit/marshaling from the input MIR and the module's import/local
+//! target metadata ([`super::inspect_analysis`]); and every inspection routes
+//! through the one witnessed decode path so no conclusion rests on a decoded
+//! prefix ([`super::inspect_support::decode`]/`decode_bytes`).
 //!
-//! Register-file grounding (§11.1, code-verified): the JIT has no `Allocate`
-//! lowering, so any `Y` operand pins a function to the interpreter; GC clears
-//! every `X` at or above a heap op's `Live` (fact 4), so `Live` must equal the
-//! live-`X` root high-water — the invariant `heap_live_root_count` recomputes.
+//! Two witnesses per claim: a sweep over the full covered ratchet (pinned to
+//! `COVERED`, so silent coverage loss fails), and targeted per-shape fixtures.
 
+use beamr::atom::AtomTable;
 use beamr::loader::decode::{Instruction, Operand};
+use beamr::loader::load::ParsedModule;
 
-use super::inspect_support::{
-    DecodedFn, as_unsigned, decode, destinations, functions, heap_live, heap_live_root_count,
-    instruction_operands, is_call, lowered_fixtures, operand_has_y,
+use super::inspect_analysis::{
+    assert_live_accuracy, check_framed, check_frameless, check_function, expected_framed,
+    flow_named, flow_returns, function_arity, is_known, local_target_arities,
 };
+use super::inspect_support::{
+    decode, decode_bytes, destinations, functions, heap_live, instruction_operands, is_call,
+    lowered_fixtures, manifest_dir, operand_has_y,
+};
+use crate::mir::covered::COVERED;
 use crate::mir::{
     AtomRef, Block, FlowFn, FnOrigin, FnRef, MirFn, MirModule, RuntimeFn, Span, Stmt, Tail, TyDesc,
     Value, Var, lower, select,
@@ -29,383 +35,142 @@ use crate::mir::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// The closed BC-3 instruction alphabet (`select/emit`). `Trim` is deliberately
-/// absent (R6: frames die at the single `Deallocate`, never trimmed), so a
-/// membership check over the whole stream witnesses R6 for free — and any drift
-/// into an unexpected opcode fails loudly rather than passing unexamined.
-fn is_known(instruction: &Instruction) -> bool {
-    matches!(
-        instruction,
-        Instruction::Label { .. }
-            | Instruction::FuncInfo { .. }
-            | Instruction::Move { .. }
-            | Instruction::Call { .. }
-            | Instruction::CallOnly { .. }
-            | Instruction::CallExt { .. }
-            | Instruction::CallExtOnly { .. }
-            | Instruction::CallLast { .. }
-            | Instruction::CallExtLast { .. }
-            | Instruction::CallFun { .. }
-            | Instruction::Return
-            | Instruction::Allocate { .. }
-            | Instruction::Deallocate { .. }
-            | Instruction::TestHeap { .. }
-            | Instruction::PutList { .. }
-            | Instruction::PutTuple2 { .. }
-            | Instruction::GetTupleElement { .. }
-            | Instruction::GetList { .. }
-            | Instruction::TypeTest { .. }
-            | Instruction::Comparison { .. }
-            | Instruction::IsTaggedTuple { .. }
-            | Instruction::SelectVal { .. }
-            | Instruction::Jump { .. }
-            | Instruction::Bif { .. }
-            | Instruction::MakeFun { .. }
-            | Instruction::Badmatch { .. }
-            | Instruction::CaseEnd { .. }
-    )
-}
-
-/// Whether an instruction is a frame teardown-carrying tail call.
-fn is_framed_tail(instruction: &Instruction) -> bool {
-    matches!(
-        instruction,
-        Instruction::CallLast { .. } | Instruction::CallExtLast { .. }
-    )
-}
-
-/// Whether an instruction is a frameless tail call.
-fn is_frameless_tail(instruction: &Instruction) -> bool {
-    matches!(
-        instruction,
-        Instruction::CallOnly { .. } | Instruction::CallExtOnly { .. }
-    )
-}
-
-/// The `deallocate` word count a framed tail call declares.
-fn framed_tail_words(instruction: &Instruction) -> Option<u64> {
-    match instruction {
-        Instruction::CallLast { deallocate, .. } | Instruction::CallExtLast { deallocate, .. } => {
-            as_unsigned(deallocate)
-        }
-        _ => None,
-    }
-}
-
-/// The `X` destinations an instruction writes (a subset of `reads_writes`, kept
-/// local so the arg-marshaling check reads cleanly).
-fn x_writes(instruction: &Instruction) -> Vec<u32> {
-    super::inspect_support::reads_writes(instruction).1
-}
-
-/// The call arity an instruction declares, if it is a call.
-fn call_arity(instruction: &Instruction) -> Option<u32> {
-    let (Instruction::Call { arity, .. }
-    | Instruction::CallOnly { arity, .. }
-    | Instruction::CallExt { arity, .. }
-    | Instruction::CallExtOnly { arity, .. }
-    | Instruction::CallLast { arity, .. }
-    | Instruction::CallExtLast { arity, .. }
-    | Instruction::CallFun { arity }) = instruction
-    else {
-        return None;
-    };
-    as_unsigned(arity).and_then(|value| u32::try_from(value).ok())
-}
+/// The minimum number of recognised `TestHeap`/`GcBif` heap ops the sweep must
+/// inspect — a ratcheted floor (the observed inventory only grows). If fixture
+/// or decode coverage drops heap ops, or `heap_live` stops recognising them, the
+/// sweep can no longer execute this many `Live` comparisons and fails, so the R8
+/// scope cannot silently go vacuous (BC-5 review blocker 8, superseding the
+/// uncommitted one-off count).
+const MIN_RECOGNISED_HEAP_OPS: usize = 2101;
 
 // ---- the covered-ratchet sweep ----
 
-/// Every module-wide IR-14/§11 invariant, over every fixture the direct
-/// compiler lowers. A single failing fixture names itself (label + function).
+/// Every module-wide and per-function IR-14/§11 invariant, over every fixture the
+/// direct compiler lowers, pinned to the exact `COVERED` ratchet and to a floor
+/// on the recognised heap-op inventory. A single failing fixture names itself.
 #[test]
 fn covered_ratchet_upholds_ir14_and_section_11() -> TestResult {
     let mut fixtures = 0_usize;
+    let mut heap_ops = 0_usize;
     for (label, module) in lowered_fixtures()? {
         let (parsed, table) = decode(&module)?;
+        module_invariants(&label, &parsed)?;
 
-        // R6 + closed alphabet: no `Trim`, no foreign opcode, anywhere.
-        for instruction in &parsed.instructions {
-            assert!(
-                is_known(instruction),
-                "{label}: unexpected instruction in BC-3 output: {instruction:?}"
-            );
-            assert!(
-                !matches!(instruction, Instruction::Trim { .. }),
-                "{label}: R6 violated — `trim` was emitted"
-            );
-        }
-
-        // R8 register safety — the byte-true form (see the module note and the
-        // amended IR-14 row): a `Y` register is WRITTEN only by a `move` (every
-        // Y destination is a `move`), and NO call carries a `Y` operand, so no
-        // value crosses a call from a Y home without an X reload and X never
-        // holds a live value across a call. The stronger §11.2 wording — "Y is
-        // touched ONLY by move, every other instruction sees X/literal/atom
-        // operands only" — is FALSE against these bytes (STOPPED, see the note);
-        // guard/heap ops read Y homes directly, which this suite does not assert
-        // away.
-        for instruction in &parsed.instructions {
-            if !matches!(instruction, Instruction::Move { .. }) {
-                assert!(
-                    !destinations(instruction)
-                        .iter()
-                        .any(|operand| operand_has_y(operand)),
-                    "{label}: a non-`move` instruction WRITES a Y register: {instruction:?}"
-                );
-            }
-            if is_call(instruction) {
-                assert!(
-                    !instruction_operands(instruction)
-                        .iter()
-                        .any(|operand| operand_has_y(operand)),
-                    "{label}: a call carries a Y operand (value crosses a call without an X reload): {instruction:?}"
-                );
-            }
-        }
-
+        let local_arities = local_target_arities(&parsed);
         for function in functions(&parsed, &table) {
-            check_function(&label, &function)?;
+            check_function(
+                &label,
+                &function.name,
+                function.code,
+                &parsed,
+                &table,
+                &local_arities,
+            )?;
+            // R8 scope: count the heap ops actually examined, and cross-check the
+            // MIR framing expectation for the flow functions we can name.
+            heap_ops += function
+                .code
+                .iter()
+                .filter(|instruction| heap_live(instruction).is_some())
+                .count();
+            check_mir_framing(&label, &function.name, function.code, &module.functions)?;
         }
         fixtures += 1;
     }
+    assert_eq!(
+        fixtures,
+        COVERED.len(),
+        "the sweep inspected {fixtures} fixtures but the pinned ratchet has {} — silent \
+         covered→refused drift (BC-5 review advisory B)",
+        COVERED.len()
+    );
     assert!(
-        fixtures > 0,
-        "the sweep proved nothing — no fixture lowered"
+        heap_ops >= MIN_RECOGNISED_HEAP_OPS,
+        "the sweep examined only {heap_ops} heap ops, below the ratcheted floor \
+         {MIN_RECOGNISED_HEAP_OPS} — the R8 `Live` scope shrank (BC-5 review blocker 8)"
     );
     Ok(())
 }
 
-/// Every per-function IR-14/§11 invariant for one decoded function.
-fn check_function(label: &str, function: &DecodedFn<'_>) -> TestResult {
-    let code = function.code;
-    let name = &function.name;
-    let where_ = || format!("{label}::{name}");
+/// The module-wide R6 / register invariants: no `Trim` and no foreign opcode
+/// anywhere (closed alphabet); a `Y` register is WRITTEN only by a `move`; and no
+/// call carries a `Y` operand (so no value crosses a call from a `Y` home without
+/// an `X` reload). The stronger §11.2 "Y read only via `move`" wording is FALSE
+/// against these bytes and is STOPPED, not weakened — see §11.9.
+fn module_invariants(label: &str, parsed: &ParsedModule) -> TestResult {
+    for instruction in &parsed.instructions {
+        if !is_known(instruction) {
+            return Err(
+                format!("{label}: unexpected instruction in BC-3 output: {instruction:?}").into(),
+            );
+        }
+        if matches!(instruction, Instruction::Trim { .. }) {
+            return Err(format!("{label}: R6 violated — `trim` was emitted").into());
+        }
+        if !matches!(instruction, Instruction::Move { .. })
+            && destinations(instruction)
+                .iter()
+                .any(|operand| operand_has_y(operand))
+        {
+            return Err(format!(
+                "{label}: a non-`move` instruction WRITES a Y register: {instruction:?}"
+            )
+            .into());
+        }
+        if is_call(instruction)
+            && instruction_operands(instruction)
+                .iter()
+                .any(|operand| operand_has_y(operand))
+        {
+            return Err(format!(
+                "{label}: a call carries a Y operand (value crosses a call without an X reload): \
+                 {instruction:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
 
-    let arity = function_arity(code)
-        .ok_or_else(|| format!("{}: function has no decodable FuncInfo arity", where_()))?;
-    let framed = code
+/// Cross-checks a decoded function's framing against the INPUT MIR for the flow
+/// functions we can name (BC-5 review blocker 5): a function the MIR expects
+/// framed (≥1 param or ≥1 def) must carry an `Allocate`, one expected frameless
+/// must not, and a function whose MIR body has a non-tail `Return` must carry a
+/// `Deallocate; Return` exit. Templated shells (no `FlowFn`) are covered by the
+/// byte-level structural checks and skipped here.
+fn check_mir_framing(
+    label: &str,
+    name: &str,
+    code: &[Instruction],
+    functions: &[MirFn],
+) -> TestResult {
+    let Some(flow) = flow_named(functions, name) else {
+        return Ok(());
+    };
+    let decoded_framed = code
         .iter()
         .any(|instruction| matches!(instruction, Instruction::Allocate { .. }));
-
-    if framed {
-        check_framed(code, arity, &where_())?;
-    } else {
-        check_frameless(code, arity, &where_());
+    if expected_framed(flow) != decoded_framed {
+        return Err(format!(
+            "{label}::{name}: MIR expects framed={} (params/defs) but decoded framed={decoded_framed}",
+            expected_framed(flow)
+        )
+        .into());
     }
-
-    // R8 `Live` accuracy: every heap op's `Live` equals the live-`X` root
-    // high-water at that op (GC clears X at/above `Live`, §11.1 fact 4).
-    for (index, instruction) in code.iter().enumerate() {
-        if let Some(declared) = heap_live(instruction) {
-            let computed = heap_live_root_count(code, index);
-            assert_eq!(
-                declared,
-                computed,
-                "{}: R8 `Live` drift at {instruction:?}: declared {declared}, live-X high-water {computed}",
-                where_()
-            );
-        }
-    }
-
-    // IR-14 marshaling: each call's arguments occupy exactly `x0..x(arity-1)`
-    // (a `CallFun` additionally homes the fun in `x(arity)`), and a
-    // value-producing call leaves its result in `x0`.
-    check_call_convention(code, &where_());
-    Ok(())
-}
-
-/// The `arity` operand of a function's `FuncInfo`.
-fn function_arity(code: &[Instruction]) -> Option<u32> {
-    code.iter().find_map(|instruction| match instruction {
-        Instruction::FuncInfo { arity, .. } => {
-            as_unsigned(arity).and_then(|value| u32::try_from(value).ok())
-        }
-        _ => None,
-    })
-}
-
-/// Framed-function discipline (R5 tier-2, R7 single exit, R8 predicate):
-/// header + single leading `Allocate F` (F ≥ 1), the arity-many prologue param
-/// spills `move x_i -> y_i`, at most one standalone `Deallocate` (immediately
-/// followed by `Return`, linearly last, with no `Y` after it), no frameless
-/// tail, and every framed tail deallocating exactly `F`.
-fn check_framed(code: &[Instruction], arity: u32, where_: &str) -> TestResult {
-    // Header: Label, FuncInfo, Label, then the sole Allocate.
-    assert!(
-        matches!(code.first(), Some(Instruction::Label { .. }))
-            && matches!(code.get(1), Some(Instruction::FuncInfo { .. }))
-            && matches!(code.get(2), Some(Instruction::Label { .. })),
-        "{where_}: framed header is not Label/FuncInfo/Label"
-    );
-    let frame_size = match code.get(3) {
-        Some(Instruction::Allocate { stack_need, .. }) => as_unsigned(stack_need)
-            .ok_or_else(|| format!("{where_}: Allocate stack_need is not a count"))?,
-        other => {
-            return Err(
-                format!("{where_}: framed body does not open with Allocate: {other:?}").into(),
-            );
-        }
-    };
-    assert!(
-        frame_size >= 1,
-        "{where_}: R8 predicate — framed frame_size must be > 0"
-    );
-    assert_eq!(
-        code.iter()
-            .filter(|instruction| matches!(instruction, Instruction::Allocate { .. }))
-            .count(),
-        1,
-        "{where_}: a framed function has exactly one Allocate"
-    );
-
-    // R8 / IR-14: prologue spills the arity-many params x0..x(arity-1) into Y,
-    // in order — the function received its arguments in x0..x(n-1).
-    for index in 0..arity {
-        let slot = 4 + index as usize;
-        assert!(
-            matches!(
-                code.get(slot),
-                Some(Instruction::Move { source: Operand::X(source), .. }) if *source == index
-            ),
-            "{where_}: prologue spill {index} does not move x{index} (arg not in x{index})"
-        );
-    }
-
-    // Frameless tails never appear in a framed function; framed tails deallocate F.
-    for instruction in code {
-        assert!(
-            !is_frameless_tail(instruction),
-            "{where_}: framed function used a frameless tail: {instruction:?}"
-        );
-        if let Some(words) = framed_tail_words(instruction) {
-            assert_eq!(
-                words, frame_size,
-                "{where_}: framed tail deallocates {words}, not the frame size {frame_size}"
-            );
-        }
-    }
-
-    // R7 single shared exit: at most one standalone Deallocate; if present it is
-    // immediately followed by Return, is the linearly-last pair, and no Y
-    // operand survives it. Every Return is a deallocated return.
-    let deallocs: Vec<usize> = code
-        .iter()
-        .enumerate()
-        .filter(|(_, instruction)| matches!(instruction, Instruction::Deallocate { .. }))
-        .map(|(index, _)| index)
-        .collect();
-    assert!(
-        deallocs.len() <= 1,
-        "{where_}: R7 — more than one Deallocate"
-    );
-    if let Some(&at) = deallocs.first() {
-        assert!(
-            matches!(code.get(at), Some(Instruction::Deallocate { words })
-                if as_unsigned(words) == Some(frame_size)),
-            "{where_}: the Deallocate does not release the frame size"
-        );
-        assert!(
-            matches!(code.get(at + 1), Some(Instruction::Return)),
-            "{where_}: R7 — Deallocate is not immediately followed by Return"
-        );
-        assert_eq!(
-            at + 2,
-            code.len(),
-            "{where_}: R7 — Deallocate/Return is not linearly last"
-        );
-        for instruction in &code[at + 1..] {
-            assert!(
-                !instruction_operands(instruction)
-                    .iter()
-                    .any(|operand| operand_has_y(operand)),
-                "{where_}: a Y operand survives the Deallocate"
-            );
-        }
-    }
-    for (index, instruction) in code.iter().enumerate() {
-        if matches!(instruction, Instruction::Return) {
-            assert!(
-                index > 0 && matches!(code.get(index - 1), Some(Instruction::Deallocate { .. })),
-                "{where_}: R7 — a Return in a framed function is not preceded by Deallocate"
-            );
+    if decoded_framed && flow_returns(flow) {
+        let has_exit = code.windows(2).any(|pair| {
+            matches!(pair[0], Instruction::Deallocate { .. })
+                && matches!(pair[1], Instruction::Return)
+        });
+        if !has_exit {
+            return Err(format!(
+                "{label}::{name}: MIR returns a value but the framed function has no \
+                 `Deallocate; Return` exit (R7 shared exit removed?)"
+            )
+            .into());
         }
     }
     Ok(())
-}
-
-/// Frameless-body discipline (R5 tier-1, R8 predicate): no `Allocate`, no
-/// `Deallocate`, no `Y` operand, no framed tail, and — since any parameter makes
-/// `frame_size > 0` — arity zero.
-fn check_frameless(code: &[Instruction], arity: u32, where_: &str) {
-    assert_eq!(
-        arity, 0,
-        "{where_}: R8 predicate — a frameless function must take no parameters"
-    );
-    for instruction in code {
-        assert!(
-            !matches!(
-                instruction,
-                Instruction::Allocate { .. } | Instruction::Deallocate { .. }
-            ),
-            "{where_}: frameless function carries a frame instruction: {instruction:?}"
-        );
-        assert!(
-            !is_framed_tail(instruction),
-            "{where_}: frameless function used a framed tail: {instruction:?}"
-        );
-        assert!(
-            !instruction_operands(instruction)
-                .iter()
-                .any(|operand| operand_has_y(operand)),
-            "{where_}: R5 tier-1 — a frameless body names a Y register: {instruction:?}"
-        );
-    }
-}
-
-/// IR-14 marshaling and result placement: for each call of arity `k`, the
-/// segment since the previous call/label writes all of `x0..x(k-1)` (`CallFun`
-/// also `x(k)` for the fun); a value-producing call immediately followed by a
-/// register store leaves its result in `x0`.
-fn check_call_convention(code: &[Instruction], where_: &str) {
-    for (index, instruction) in code.iter().enumerate() {
-        let Some(arity) = call_arity(instruction) else {
-            continue;
-        };
-        // A `CallFun` homes the fun in `x(arity)`; every other call has args
-        // `x0..x(arity-1)` and no fun register.
-        let required: Vec<u32> = if matches!(instruction, Instruction::CallFun { .. }) {
-            (0..=arity).collect()
-        } else {
-            (0..arity).collect()
-        };
-        let mut written: Vec<u32> = Vec::new();
-        for prior in code[..index].iter().rev() {
-            if is_call_or_label(prior) {
-                break;
-            }
-            written.extend(x_writes(prior));
-        }
-        for register in required {
-            assert!(
-                written.contains(&register),
-                "{where_}: IR-14 — call arg x{register} (arity {arity}) is not marshaled before the call"
-            );
-        }
-        // Result in x0: a store right after a value-producing call reads x0.
-        if let Some(Instruction::Move { source, .. }) = code.get(index + 1)
-            && let Operand::X(source_index) = source
-        {
-            assert_eq!(
-                *source_index, 0,
-                "{where_}: IR-14 — result store after a call does not read x0"
-            );
-        }
-    }
-}
-
-/// Whether an instruction ends a call-free segment (a call or a label join).
-fn is_call_or_label(instruction: &Instruction) -> bool {
-    is_call(instruction) || matches!(instruction, Instruction::Label { .. })
 }
 
 // ---- targeted per-shape fixtures ----
@@ -437,9 +202,17 @@ fn module(name: &str, atoms: &[&str], functions: Vec<MirFn>) -> MirModule {
     }
 }
 
-/// Targeted: a framed function (one param, one def) brackets its body with a
-/// single `Allocate`, spills its param, and exits through one `Deallocate;
-/// Return` linearly last (R5 tier-2, R7).
+/// Selects and decodes a hand-built module through the witnessed decode path.
+fn decoded_module(
+    module: &MirModule,
+) -> Result<(ParsedModule, AtomTable), Box<dyn std::error::Error>> {
+    decode_bytes(&select(module)?)
+}
+
+/// Targeted: a framed function (one param, one def) — the exact independent MIR
+/// expectation (framed, one prologue spill `move x0 -> y0`, a `Deallocate;
+/// Return` exit) checked against the bytes, not read from them (BC-5 review
+/// blocker 5).
 #[test]
 fn targeted_framed_function_brackets_and_single_exits() -> TestResult {
     let one = flow(
@@ -454,27 +227,27 @@ fn targeted_framed_function_brackets_and_single_exits() -> TestResult {
         }],
         Tail::Return(Value::Var(Var(1))),
     );
-    let bytes = select(&module("framed", &["ok"], vec![one]))?;
-    let table = beamr::atom::AtomTable::with_common_atoms();
-    let parsed = beamr::loader::load_beam_chunks(&bytes, &table)?;
+    let built = module("framed", &["ok"], vec![one]);
+    let MirFn::Flow(flow_fn) = &built.functions[0] else {
+        return Err("hand-built function is not a flow".into());
+    };
+    assert!(expected_framed(flow_fn), "MIR expects this shape framed");
+    assert!(flow_returns(flow_fn), "MIR expects a non-tail return");
+
+    let (parsed, table) = decoded_module(&built)?;
     let function = functions(&parsed, &table)
         .into_iter()
         .find(|function| function.name == "execute")
         .ok_or("no execute function")?;
-    assert!(
-        function
-            .code
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::Allocate { .. })),
-        "expected a framed function"
-    );
-    check_framed(function.code, 1, "targeted::framed")?;
+    let arity = function_arity(function.code).ok_or("no arity")?;
+    assert_eq!(arity, 1, "the hand-built execute takes one param");
+    check_framed(function.code, arity, "targeted::framed")?;
     Ok(())
 }
 
 /// Targeted: a frameless body (no params, no defs, a tail import over
-/// immediates) emits no `Allocate`, no `Y`, and a `call_ext_only` tail (R5
-/// tier-1, R8 predicate).
+/// immediates) emits no `Allocate`, no `Y`, and a `call_ext_only` tail, and its
+/// register use is independently proven X-safe (BC-5 review blockers 3, 5).
 #[test]
 fn targeted_frameless_body_uses_no_frame_or_y() -> TestResult {
     let body = flow(
@@ -487,9 +260,16 @@ fn targeted_frameless_body_uses_no_frame_or_y() -> TestResult {
             args: vec![Value::Nil],
         },
     );
-    let bytes = select(&module("frameless", &[], vec![body]))?;
-    let table = beamr::atom::AtomTable::with_common_atoms();
-    let parsed = beamr::loader::load_beam_chunks(&bytes, &table)?;
+    let built = module("frameless", &[], vec![body]);
+    let MirFn::Flow(flow_fn) = &built.functions[0] else {
+        return Err("hand-built function is not a flow".into());
+    };
+    assert!(
+        !expected_framed(flow_fn),
+        "MIR expects this shape frameless"
+    );
+
+    let (parsed, table) = decoded_module(&built)?;
     let function = functions(&parsed, &table)
         .into_iter()
         .find(|function| function.name == "execute")
@@ -510,8 +290,117 @@ fn targeted_frameless_body_uses_no_frame_or_y() -> TestResult {
             .any(|instruction| matches!(instruction, Instruction::CallExtOnly { .. })),
         "a frameless tail import must be call_ext_only"
     );
-    check_frameless(function.code, 0, "targeted::frameless");
+    check_frameless(function.code, 0, "targeted::frameless")?;
     Ok(())
+}
+
+/// Targeted heap ops (BC-5 review blocker 8): a record construction emits a
+/// `TestHeap` and an `Increment` emits a `gc_bif2` — both carrying `Live` — whose
+/// declared `Live` equals the recomputed live-`X` root high-water. Isolates the
+/// R8 accuracy oracle on the two `Live`-bearing op families with named fixtures.
+#[test]
+fn targeted_heap_ops_declare_accurate_live() -> TestResult {
+    // A record built from a param: TestHeap for the tuple's heap need.
+    let record = flow(
+        "execute",
+        FnOrigin::Execute,
+        &[0],
+        vec![Stmt::RecordNew {
+            dst: Var(1),
+            tag: AtomRef(0),
+            args: vec![Value::Var(Var(0))],
+            span: Span { line: 0, column: 0 },
+        }],
+        Tail::Return(Value::Var(Var(1))),
+    );
+    let built = module("heap_record", &["ok"], vec![record]);
+    let (parsed, _) = decoded_module(&built)?;
+    assert!(
+        parsed
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::TestHeap { .. })),
+        "a record construction must emit a TestHeap"
+    );
+    assert_live_accuracy("targeted::heap_record", &parsed.instructions)?;
+
+    // An increment: gc_bif2 erlang:'+' carries Live.
+    let counter = flow(
+        "execute",
+        FnOrigin::Execute,
+        &[0],
+        vec![Stmt::Increment {
+            dst: Var(1),
+            src: Var(0),
+            span: Span { line: 0, column: 0 },
+        }],
+        Tail::Return(Value::Var(Var(1))),
+    );
+    let built = module("heap_incr", &[], vec![counter]);
+    let (parsed, _) = decoded_module(&built)?;
+    assert!(
+        parsed
+            .instructions
+            .iter()
+            .any(|instruction| heap_live(instruction).is_some()
+                && matches!(instruction, Instruction::Bif { .. })),
+        "an increment must emit a gc_bif carrying Live"
+    );
+    assert_live_accuracy("targeted::heap_incr", &parsed.instructions)?;
+    Ok(())
+}
+
+/// The oracle-mutation test (BC-5 review blocker 8): a deliberately wrong `Live`
+/// makes the R8 accuracy assertion go RED. Take a real decoded heap op, bump its
+/// declared `Live` by one, and prove `assert_live_accuracy` now errs — the
+/// equality oracle is mutation-sensitive, not vacuous.
+#[test]
+fn wrong_live_expectation_goes_red() -> TestResult {
+    let (parsed, _) = decode(&fixture_module(
+        "loop-outcomes/valid/loop_counting_until_max",
+    )?)?;
+    let mut code = parsed.instructions.clone();
+    let (at, _) = code
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| heap_live(instruction).is_some())
+        .ok_or("the loop fixture emitted no heap op to mutate")?;
+    // The un-mutated stream is accurate.
+    assert_live_accuracy("mutation::baseline", &code)?;
+    // Bump exactly one heap op's declared Live: the oracle must catch it.
+    code[at] = bump_live(&code[at]).ok_or("could not bump the heap op's Live")?;
+    assert!(
+        assert_live_accuracy("mutation::bumped", &code).is_err(),
+        "a wrong Live expectation did not go red — the R8 oracle is vacuous"
+    );
+    Ok(())
+}
+
+/// Returns a copy of a `TestHeap`/`GcBif` heap op with its declared `Live`
+/// incremented by one (for the oracle-mutation test), or `None` when it is not a
+/// recognised heap op.
+fn bump_live(instruction: &Instruction) -> Option<Instruction> {
+    match instruction {
+        Instruction::TestHeap { heap_need, live } => Some(Instruction::TestHeap {
+            heap_need: heap_need.clone(),
+            live: bump_unsigned(live)?,
+        }),
+        Instruction::Bif { op, operands } => {
+            let mut operands = operands.clone();
+            let bumped = bump_unsigned(operands.get(1)?)?;
+            operands[1] = bumped;
+            Some(Instruction::Bif { op: *op, operands })
+        }
+        _ => None,
+    }
+}
+
+/// Increments an `Operand::Unsigned` by one.
+fn bump_unsigned(operand: &Operand) -> Option<Operand> {
+    match operand {
+        Operand::Unsigned(value) => Some(Operand::Unsigned(value + 1)),
+        _ => None,
+    }
 }
 
 /// Targeted: a counted loop's back-edge is a self tail call — a `call_last` /
@@ -545,39 +434,80 @@ fn targeted_loop_recursion_is_a_self_tail_call() -> TestResult {
     Ok(())
 }
 
-/// Targeted: `awl_hello`'s `route shouted` lowers to a tail call — the region
-/// function ends in `call_ext_last` into the SDK success runtime, not a
-/// `call_ext` followed by a `Return` (IR-14: routes are tail calls).
+/// Targeted route-to-step tail call (BC-5 review blocker 7): a route to another
+/// STEP lowers to a region-to-region LOCAL tail call. In
+/// `sequence_region_loopback` (`route push` / `route settle`), some function ends
+/// its transfer in a `call_last` / `call_only` targeting ANOTHER decoded
+/// function's own body label — a real local callee resolved through the module's
+/// `FuncInfo` table, not an unrelated shell `call_ext_last`. A regression from a
+/// tail route to `call … ; return` would remove that local tail.
 #[test]
-fn targeted_route_lowers_to_a_tail_call() -> TestResult {
-    let (parsed, table) = decode(&fixture_module("flagship/valid/awl_hello")?)?;
-    assert!(
-        parsed
-            .instructions
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::CallExtLast { .. })),
-        "awl_hello emits no tail call for its route"
-    );
-    // No function returns a non-x0 route value through a non-tail call: every
-    // route path leaves via a framed/frameless tail call.
+fn targeted_route_to_step_is_a_local_tail_call() -> TestResult {
+    let (parsed, table) = decode(&fixture_module(
+        "flow-shape/valid/sequence_region_loopback",
+    )?)?;
+    let local_arities = local_target_arities(&parsed);
+    let mut found = false;
     for function in functions(&parsed, &table) {
-        let terminators = function
-            .code
-            .iter()
-            .filter(|instruction| {
-                is_framed_tail(instruction)
-                    || is_frameless_tail(instruction)
-                    || matches!(instruction, Instruction::Return)
-            })
-            .count();
-        assert!(terminators >= 1, "a function has no terminator");
+        let own_body = match function.code.get(2) {
+            Some(Instruction::Label { label }) => Some(*label),
+            _ => None,
+        };
+        for instruction in function.code {
+            let (Instruction::CallLast { label, .. } | Instruction::CallOnly { label, .. }) =
+                instruction
+            else {
+                continue;
+            };
+            // A LOCAL tail call to ANOTHER function's body label is a
+            // region-to-region route-to-step (self targets are loop back-edges).
+            if let Operand::Label(target) = label
+                && local_arities.contains_key(target)
+                && Some(*target) != own_body
+            {
+                found = true;
+            }
+        }
     }
+    assert!(
+        found,
+        "no region-to-region local tail call — a route-to-step is not a tail call"
+    );
+    Ok(())
+}
+
+/// DIVERGENCE surfaced, not papered over (BC-5 review blocker 7): a
+/// SUCCESS-OUTCOME route (`awl_hello`'s `route shouted`) does NOT lower to a tail
+/// call — `route_tail` (`lower/route.rs:60-71`) builds `Ok(Shouted(payload))` and
+/// RETURNS it (`Tail::Return`). The old targeted test asserted "`awl_hello` emits
+/// a `call_ext_last` for its route", which any unrelated shell/decoder tail
+/// satisfied — the exact weakness the review flagged, resting on a false premise.
+/// The
+/// tail-call claim for routes is proven where it holds (route-to-STEP in
+/// `targeted_route_to_step_is_a_local_tail_call`; loop recursion in
+/// `targeted_loop_recursion_is_a_self_tail_call`). Here the outcome-route shape is
+/// pinned as it truly is: a framed function returns the `{ok, {shouted, …}}`
+/// term through a `Deallocate; Return` exit — not a route tail call.
+#[test]
+fn awl_hello_outcome_route_returns_not_tail_calls() -> TestResult {
+    let (parsed, table) = decode(&fixture_module("flagship/valid/awl_hello")?)?;
+    let outcome_return = functions(&parsed, &table).iter().any(|function| {
+        function.code.windows(2).any(|pair| {
+            matches!(pair[0], Instruction::Deallocate { .. })
+                && matches!(pair[1], Instruction::Return)
+        })
+    });
+    assert!(
+        outcome_return,
+        "awl_hello has no framed `Deallocate; Return` — its success-outcome route must Return, \
+         not tail-call a `success` runtime function"
+    );
     Ok(())
 }
 
 /// Lowers a covered fixture by its `<dir>/<stem>` label to a `MirModule`.
 fn fixture_module(relative: &str) -> Result<MirModule, Box<dyn std::error::Error>> {
-    let path = super::inspect_support::manifest_dir()
+    let path = manifest_dir()
         .join("tests/fixtures/rev2")
         .join(format!("{relative}.awl"));
     let source = std::fs::read_to_string(&path)?;

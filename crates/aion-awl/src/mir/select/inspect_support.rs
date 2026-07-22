@@ -4,14 +4,13 @@
 //! `inspect_tests` witness the emitted bytes directly (the AWL-BC-IR.md §11 /
 //! IR-14 contract), not the emitter's intentions.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
 use beamr::atom::{Atom, AtomTable};
-use beamr::loader::decode::{BifOp, Instruction, Operand};
+use beamr::loader::decode::{BifOp, Instruction, Operand, decode_instructions};
 use beamr::loader::load::ParsedModule;
-use beamr::loader::load_beam_chunks;
+use beamr::loader::{load_beam_chunks, parse_beam_chunks};
 
 use crate::mir::{LowerError, MirModule, lower, select};
 
@@ -82,10 +81,145 @@ fn collect_valid(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
 pub(super) fn decode(
     module: &MirModule,
 ) -> Result<(ParsedModule, AtomTable), Box<dyn std::error::Error>> {
-    let bytes = select(module)?;
+    decode_bytes(&select(module)?)
+}
+
+/// Decodes already-selected `.beam` `bytes` into a parsed module and its atom
+/// table, WITNESSING that the whole `Code` chunk was decoded — never a silent
+/// prefix. Every inspection (sweep and targeted) routes through this one path.
+///
+/// The beamr Code decoder breaks-and-returns-`Ok` at opcode `int_code_end` (`3`)
+/// and discards whatever follows, so a bare `load_beam_chunks` success can cover
+/// a decoded PREFIX: an early terminator, a truncated frame, or entire later
+/// functions would be invisible while an inspection stayed green (the BC-5 brief
+/// decoder-discipline mandate; BC-5 review blocker 2). Two independent witnesses
+/// close that hole: the `Code` sub-header's own `function_count` must equal the
+/// decoded `FuncInfo` count (an early terminator cannot reduce inspected scope),
+/// and the declared instruction stream's last byte must be load-bearing (the
+/// BC-4 truncation witness — a trailing terminator never is).
+///
+/// # Errors
+///
+/// Propagates a decode failure, or fails when the decoded scope is a prefix of
+/// the declared `Code` stream.
+pub(super) fn decode_bytes(
+    bytes: &[u8],
+) -> Result<(ParsedModule, AtomTable), Box<dyn std::error::Error>> {
     let table = AtomTable::with_common_atoms();
-    let parsed = load_beam_chunks(&bytes, &table)?;
+    let parsed = load_beam_chunks(bytes, &table)?;
+    assert_function_count_matches(bytes, &parsed)?;
+    assert_code_stream_fully_consumed(bytes, &parsed)?;
     Ok((parsed, table))
+}
+
+/// The `Code` chunk body bytes (its 20-byte sub-header plus the declared
+/// instruction stream), read at the chunk's DECLARED length — not the padded
+/// container length — so no inter-chunk padding rides along.
+fn code_chunk_body(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    parse_beam_chunks(bytes)?
+        .iter()
+        .find(|(id, _)| id == b"Code")
+        .map(|(_, body)| body.to_vec())
+        .ok_or_else(|| "no Code chunk".into())
+}
+
+/// Reads a big-endian `u32` at `offset`.
+fn read_u32_be(bytes: &[u8], offset: usize) -> Result<u32, Box<dyn std::error::Error>> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or("Code chunk too short for a u32 read")?;
+    Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+/// Asserts the `Code` sub-header's declared `function_count` (the `u32` at
+/// offset 16) equals the number of `FuncInfo` instructions actually decoded — so
+/// an early `int_code_end` cannot silently drop whole later functions from the
+/// inspected scope.
+fn assert_function_count_matches(
+    bytes: &[u8],
+    parsed: &ParsedModule,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = code_chunk_body(bytes)?;
+    let declared = read_u32_be(&body, 16)?;
+    let decoded = u32::try_from(
+        parsed
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::FuncInfo { .. }))
+            .count(),
+    )?;
+    if declared != decoded {
+        return Err(format!(
+            "Code sub-header declares {declared} functions but only {decoded} FuncInfo decoded — \
+             the decode covered a prefix (an early int_code_end?)"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Proves — WITHOUT the module writer — that the declared `Code` instruction
+/// stream ends in a genuine, load-bearing instruction byte and so carries no
+/// trailing `int_code_end` terminator hiding a truncated tail. Ported from the
+/// BC-4 oracle (`crates/aion/tests/awl_bc4_differential/abi.rs`): decode the
+/// declared stream, then decode it again with its final byte removed. A trailing
+/// terminator (or any byte the decoder drops) is not turned into an instruction,
+/// so removing it leaves the decoded sequence UNCHANGED — reject. With no
+/// terminator, the final byte belongs to the last real instruction, so removing
+/// it changes the sequence — accept.
+///
+/// # Errors
+///
+/// Returns an error when the declared stream's last byte is inert (a trailing
+/// terminator or opcode), i.e. when the stream is not fully consumed.
+fn assert_code_stream_fully_consumed(
+    bytes: &[u8],
+    parsed: &ParsedModule,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let code = code_chunk_body(bytes)?;
+    let stream = code
+        .get(20..)
+        .ok_or("Code chunk shorter than its 20-byte sub-header")?;
+    let last = stream
+        .len()
+        .checked_sub(1)
+        .ok_or("empty Code instruction stream")?;
+    let (full, _) = decode_instructions(stream, &parsed.atoms, &parsed.literals)?;
+    match decode_instructions(&stream[..last], &parsed.atoms, &parsed.literals) {
+        Ok((truncated, _)) if truncated == full => Err(
+            "the declared Code instruction stream ends in an inert byte (an int_code_end \
+             terminator or trailing opcode): dropping its last byte left the decoded sequence \
+             unchanged, so no real instruction owns that byte"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Resolves an external call's `import` operand to its
+/// `(module_name, function_name, arity)` through the module's decoded `ImpT`
+/// table — the independent target metadata the route/marshaling oracles pin
+/// against, rather than trusting the call's own self-declared shape.
+pub(super) fn import_target(
+    parsed: &ParsedModule,
+    table: &AtomTable,
+    import: &Operand,
+) -> Option<(String, String, u8)> {
+    let entry = parsed.imports.get(operand_index(import)?)?;
+    Some((
+        name_of(table, entry.module),
+        name_of(table, entry.function),
+        entry.arity,
+    ))
+}
+
+/// The import-table (or literal-pool) index an operand names, when it is one.
+fn operand_index(operand: &Operand) -> Option<usize> {
+    match operand {
+        Operand::Unsigned(value) => usize::try_from(*value).ok(),
+        Operand::Literal(value) => Some(*value),
+        _ => None,
+    }
 }
 
 /// Resolves an atom to its name, or `<?>` when absent.
@@ -280,6 +414,14 @@ fn x_reads(instruction: &Instruction) -> Vec<u32> {
                 reads.extend_from_slice(rest);
             }
         }
+        // A `make_fun` reads every captured `X` register (its environment); its
+        // result lands in `x0` (a write, not a read). Counting captures keeps the
+        // cross-call X-safety and `Live` analyses complete (BC-5 review blocker 3).
+        Instruction::MakeFun { operands } => {
+            for operand in operands {
+                collect_x(operand, &mut reads);
+            }
+        }
         Instruction::PutTuple2 { elements, .. } => collect_x(elements, &mut reads),
         Instruction::PutList { head, tail, .. } => {
             push_x(head, &mut reads);
@@ -396,61 +538,4 @@ pub(super) fn heap_live(instruction: &Instruction) -> Option<u32> {
 /// Whether a `BifOp` is a garbage-collecting BIF (a GC point carrying `Live`).
 fn is_gc_bif(op: BifOp) -> bool {
     matches!(op, BifOp::GcBif1 | BifOp::GcBif2 | BifOp::GcBif3)
-}
-
-/// The exact root count a heap op at index `at` in `func` must declare as
-/// `Live`: the number of contiguous `X` registers (`x0..`) holding a value that
-/// is live ACROSS the heap op (defined before it, read at or after it before
-/// being overwritten). GC clears every `X` at or above `Live` (§11.1 fact 4), so
-/// this recomputed count is exactly what a correct `Live` operand equals (R8).
-///
-/// The scan models the register file directly: a write makes an `X` live; a call
-/// leaves `x0` live and kills every higher `X`; a `Label` (a control-flow join)
-/// and a heap op's own GC clear `X` at or above the declared `Live`.
-pub(super) fn heap_live_root_count(func: &[Instruction], at: usize) -> u32 {
-    let mut alive: BTreeSet<u32> = BTreeSet::new();
-    for instruction in &func[..at] {
-        apply_state(instruction, &mut alive);
-    }
-    let mut written_after: BTreeSet<u32> = BTreeSet::new();
-    let mut roots: BTreeSet<u32> = BTreeSet::new();
-    for (offset, instruction) in func[at..].iter().enumerate() {
-        let (reads, writes) = reads_writes(instruction);
-        for read in reads {
-            if alive.contains(&read) && !written_after.contains(&read) {
-                roots.insert(read);
-            }
-        }
-        // The heap op's own destination write does not end liveness across it.
-        if offset != 0 {
-            for write in writes {
-                written_after.insert(write);
-            }
-        }
-        if offset != 0 && (is_call(instruction) || matches!(instruction, Instruction::Label { .. }))
-        {
-            break;
-        }
-    }
-    roots.iter().next_back().map_or(0, |max| max + 1)
-}
-
-/// Advances the live-`X` set across one instruction (backward-pass state builder
-/// for [`heap_live_root_count`]).
-fn apply_state(instruction: &Instruction, alive: &mut BTreeSet<u32>) {
-    if matches!(instruction, Instruction::Label { .. }) {
-        alive.clear();
-        return;
-    }
-    if let Some(live) = heap_live(instruction) {
-        alive.retain(|&index| index < live);
-    }
-    if is_call(instruction) {
-        alive.retain(|&index| index == 0);
-        alive.insert(0);
-        return;
-    }
-    for write in reads_writes(instruction).1 {
-        alive.insert(write);
-    }
 }

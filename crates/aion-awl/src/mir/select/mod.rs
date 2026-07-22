@@ -22,6 +22,10 @@ mod shells;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]
+mod inspect_analysis;
+#[cfg(test)]
+mod inspect_cfg;
+#[cfg(test)]
 mod inspect_support;
 #[cfg(test)]
 mod inspect_tests;
