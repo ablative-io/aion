@@ -149,3 +149,183 @@ impl DeadlineHandler for WorkflowDeadlineHandler {
             .map_err(|error| DeadlineHandlerError(error.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{Event, Payload, WorkflowStatus};
+    use aion_package::ContentHash;
+    use aion_store::visibility::VisibilityStore;
+    use aion_store::{EventStore, InMemoryStore};
+    use serde_json::json;
+
+    use super::WorkflowDeadlineHandler;
+    use crate::durability::Recorder;
+    use crate::registry::{
+        CompletionNotifier, HandleResidency, Registry, TerminalOutcome, WorkflowHandle,
+        WorkflowHandleParts,
+    };
+    use crate::runtime::{RuntimeConfig, RuntimeHandle};
+    use crate::time::DeadlineHandler;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A registered, running workflow with a live process, plus the deadline
+    /// handler wired to its store, visibility index, and registry.
+    struct TimedRun {
+        handler: WorkflowDeadlineHandler,
+        store: Arc<dyn EventStore>,
+        registry: Arc<Registry>,
+        runtime: Arc<RuntimeHandle>,
+        handle: WorkflowHandle,
+    }
+
+    async fn timed_run() -> Result<TimedRun, Box<dyn std::error::Error>> {
+        let backing = Arc::new(InMemoryStore::default());
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let visibility_store: Arc<dyn VisibilityStore> = backing;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        let registry = Arc::new(Registry::default());
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let run_id = aion_core::RunId::new_v4();
+        let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
+        recorder
+            .record_workflow_started(
+                chrono::Utc::now(),
+                crate::durability::WorkflowStartRecord {
+                    workflow_type: "sleeper".to_owned(),
+                    input: Payload::from_json(&json!({}))?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
+            )
+            .await?;
+        let pid = runtime.spawn_test_process_with_trap_exit(true)?;
+        let handle = WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            pid,
+            workflow_type: "sleeper".to_owned(),
+            namespace: String::from("default"),
+            loaded_version: ContentHash::from_bytes([7; 32]),
+            cached_status: WorkflowStatus::Running,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion: CompletionNotifier::new(),
+        });
+        registry.insert((workflow_id, run_id), handle.clone())?;
+        let handler = WorkflowDeadlineHandler::new(
+            Arc::downgrade(&runtime),
+            Arc::clone(&store),
+            Arc::clone(&visibility_store),
+            Arc::clone(&registry),
+        );
+        Ok(TimedRun {
+            handler,
+            store,
+            registry,
+            runtime,
+            handle,
+        })
+    }
+
+    /// No concurrent terminal: the elapsed deadline records `WorkflowTimedOut`
+    /// with the `"workflow"` descriptor, projects `TimedOut`, notifies the
+    /// awaiter, and deregisters the run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_records_timed_out_and_tears_down() -> TestResult {
+        let run = timed_run().await?;
+        let workflow_id = run.handle.workflow_id().clone();
+        let run_id = run.handle.run_id().clone();
+        let mut receiver = run.handle.completion().subscribe();
+
+        run.handler
+            .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+            .await?;
+        receiver.changed().await?;
+
+        let history = run.store.read_history(&workflow_id).await?;
+        match history.as_slice() {
+            [
+                Event::WorkflowStarted { .. },
+                Event::WorkflowTimedOut { timeout, .. },
+            ] => assert_eq!(timeout, "workflow"),
+            other => return Err(format!("expected started then timed out, found {other:?}").into()),
+        }
+        assert_eq!(
+            aion_core::status_from_events(&history),
+            WorkflowStatus::TimedOut
+        );
+        assert_eq!(
+            receiver.borrow().clone(),
+            Some(TerminalOutcome::TimedOut(String::from("workflow")))
+        );
+        assert_eq!(run.registry.get(&workflow_id, &run_id)?, None);
+        run.runtime.shutdown()?;
+        Ok(())
+    }
+
+    /// Deadline-vs-completion race, resolved under the recorder lock: a terminal
+    /// already recorded for the run makes the elapsed deadline a clean no-op — it
+    /// records NO `WorkflowTimedOut` and leaves the prior terminal intact.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_loses_to_an_already_recorded_terminal() -> TestResult {
+        let run = timed_run().await?;
+        let workflow_id = run.handle.workflow_id().clone();
+        let run_id = run.handle.run_id().clone();
+
+        // The run completes first (the race the deadline must lose).
+        {
+            let recorder = run.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_workflow_completed(chrono::Utc::now(), Payload::from_json(&json!("done"))?)
+                .await?;
+        }
+
+        run.handler
+            .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+            .await?;
+
+        let history = run.store.read_history(&workflow_id).await?;
+        assert!(
+            !history
+                .iter()
+                .any(|event| matches!(event, Event::WorkflowTimedOut { .. })),
+            "the losing deadline must record no WorkflowTimedOut: {history:#?}"
+        );
+        assert_eq!(
+            aion_core::status_from_events(&history),
+            WorkflowStatus::Completed,
+            "the concurrent completion stands"
+        );
+        run.runtime.shutdown()?;
+        Ok(())
+    }
+
+    /// A deadline for a run that already left the registry (a terminal
+    /// deregistered it) is a clean no-op — nothing recorded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deadline_for_deregistered_run_is_a_noop() -> TestResult {
+        let run = timed_run().await?;
+        let workflow_id = run.handle.workflow_id().clone();
+        let run_id = run.handle.run_id().clone();
+        run.registry.remove(&workflow_id, &run_id)?;
+
+        run.handler
+            .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+            .await?;
+
+        let history = run.store.read_history(&workflow_id).await?;
+        assert!(
+            !history
+                .iter()
+                .any(|event| matches!(event, Event::WorkflowTimedOut { .. })),
+            "a deregistered run's deadline records nothing: {history:#?}"
+        );
+        run.runtime.shutdown()?;
+        Ok(())
+    }
+}
