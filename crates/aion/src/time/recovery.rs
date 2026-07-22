@@ -176,16 +176,17 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
+    use aion_core::{Event, EventEnvelope, RunId, TimerCancelCause, TimerId, WorkflowId};
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
-    use super::{TimerRecovery, TimerRecoveryError};
+    use super::{TimerRecovery, TimerRecoveryError, outstanding_future_timers};
     use crate::engine_seam::test_support::{DeliveredWorkflowMessage, FakeEngineHandle};
     use crate::engine_seam::{
         EngineHandle, EngineSeamError, WorkflowProcessHandle, WorkflowResidency,
     };
     use crate::time::TimerService;
+    use crate::time::deadline_timer_id;
 
     const RECOVERY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -409,6 +410,89 @@ mod tests {
         );
         assert!(engine.delivered_messages()?.is_empty());
         Ok(())
+    }
+
+    /// D5 resurrection hazard: `outstanding_future_timers` is whole-history
+    /// scoped, so a continue-as-new predecessor's still-outstanding
+    /// `deadline:{run}` WOULD be re-armed after failover — firing a timeout
+    /// against a run that already continued. The `WorkflowIntent` cancel recorded
+    /// at the CAN terminal closes exactly that hole. This proves both halves at
+    /// the precise mechanism the scout flagged.
+    #[test]
+    fn cancelled_predecessor_deadline_is_not_rearmed_after_continue_as_new() {
+        let workflow_id = workflow_id();
+        let predecessor_run = RunId::new_v4();
+        let deadline = deadline_timer_id(&predecessor_run).unwrap_or_else(|_| timer_id(0));
+        let now = instant(0);
+        let fire_at = instant(120); // future: eligible for re-arm
+
+        let started = |seq: u64, run: &RunId| Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: "sleeper".to_owned(),
+            input: aion_core::Payload::new(aion_core::ContentType::Json, b"null".to_vec()),
+            run_id: run.clone(),
+            parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        };
+        let deadline_started = Event::TimerStarted {
+            envelope: EventEnvelope {
+                seq: 2,
+                recorded_at: instant(0),
+                workflow_id: workflow_id.clone(),
+            },
+            timer_id: deadline.clone(),
+            fire_at,
+        };
+        let continued = Event::WorkflowContinuedAsNew {
+            envelope: EventEnvelope {
+                seq: 3,
+                recorded_at: instant(1),
+                workflow_id: workflow_id.clone(),
+            },
+            input: aion_core::Payload::new(aion_core::ContentType::Json, b"null".to_vec()),
+            workflow_type: None,
+            parent_run_id: predecessor_run.clone(),
+        };
+
+        // Before the cancel: the hazard is real — the predecessor's future
+        // deadline is outstanding across the whole history even after CAN.
+        let uncancelled = vec![
+            started(1, &predecessor_run),
+            deadline_started.clone(),
+            continued.clone(),
+        ];
+        assert!(
+            outstanding_future_timers(&uncancelled, now)
+                .into_iter()
+                .any(|(timer_id, _)| timer_id == deadline),
+            "an uncancelled predecessor deadline WOULD be re-armed after failover"
+        );
+
+        // With the WorkflowIntent cancel recorded at the CAN terminal: closed.
+        let cancelled = vec![
+            started(1, &predecessor_run),
+            deadline_started,
+            continued,
+            Event::TimerCancelled {
+                envelope: EventEnvelope {
+                    seq: 4,
+                    recorded_at: instant(1),
+                    workflow_id: workflow_id.clone(),
+                },
+                timer_id: deadline.clone(),
+                cause: TimerCancelCause::WorkflowIntent,
+            },
+        ];
+        assert!(
+            !outstanding_future_timers(&cancelled, now)
+                .into_iter()
+                .any(|(timer_id, _)| timer_id == deadline),
+            "the WorkflowIntent cancel closes the whole-history re-arm hole"
+        );
     }
 
     #[tokio::test]

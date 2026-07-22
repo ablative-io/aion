@@ -271,11 +271,13 @@ async fn declared_timeout_fires_to_timed_out() -> TestResult {
     let result = tokio::time::timeout(COMPLETE_DEADLINE, engine.result(&workflow_id, &run_id))
         .await
         .map_err(|_| "declared-timeout workflow never reached a terminal")??;
-    let error = result.expect_err("a timed-out workflow resolves to an error result");
-    assert!(
-        error.message.contains("workflow timed out: workflow"),
-        "unexpected terminal error message: {error:?}"
-    );
+    match result {
+        Err(error) => assert!(
+            error.message.contains("workflow timed out: workflow"),
+            "unexpected terminal error message: {error:?}"
+        ),
+        Ok(payload) => return Err(format!("expected a timed-out error, got {payload:?}").into()),
+    }
 
     let history = store.read_history(&workflow_id).await?;
     assert!(
@@ -351,11 +353,13 @@ async fn adopted_deadline_fires_after_shard_adoption() -> TestResult {
     let result = tokio::time::timeout(COMPLETE_DEADLINE, engine_b.result(&workflow_id, &run_id))
         .await
         .map_err(|_| "adopted deadline never fired: it was not re-armed on adoption")??;
-    let error = result.expect_err("the adopted run times out");
-    assert!(
-        error.message.contains("workflow timed out: workflow"),
-        "unexpected terminal error message: {error:?}"
-    );
+    match result {
+        Err(error) => assert!(
+            error.message.contains("workflow timed out: workflow"),
+            "unexpected terminal error message: {error:?}"
+        ),
+        Ok(payload) => return Err(format!("expected a timed-out error, got {payload:?}").into()),
+    }
 
     let final_history = store.read_history(&workflow_id).await?;
     assert_eq!(

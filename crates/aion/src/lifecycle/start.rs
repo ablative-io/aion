@@ -160,27 +160,13 @@ pub async fn start_workflow_with_options(
             &context.search_attribute_schema,
         )
         .await?;
-    // LAW 1: a workflow with no declared timeout arms nothing here — no
-    // TimerStarted, no durable row, no deadline object of any kind. The block
-    // executes only when the pinned entry's identity commits to a declared
-    // timeout (`declared_timeout()` is `Some`).
-    let armed_deadline = match loaded.declared_timeout() {
-        Some(timeout) => {
-            let fire_at = deadline_fire_at(started_at, timeout)?;
-            let deadline_id =
-                crate::time::deadline_timer_id(&run_id).map_err(|error| EngineError::Runtime {
-                    reason: format!("failed to mint deadline timer id: {error}"),
-                })?;
-            // The recorded `TimerStarted` is the durable anchor: `timer_is_live`
-            // and `outstanding_future_timers` recover the deadline from it after
-            // failover/adoption, independent of the live-wheel arming below.
-            recorder
-                .record_timer_started(started_at, deadline_id.clone(), fire_at)
-                .await?;
-            Some((deadline_id, fire_at))
-        }
-        None => None,
-    };
+    let armed_deadline = record_declared_deadline(
+        &mut recorder,
+        &run_id,
+        loaded.declared_timeout(),
+        started_at,
+    )
+    .await?;
     upsert_workflow_visibility(
         Arc::clone(&context.store),
         Arc::clone(&context.visibility_store),
@@ -234,6 +220,39 @@ pub async fn start_workflow_with_options(
     }
 
     Ok(handle)
+}
+
+/// Record the run's declared-timeout deadline `TimerStarted`, if one is declared.
+///
+/// LAW 1: a `None` `declared_timeout` records nothing — no `TimerStarted`, no
+/// durable row, no deadline object of any kind — and returns `None`. When a
+/// timeout is declared, this records the durable anchor (`timer_is_live` and
+/// `outstanding_future_timers` recover the deadline from it after
+/// failover/adoption) and returns the id and `fire_at` for the caller to arm the
+/// live wheel after registration.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] when the fire time is out of range, the deadline id
+/// cannot be minted, or the `TimerStarted` append fails.
+async fn record_declared_deadline(
+    recorder: &mut Recorder,
+    run_id: &RunId,
+    declared_timeout: Option<std::time::Duration>,
+    started_at: chrono::DateTime<Utc>,
+) -> Result<Option<(aion_core::TimerId, chrono::DateTime<Utc>)>, EngineError> {
+    let Some(timeout) = declared_timeout else {
+        return Ok(None);
+    };
+    let fire_at = deadline_fire_at(started_at, timeout)?;
+    let deadline_id =
+        crate::time::deadline_timer_id(run_id).map_err(|error| EngineError::Runtime {
+            reason: format!("failed to mint deadline timer id: {error}"),
+        })?;
+    recorder
+        .record_timer_started(started_at, deadline_id.clone(), fire_at)
+        .await?;
+    Ok(Some((deadline_id, fire_at)))
 }
 
 /// The deadline fire time for a run started at `started_at` with `timeout`.
