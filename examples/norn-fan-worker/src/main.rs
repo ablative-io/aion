@@ -1,16 +1,19 @@
-//! Real-AI liminal PUSH fan-out worker for the durable-agent failover demo.
+//! Real-AI liminal PUSH worker for studio `ask` calls and the fan-out failover demo.
 //!
 //! This is the AI counterpart of `spike/liminal-fan-worker`: same liminal
-//! server-push transport, same in-band self-registration for the pool
-//! `(default, default)`, same redial-to-survivor on owner `kill -9`, and it
-//! serves the SAME `collect_four` `fan:N` activities — so the existing
-//! `aion_outbox_fixture` workflow, package, and `demo-failover.sh` kill harness
-//! drive it verbatim. The only difference is the activity body: instead of
-//! returning a canned per-ordinal string, each `fan:N` runs a REAL Norn AI
-//! agent step (`norn --print`) and returns the model's answer.
+//! server-push transport, same in-band self-registration, same redial-to-survivor
+//! on owner `kill -9`, and it serves the SAME `collect_four` `fan:N` activities —
+//! so the existing `aion_outbox_fixture` workflow, package, and
+//! `demo-failover.sh` kill harness drive it verbatim. The only difference is the
+//! activity body: instead of returning a canned per-ordinal string, each `fan:N`
+//! runs a REAL Norn AI agent step (`norn --print`) and returns the model's answer.
 //!
 //! That turns the proven exactly-once cross-node failover demo into a tangible
 //! "real AI work fans out across the cluster and survives a node kill" demo.
+//! Alongside that unchanged demo surface, the worker registers one general
+//! `ask` activity. Its string input is the Norn prompt, and every handler
+//! invocation receives a distinct Norn session so parallel studio fan-out calls
+//! cannot accidentally resume one shared conversation.
 //!
 //! Auth: Norn is invoked with `OPENAI_API_KEY` REMOVED from its environment so
 //! it uses the operator's ChatGPT OAuth login (the project does not use API
@@ -27,11 +30,12 @@
 //!
 //! Usage:
 //!   norn-fan-worker --address 127.0.0.1:PORT [--address 127.0.0.1:PORT2 ...]
-//!                   [--identity <id>] [--ready-file <path>] [--norn-bin <path>]
+//!                   [--identity <id>] [--task-queue <name>]
+//!                   [--ready-file <path>] [--norn-bin <path>]
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aion_integration_norn::NornHarness;
 use aion_integrations::{DynAgentHarness, InterventionCapabilities, InterventionPrimitive};
@@ -43,6 +47,11 @@ use serde_json::Value;
 
 /// The fan-out arity of the `collect_four` fixture.
 const FAN_OUT: usize = 4;
+/// The general prompt-taking activity exposed to studio callers.
+const ASK_ACTIVITY_TYPE: &str = "ask";
+/// Fan-in companion to `ask`: joins prior answers under one instruction.
+const SYNTHESIZE_ACTIVITY_TYPE: &str = "synthesize";
+static ASK_INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The activity types `collect_four` dispatches, one per fan-out ordinal, paired
 /// with the prompt each fans to a Norn agent. Distinct prompts make the live
@@ -206,6 +215,45 @@ fn session_id_for(identity: &str, activity_type: &str) -> String {
     format!("{identity}-{}", activity_type.replace(':', "-"))
 }
 
+/// Derive the collision-resistant session id for one `ask` handler invocation.
+///
+/// [`ActivityContext`] exposes the activity's scheduling sequence position, but
+/// not its workflow or run id. Since the sequence position alone can recur in a
+/// different workflow, the id also carries the invocation's Unix timestamp and
+/// a process-wide monotonic counter. Worker identity separates worker processes;
+/// the timestamp also separates process lifetimes that reuse an identity.
+fn ask_session_id(identity: &str, context: &ActivityContext) -> Result<String, ActivityFailure> {
+    let unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            ActivityFailure::retryable(format!(
+                "cannot derive ask session id from system time: {error}"
+            ))
+        })?
+        .as_nanos();
+    let invocation_counter = ASK_INVOCATION_COUNTER
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| ActivityFailure::retryable("ask invocation counter exhausted".to_owned()))?;
+
+    Ok(ask_session_id_for_invocation(
+        identity,
+        context.activity_id().sequence_position(),
+        unix_nanos,
+        invocation_counter,
+    ))
+}
+
+fn ask_session_id_for_invocation(
+    identity: &str,
+    activity_sequence: u64,
+    unix_nanos: u128,
+    invocation_counter: u64,
+) -> String {
+    format!("{identity}-ask-activity-{activity_sequence}-{unix_nanos}-{invocation_counter}")
+}
+
 /// Compose the agent harness at the binary root — the ONE place this worker
 /// names a concrete [`AgentHarness`](aion_integrations::AgentHarness) adapter,
 /// mirroring the `aion` binary's composition root
@@ -228,8 +276,8 @@ fn composed_agent_harness(norn_bin: &str) -> AgentHarnessConfig {
     )
 }
 
-/// Build the activity registry: one handler per `fan:N` type, each running a real
-/// Norn agent step for that ordinal's prompt.
+/// Build the activity registry: the unchanged `fan:N` demo handlers plus one
+/// general `ask` handler whose input is the prompt.
 fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<ActivityRegistry>> {
     let mut registry = ActivityRegistry::new();
     for (activity_type, prompt) in FAN_TASKS {
@@ -254,6 +302,95 @@ fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<Activity
             },
         )?;
     }
+
+    let norn_bin_for_synthesize = norn_bin.to_owned();
+    let identity_for_synthesize = identity.to_owned();
+    let norn_bin = norn_bin.to_owned();
+    let identity = identity.to_owned();
+    registry = registry.register_activity(
+        ASK_ACTIVITY_TYPE,
+        move |input: Value, context: &ActivityContext| -> HandlerFuture<'_, Value> {
+            let norn_bin = norn_bin.clone();
+            let session_id = ask_session_id(&identity, context);
+            Box::pin(async move {
+                let session_id = session_id?;
+                // AWL action calls arrive as named-argument objects, so the
+                // prompt rides in as {"prompt": "..."} — never a bare string.
+                let prompt = input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ActivityFailure::terminal(format!(
+                            "ask input must be an object with a string `prompt` field, got: {input}"
+                        ))
+                    })?
+                    .to_owned();
+                tracing::info!(
+                    activity = ASK_ACTIVITY_TYPE,
+                    session = %session_id,
+                    "serving general Norn ask dispatch"
+                );
+                let answer = run_norn_step(norn_bin, session_id, prompt).await?;
+                tracing::info!(
+                    activity = ASK_ACTIVITY_TYPE,
+                    %answer,
+                    "Norn ask step completed"
+                );
+                // AWL actions return record types; a bare JSON string cannot
+                // satisfy any declarable return type, so ship an object.
+                Ok(serde_json::json!({ "answer": answer }))
+            })
+        },
+    )?;
+
+    let norn_bin = norn_bin_for_synthesize;
+    let identity = identity_for_synthesize;
+    registry = registry.register_activity(
+        SYNTHESIZE_ACTIVITY_TYPE,
+        move |input: Value, context: &ActivityContext| -> HandlerFuture<'_, Value> {
+            let norn_bin = norn_bin.clone();
+            let session_id = ask_session_id(&identity, context);
+            Box::pin(async move {
+                let session_id = session_id?;
+                let instruction = input
+                    .get("instruction")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ActivityFailure::terminal(format!(
+                            "synthesize input needs a string `instruction` field, got: {input}"
+                        ))
+                    })?;
+                let answers: Vec<&str> = input
+                    .get("answers")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("answer").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if answers.is_empty() {
+                    return Err(ActivityFailure::terminal(format!(
+                        "synthesize input needs a non-empty `answers` list of {{answer}} records, got: {input}"
+                    )));
+                }
+                let mut prompt = String::from(instruction);
+                prompt.push_str("\n\nInputs to synthesize:\n");
+                for (ordinal, answer) in answers.iter().enumerate() {
+                    prompt.push_str(&format!("{}. {answer}\n", ordinal + 1));
+                }
+                tracing::info!(
+                    activity = SYNTHESIZE_ACTIVITY_TYPE,
+                    session = %session_id,
+                    inputs = answers.len(),
+                    "serving Norn synthesize dispatch"
+                );
+                let answer = run_norn_step(norn_bin, session_id, prompt).await?;
+                Ok(serde_json::json!({ "answer": answer }))
+            })
+        },
+    )?;
     Ok(Arc::new(registry))
 }
 
@@ -263,16 +400,19 @@ struct Args {
     candidates: Vec<String>,
     /// The worker identity announced in-band (and the Norn session-id prefix).
     identity: String,
+    /// Liminal task queue to register with.
+    task_queue: String,
     /// Optional readiness file written once after the first registration.
     ready_file: Option<String>,
     /// Path to the `norn` binary (default: `NORN_BIN` env, else `norn` on PATH).
     norn_bin: String,
 }
 
-/// Parse `--address` (repeatable), `--identity`, `--ready-file`, `--norn-bin`.
+/// Parse worker connection, identity, queue, readiness, and Norn binary options.
 fn parse_args() -> anyhow::Result<Args> {
     let mut candidates: Vec<String> = Vec::new();
     let mut identity = "norn-fan-worker".to_owned();
+    let mut task_queue = "default".to_owned();
     let mut ready_file: Option<String> = None;
     let mut norn_bin = std::env::var("NORN_BIN").unwrap_or_else(|_| "norn".to_owned());
     let mut args = std::env::args().skip(1);
@@ -287,6 +427,10 @@ fn parse_args() -> anyhow::Result<Args> {
                     identity = value;
                 }
             }
+            "--task-queue" => match args.next() {
+                Some(value) => task_queue = value,
+                None => anyhow::bail!("--task-queue requires a value"),
+            },
             "--ready-file" => {
                 ready_file = args.next();
             }
@@ -304,6 +448,7 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(Args {
         candidates,
         identity,
+        task_queue,
         ready_file,
         norn_bin,
     })
@@ -321,6 +466,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(
         candidates = ?args.candidates,
         identity = %args.identity,
+        task_queue = %args.task_queue,
         norn_bin = %args.norn_bin,
         "norn-fan-worker starting"
     );
@@ -328,7 +474,7 @@ fn main() -> anyhow::Result<()> {
     let config = WorkerConfig::builder()
         .endpoint("unused-direct-address")
         .namespace("default")
-        .task_queue("default")
+        .task_queue(&args.task_queue)
         .identity(&args.identity)
         .max_concurrency(FAN_OUT)
         .reconnect_initial_backoff(REDIAL_INITIAL_BACKOFF)
@@ -365,4 +511,23 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ask_session_id_for_invocation;
+
+    #[test]
+    fn ask_session_id_is_unique_per_invocation() {
+        let first =
+            ask_session_id_for_invocation("studio-worker", 17, 1_752_448_451_000_000_000, 41);
+        let second =
+            ask_session_id_for_invocation("studio-worker", 17, 1_752_448_451_000_000_000, 42);
+
+        assert_ne!(first, second);
+        assert_eq!(
+            second,
+            "studio-worker-ask-activity-17-1752448451000000000-42"
+        );
+    }
 }
