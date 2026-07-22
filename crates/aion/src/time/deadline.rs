@@ -147,16 +147,24 @@ mod tests {
 
     #[test]
     fn outstanding_deadline_timer_is_none_for_a_run_without_a_deadline() -> TestResult {
-        // LAW 1: a run whose history has no deadline `TimerStarted` yields no
-        // deadline object of any kind — not even a constructed candidate id.
+        // LAW 1: a run whose history has no deadline `TimerStarted` of its own
+        // yields no deadline object of any kind — not even a constructed candidate
+        // id. Neither an ordinary author timer nor ANOTHER run's deadline matches.
         let workflow_id = WorkflowId::new_v4();
         let run_id = RunId::new_v4();
-        let history = vec![Event::TimerStarted {
-            envelope: envelope(1, &workflow_id),
-            // An ordinary author timer, never a deadline.
-            timer_id: TimerId::anonymous(3),
-            fire_at: chrono::Utc::now(),
-        }];
+        let other_run = RunId::new_v4();
+        let history = vec![
+            Event::TimerStarted {
+                envelope: envelope(1, &workflow_id),
+                timer_id: deadline_timer_id(&other_run)?,
+                fire_at: chrono::Utc::now(),
+            },
+            Event::TimerStarted {
+                envelope: envelope(2, &workflow_id),
+                timer_id: TimerId::anonymous(3),
+                fire_at: chrono::Utc::now(),
+            },
+        ];
         assert_eq!(outstanding_deadline_timer(&history, &run_id), None);
         Ok(())
     }
