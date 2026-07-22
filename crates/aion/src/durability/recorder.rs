@@ -395,6 +395,33 @@ impl Recorder {
         Ok(())
     }
 
+    /// Records a workflow timeout terminal, then settles the workflow's live
+    /// outbox rows (#253).
+    ///
+    /// The `timeout` descriptor is the closed-set kind token carried on
+    /// [`Event::WorkflowTimedOut`] (a declared workflow timeout uses
+    /// `"workflow"`); it is user-visible in `one_motion` output and replay
+    /// terminals. Mirrors [`Self::record_workflow_cancelled`]: a settle failure
+    /// never fails the recorded terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the
+    /// sequence tracker cannot advance after a successful append.
+    pub async fn record_workflow_timed_out(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        timeout: String,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WorkflowTimedOut {
+            envelope,
+            timeout,
+        })
+        .await?;
+        self.settle_terminal_outbox_rows_nonfatal().await;
+        Ok(())
+    }
+
     /// Settles the workflow's live (`Pending`/`Claimed`) outbox rows to
     /// `Cancelled` after a durably recorded workflow terminal (#253).
     ///
@@ -1279,6 +1306,49 @@ mod tests {
             }
             other => return Err(format!("expected WorkflowContinuedAsNew, got {other:?}").into()),
         }
+        assert_eq!(recorder.current_head(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_workflow_timed_out_terminal_and_projects_timed_out()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = workflow_id(41);
+        let store = Arc::new(InMemoryStore::default());
+        let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+        recorder
+            .record_workflow_started(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
+            )
+            .await?;
+        recorder
+            .record_workflow_timed_out(recorded_at(2), String::from("workflow"))
+            .await?;
+
+        let history = store.read_history(&workflow_id).await?;
+        match history.as_slice() {
+            [
+                Event::WorkflowStarted { .. },
+                Event::WorkflowTimedOut { envelope, timeout },
+            ] => {
+                assert_eq!(envelope.seq, 2);
+                assert_eq!(timeout, "workflow");
+            }
+            other => return Err(format!("expected started then timed out, found {other:?}").into()),
+        }
+        assert_eq!(
+            aion_core::status_from_events(&history),
+            aion_core::WorkflowStatus::TimedOut,
+            "a recorded WorkflowTimedOut projects to TimedOut"
+        );
         assert_eq!(recorder.current_head(), 2);
         Ok(())
     }

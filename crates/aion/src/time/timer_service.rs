@@ -10,6 +10,7 @@ use dashmap::DashSet;
 use crate::engine_seam::{
     EngineHandle, EngineSeamError, TimerWheelEntry, WorkflowMailboxMessage, WorkflowResidency,
 };
+use crate::time::deadline::{DeadlineHandler, deadline_run_id, is_deadline_timer};
 
 /// Durable timer scheduling and wheel-fire handling.
 ///
@@ -21,6 +22,12 @@ pub struct TimerService {
     store: Arc<dyn ReadableEventStore>,
     recorded_at: fn() -> DateTime<Utc>,
     terminal_updates: DashSet<(WorkflowId, TimerId)>,
+    /// Engine-registered handler for reserved `deadline:{run_id}` fires.
+    ///
+    /// `None` on a bare service (unit tests): a deadline fire is then a typed
+    /// error, never a silent generic `TimerFired`. The production bridge sets it
+    /// via [`Self::with_deadline_handler`] when constructing the service.
+    deadline_handler: Option<Arc<dyn DeadlineHandler>>,
 }
 
 struct TerminalUpdateSlot<'a> {
@@ -44,6 +51,16 @@ pub enum TimerServiceError {
     /// Engine seam operation failed.
     #[error("timer engine operation failed: {0}")]
     Engine(#[from] EngineSeamError),
+
+    /// A reserved `deadline:{run_id}` timer fired but could not be routed to a
+    /// registered deadline handler (or the handler failed).
+    ///
+    /// Never a silent generic fire: a deadline timer that reaches
+    /// [`TimerService::fire_timer`] without a handler — or whose handler errors —
+    /// surfaces here so the caller (live wheel or `recover_due`) observes the
+    /// failure rather than recording a spurious `TimerFired`.
+    #[error("deadline timer routing failed: {0}")]
+    Deadline(String),
 }
 
 impl TimerService {
@@ -65,7 +82,20 @@ impl TimerService {
             store,
             recorded_at,
             terminal_updates: DashSet::new(),
+            deadline_handler: None,
         }
+    }
+
+    /// Registers the engine-side deadline handler for reserved `deadline:{run_id}`
+    /// fires, returning the service for chaining.
+    ///
+    /// The production timer bridge calls this so both the live wheel and
+    /// `recover_due` (which share [`Self::fire_timer`]) demux a deadline fire to
+    /// the handler instead of recording a generic `TimerFired`.
+    #[must_use]
+    pub fn with_deadline_handler(mut self, handler: Arc<dyn DeadlineHandler>) -> Self {
+        self.deadline_handler = Some(handler);
+        self
     }
 
     /// Schedules a durable timer and arms the live wheel when the workflow is resident.
@@ -203,6 +233,14 @@ impl TimerService {
             return Ok(());
         }
 
+        // Demux a reserved workflow-deadline timer out of the generic
+        // record-then-deliver path (both the live wheel and `recover_due` reach
+        // here): it never records a `TimerFired` — the registered handler records
+        // `WorkflowTimedOut` and tears the run down instead.
+        if is_deadline_timer(&timer_id) {
+            return self.fire_deadline(workflow_id, timer_id).await;
+        }
+
         let event = Event::TimerFired {
             envelope: self.next_envelope(&workflow_id).await?,
             timer_id: timer_id.clone(),
@@ -217,6 +255,35 @@ impl TimerService {
         }
 
         Ok(())
+    }
+
+    /// Route a live reserved-deadline fire to the registered handler.
+    ///
+    /// Called only for a `deadline:{run_id}` timer that passed the liveness
+    /// guard. A missing handler or an unparseable run id is a typed
+    /// [`TimerServiceError::Deadline`] — never a silent generic fire — and the
+    /// handler's own failure is surfaced the same way. The handler re-checks the
+    /// run's terminal under the recorder lock, so it loses cleanly to a
+    /// concurrent completion.
+    async fn fire_deadline(
+        &self,
+        workflow_id: WorkflowId,
+        timer_id: TimerId,
+    ) -> Result<(), TimerServiceError> {
+        let handler = self.deadline_handler.as_ref().ok_or_else(|| {
+            TimerServiceError::Deadline(format!(
+                "no deadline handler registered for {timer_id} on workflow {workflow_id}"
+            ))
+        })?;
+        let run_id = deadline_run_id(&timer_id).ok_or_else(|| {
+            TimerServiceError::Deadline(format!(
+                "malformed deadline timer {timer_id} on workflow {workflow_id}"
+            ))
+        })?;
+        handler
+            .on_deadline_elapsed(workflow_id, run_id)
+            .await
+            .map_err(|error| TimerServiceError::Deadline(error.to_string()))
     }
 
     /// Whether the timer is currently live (started and not since retired) in
@@ -293,7 +360,7 @@ pub(crate) fn live_timers_in_active_segment(history: &[Event]) -> Vec<TimerId> {
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{Event, EventEnvelope, TimerCancelCause, TimerId, WorkflowId};
+    use aion_core::{Event, EventEnvelope, RunId, TimerCancelCause, TimerId, WorkflowId};
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
@@ -304,6 +371,7 @@ mod tests {
     use crate::engine_seam::{
         EngineHandle, TimerWheelEntry, WorkflowProcessHandle, WorkflowResidency,
     };
+    use crate::time::deadline::{DeadlineHandler, DeadlineHandlerError, deadline_timer_id};
 
     fn instant(offset_seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + offset_seconds, 0).unwrap_or_default()
@@ -774,6 +842,147 @@ mod tests {
 
         assert!(history(&store, &workflow_id).await?.is_empty());
         assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    /// A deadline handler that records each fire and can be told to fail.
+    struct RecordingDeadlineHandler {
+        calls: std::sync::Mutex<Vec<(WorkflowId, RunId)>>,
+        fail: bool,
+    }
+
+    impl RecordingDeadlineHandler {
+        fn new(fail: bool) -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                fail,
+            }
+        }
+
+        fn calls(&self) -> Result<Vec<(WorkflowId, RunId)>, TimerServiceError> {
+            self.calls
+                .lock()
+                .map(|calls| calls.clone())
+                .map_err(|error| TimerServiceError::Deadline(error.to_string()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeadlineHandler for RecordingDeadlineHandler {
+        async fn on_deadline_elapsed(
+            &self,
+            workflow_id: WorkflowId,
+            run_id: RunId,
+        ) -> Result<(), DeadlineHandlerError> {
+            self.calls
+                .lock()
+                .map_err(|error| DeadlineHandlerError(error.to_string()))?
+                .push((workflow_id, run_id));
+            if self.fail {
+                Err(DeadlineHandlerError(
+                    "deliberate handler failure".to_owned(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn service_with_handler(
+        handler: Arc<dyn DeadlineHandler>,
+    ) -> (Arc<InMemoryStore>, Arc<FakeEngineHandle>, TimerService) {
+        let concrete_store = Arc::new(InMemoryStore::default());
+        let recorder_store: Arc<dyn WritableEventStore> = concrete_store.clone();
+        let readable_store: Arc<dyn ReadableEventStore> = concrete_store.clone();
+        let engine = Arc::new(FakeEngineHandle::recording_to(recorder_store));
+        let service = TimerService::with_recorded_at(engine.clone(), readable_store, recorded_at)
+            .with_deadline_handler(handler);
+        (concrete_store, engine, service)
+    }
+
+    /// A live reserved deadline fire is demuxed to the registered handler with
+    /// the id-encoded run, and records NO `TimerFired` and delivers nothing.
+    #[tokio::test]
+    async fn deadline_fire_routes_to_handler_and_records_no_timer_fired()
+    -> Result<(), TimerServiceError> {
+        let run_id = RunId::new_v4();
+        let deadline_id = deadline_timer_id(&run_id)
+            .map_err(|error| TimerServiceError::Deadline(error.to_string()))?;
+        let handler = Arc::new(RecordingDeadlineHandler::new(false));
+        let (store, engine, service) = service_with_handler(handler.clone());
+        let workflow_id = workflow_id();
+        let fire_at = instant(120);
+        engine.set_residency(
+            workflow_id.clone(),
+            WorkflowResidency::Resident(WorkflowProcessHandle::new(9)),
+        )?;
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &deadline_id, 1),
+        )?;
+
+        service
+            .fire_timer(workflow_id.clone(), deadline_id.clone(), fire_at)
+            .await?;
+
+        assert_eq!(handler.calls()?, vec![(workflow_id.clone(), run_id)]);
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &deadline_id),
+            0,
+            "a deadline fire never records TimerFired"
+        );
+        assert!(engine.delivered_messages()?.is_empty());
+        Ok(())
+    }
+
+    /// A deadline fire with no handler registered is a typed error — never a
+    /// silent generic fire.
+    #[tokio::test]
+    async fn deadline_fire_without_handler_is_typed_error() -> Result<(), TimerServiceError> {
+        let run_id = RunId::new_v4();
+        let deadline_id = deadline_timer_id(&run_id)
+            .map_err(|error| TimerServiceError::Deadline(error.to_string()))?;
+        let (store, engine, service) = service();
+        let workflow_id = workflow_id();
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &deadline_id, 1),
+        )?;
+
+        let result = service
+            .fire_timer(workflow_id.clone(), deadline_id.clone(), instant(120))
+            .await;
+
+        assert!(
+            matches!(result, Err(TimerServiceError::Deadline(_))),
+            "unhandled deadline fire must be a typed error, got {result:?}"
+        );
+        assert_eq!(
+            count_timer_fired(&history(&store, &workflow_id).await?, &deadline_id),
+            0
+        );
+        Ok(())
+    }
+
+    /// A handler failure surfaces as a typed deadline error to the caller.
+    #[tokio::test]
+    async fn deadline_handler_failure_surfaces_as_typed_error() -> Result<(), TimerServiceError> {
+        let run_id = RunId::new_v4();
+        let deadline_id = deadline_timer_id(&run_id)
+            .map_err(|error| TimerServiceError::Deadline(error.to_string()))?;
+        let handler = Arc::new(RecordingDeadlineHandler::new(true));
+        let (_store, engine, service) = service_with_handler(handler);
+        let workflow_id = workflow_id();
+        engine.record_workflow_event(
+            &workflow_id,
+            timer_started_event(&workflow_id, &deadline_id, 1),
+        )?;
+
+        let result = service
+            .fire_timer(workflow_id, deadline_id, instant(120))
+            .await;
+
+        assert!(matches!(result, Err(TimerServiceError::Deadline(_))));
         Ok(())
     }
 

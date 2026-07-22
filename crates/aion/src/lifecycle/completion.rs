@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use aion_core::{
-    Event, Payload, RunId, WorkflowError, WorkflowId, current_lease_terminal, run_segment,
+    Event, Payload, RunId, TimerCancelCause, WorkflowError, WorkflowId, current_lease_terminal,
+    run_segment,
 };
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
@@ -113,6 +114,13 @@ async fn handle_process_exit_async(
     let terminal = match recorded {
         Err(existing) => {
             handle.completion().notify(existing.clone());
+            // Every terminal permanently retires this run's declared-timeout
+            // deadline (a no-op when none was armed). Reached here for a
+            // pre-recorded terminal — cancel (WorkflowCancelled), continue-as-new
+            // (ContinuedAsNew), or an already-fired timeout — the latter two
+            // depend on it: an uncancelled predecessor deadline is whole-history
+            // scoped and would be re-armed after failover.
+            cancel_run_deadline(&context, handle.workflow_id(), handle.run_id()).await;
             reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
             if let TerminalOutcome::ContinuedAsNew {
                 input,
@@ -135,6 +143,9 @@ async fn handle_process_exit_async(
     };
     handle.completion().notify(terminal);
 
+    // A completion/failure recorded by this monitor also permanently retires the
+    // run's declared-timeout deadline (a no-op when none was armed).
+    cancel_run_deadline(&context, handle.workflow_id(), handle.run_id()).await;
     upsert_workflow_visibility(
         Arc::clone(&context.store),
         Arc::clone(&context.visibility_store),
@@ -144,6 +155,39 @@ async fn handle_process_exit_async(
     .await?;
     reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
     Ok(())
+}
+
+/// Permanently cancels a run's reserved `deadline:{run_id}` timer at a terminal.
+///
+/// Uses [`TimerCancelCause::WorkflowIntent`] so reopen never resurrects the
+/// deadline, and closes the whole-history-scoped `outstanding_future_timers`
+/// re-arm hazard (a still-outstanding deadline would fire against a
+/// terminal/continued run after failover). Best-effort: a run without a declared
+/// timeout has no such timer, so this is a cheap no-op; every failure is logged
+/// and the recovery orphan-skip backstops it.
+async fn cancel_run_deadline(context: &ProcessExitContext, id: &WorkflowId, run: &RunId) {
+    let deadline_id = match crate::time::deadline_timer_id(run) {
+        Ok(deadline_id) => deadline_id,
+        Err(error) => {
+            tracing::warn!(workflow_id = %id, run_id = %run, %error, "could not mint deadline timer id for terminal cleanup");
+            return;
+        }
+    };
+    let timer_service = match crate::runtime::nif_timer_bridge::installed_timer_service(
+        context.runtime.nif_state(),
+    ) {
+        Ok(timer_service) => timer_service,
+        Err(error) => {
+            tracing::warn!(workflow_id = %id, run_id = %run, %error, "timer service unavailable while cancelling deadline at terminal; recovery will skip it if orphaned");
+            return;
+        }
+    };
+    if let Err(error) = timer_service
+        .cancel(id.clone(), deadline_id, TimerCancelCause::WorkflowIntent)
+        .await
+    {
+        tracing::warn!(workflow_id = %id, run_id = %run, %error, "failed to cancel workflow deadline at terminal; recovery will skip it if orphaned");
+    }
 }
 
 async fn reconcile_terminal_registry(

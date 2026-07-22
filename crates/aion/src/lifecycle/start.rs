@@ -136,6 +136,10 @@ pub async fn start_workflow_with_options(
     } else {
         0
     };
+    // Single deterministic clock read: `WorkflowStarted.recorded_at` AND the
+    // deadline's `fire_at` both derive from it, so a replay/adoption re-arm
+    // computes the identical fire time (never a second live-clock read).
+    let started_at = Utc::now();
     let mut recorder = Recorder::resume_at(
         workflow_id.clone(),
         Arc::clone(&context.store),
@@ -144,7 +148,7 @@ pub async fn start_workflow_with_options(
     .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     recorder
         .record_workflow_started_with_attributes(
-            Utc::now(),
+            started_at,
             crate::durability::WorkflowStartRecord {
                 workflow_type: workflow_type.to_owned(),
                 input: input.clone(),
@@ -156,6 +160,27 @@ pub async fn start_workflow_with_options(
             &context.search_attribute_schema,
         )
         .await?;
+    // LAW 1: a workflow with no declared timeout arms nothing here — no
+    // TimerStarted, no durable row, no deadline object of any kind. The block
+    // executes only when the pinned entry's identity commits to a declared
+    // timeout (`declared_timeout()` is `Some`).
+    let armed_deadline = match loaded.declared_timeout() {
+        Some(timeout) => {
+            let fire_at = deadline_fire_at(started_at, timeout)?;
+            let deadline_id =
+                crate::time::deadline_timer_id(&run_id).map_err(|error| EngineError::Runtime {
+                    reason: format!("failed to mint deadline timer id: {error}"),
+                })?;
+            // The recorded `TimerStarted` is the durable anchor: `timer_is_live`
+            // and `outstanding_future_timers` recover the deadline from it after
+            // failover/adoption, independent of the live-wheel arming below.
+            recorder
+                .record_timer_started(started_at, deadline_id.clone(), fire_at)
+                .await?;
+            Some((deadline_id, fire_at))
+        }
+        None => None,
+    };
     upsert_workflow_visibility(
         Arc::clone(&context.store),
         Arc::clone(&context.visibility_store),
@@ -198,7 +223,78 @@ pub async fn start_workflow_with_options(
     register_started_handle(&context, &handle)?;
     deliver_deferred_signals(&context, &handle);
 
+    // Persist the durable timer row and arm the live wheel AFTER registration so
+    // the workflow is resident and the wheel actually arms (a schedule before
+    // registration would write the row but skip the wheel). The recorded
+    // `TimerStarted` above is the durability anchor, so a schedule failure here
+    // is loud but non-fatal: startup/adoption recovery re-arms the deadline from
+    // history via `outstanding_future_timers`.
+    if let Some((deadline_id, fire_at)) = armed_deadline {
+        arm_declared_deadline(&context, &workflow_id, deadline_id, fire_at).await;
+    }
+
     Ok(handle)
+}
+
+/// The deadline fire time for a run started at `started_at` with `timeout`.
+///
+/// Deterministic: derived from the same `started_at` recorded on
+/// `WorkflowStarted`, never a second clock read.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Runtime`] when `timeout` is out of `chrono` range or
+/// the addition overflows the representable timestamp range.
+fn deadline_fire_at(
+    started_at: chrono::DateTime<Utc>,
+    timeout: std::time::Duration,
+) -> Result<chrono::DateTime<Utc>, EngineError> {
+    let delta = chrono::Duration::from_std(timeout).map_err(|error| EngineError::Runtime {
+        reason: format!("declared workflow timeout is out of range: {error}"),
+    })?;
+    started_at
+        .checked_add_signed(delta)
+        .ok_or_else(|| EngineError::Runtime {
+            reason: String::from("declared workflow timeout overflowed the deadline fire time"),
+        })
+}
+
+/// Persist the durable deadline row and arm the live wheel for a resident run.
+///
+/// Best-effort by contract: the durable `TimerStarted` recorded at start is the
+/// recoverable anchor, so every failure here is logged and swallowed — recovery
+/// re-arms the deadline from history. Never fails an already-durable start.
+async fn arm_declared_deadline(
+    context: &StartWorkflowContext,
+    workflow_id: &WorkflowId,
+    deadline_id: aion_core::TimerId,
+    fire_at: chrono::DateTime<Utc>,
+) {
+    let timer_service = match crate::runtime::nif_timer_bridge::installed_timer_service(
+        context.runtime.nif_state(),
+    ) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::warn!(
+                %workflow_id,
+                %deadline_id,
+                %error,
+                "timer service unavailable while arming workflow deadline; recovery will re-arm it from the recorded TimerStarted"
+            );
+            return;
+        }
+    };
+    if let Err(error) = timer_service
+        .schedule(workflow_id.clone(), deadline_id.clone(), fire_at)
+        .await
+    {
+        tracing::warn!(
+            %workflow_id,
+            %deadline_id,
+            %error,
+            "failed to arm workflow deadline live wheel; recovery will re-arm it from the recorded TimerStarted"
+        );
+    }
 }
 
 fn register_started_handle(

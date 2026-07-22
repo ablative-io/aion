@@ -689,6 +689,25 @@ impl EngineBuilder {
             watch_backoff: self.signal_delivery,
         })?;
 
+        // Register the workflow-deadline handler on the timer bridge BEFORE
+        // startup timer recovery: an already-due `deadline:{run_id}` swept by
+        // `recover_timers_on_startup` routes to this handler, which would
+        // otherwise be an unhandled reserved-fire error and brick boot. The
+        // handler holds the runtime weakly so the runtime→nif-state→bridge→handler
+        // chain never cycles back into the runtime.
+        crate::runtime::nif_timer_bridge::register_deadline_handler(
+            &nif_state,
+            Arc::new(crate::lifecycle::deadline::WorkflowDeadlineHandler::new(
+                Arc::downgrade(&runtime),
+                Arc::clone(&store),
+                Arc::clone(&visibility_store),
+                Arc::clone(&registry),
+            )),
+        )
+        .map_err(|error| EngineError::Runtime {
+            reason: format!("failed to register workflow deadline handler: {error}"),
+        })?;
+
         // Startup recovery re-spawns active workflow processes, and those
         // processes begin replaying on scheduler threads immediately. Replay
         // re-executes workflow code through the engine NIFs, so every NIF

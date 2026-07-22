@@ -5,7 +5,7 @@
 //! timer wheel (armed tokio sleep tasks keyed per process and timer id).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use aion_core::{Event, TimerCancelCause, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
@@ -22,7 +22,7 @@ use crate::engine_seam::{
 use crate::registry::Registry;
 use crate::runtime::nif_state::EngineNifState;
 use crate::runtime::nif_timer::NifTimerError;
-use crate::time::TimerService;
+use crate::time::{DeadlineHandler, TimerService};
 
 pub(super) struct TimerNifBridge {
     pub(super) registry: Arc<Registry>,
@@ -34,6 +34,13 @@ pub(super) struct TimerNifBridge {
     next_timer_generation: AtomicU64,
     // Weak: the engine state owns this bridge through its timer slot.
     nif_state: Weak<EngineNifState>,
+    /// Engine-registered handler for reserved `deadline:{run_id}` fires,
+    /// installed by [`register_deadline_handler`] after engine seams are wired
+    /// and before startup timer recovery runs. Every [`Self::service`] hands it
+    /// to the `TimerService` it constructs, so both the live wheel and
+    /// `recover_due` route a deadline fire to the engine instead of recording a
+    /// generic `TimerFired`.
+    deadline_handler: Mutex<Option<Arc<dyn DeadlineHandler>>>,
 }
 
 struct PendingTimerTask {
@@ -102,7 +109,19 @@ impl TimerNifBridge {
     pub(super) fn service(self: &Arc<Self>) -> TimerService {
         let engine: Arc<dyn EngineHandle> = self.clone();
         let store: Arc<dyn ReadableEventStore> = self.store.clone();
-        TimerService::new(engine, store)
+        let service = TimerService::new(engine, store);
+        match self.deadline_handler() {
+            Some(handler) => service.with_deadline_handler(handler),
+            None => service,
+        }
+    }
+
+    /// The engine-registered deadline handler, if one has been installed.
+    fn deadline_handler(&self) -> Option<Arc<dyn DeadlineHandler>> {
+        match self.deadline_handler.lock() {
+            Ok(handler) => handler.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Abort every armed live-wheel timer task this engine owns.
@@ -374,11 +393,33 @@ pub(crate) fn install_timer_nif_bridge(
         pending_timers: DashMap::new(),
         next_timer_generation: AtomicU64::new(0),
         nif_state: Arc::downgrade(state),
+        deadline_handler: Mutex::new(None),
     });
     match state.timer_bridge.lock() {
         Ok(mut installed) => *installed = Some(bridge),
         Err(poisoned) => *poisoned.into_inner() = Some(bridge),
     }
+}
+
+/// Register the engine-side deadline handler on the installed timer bridge.
+///
+/// Must run after [`install_timer_nif_bridge`] and before startup timer recovery
+/// (`recover_timers_on_startup`), so an already-due deadline recovered at boot
+/// routes to the engine rather than failing as an unhandled reserved fire.
+///
+/// # Errors
+///
+/// Returns the bridge-resolution error string when no timer bridge is installed.
+pub(crate) fn register_deadline_handler(
+    state: &EngineNifState,
+    handler: Arc<dyn DeadlineHandler>,
+) -> Result<(), String> {
+    let bridge = timer_bridge(state).map_err(|error| error.to_string())?;
+    match bridge.deadline_handler.lock() {
+        Ok(mut slot) => *slot = Some(handler),
+        Err(poisoned) => *poisoned.into_inner() = Some(handler),
+    }
+    Ok(())
 }
 
 pub(crate) fn installed_timer_service(state: &EngineNifState) -> Result<Arc<TimerService>, String> {
