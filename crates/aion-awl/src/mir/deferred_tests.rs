@@ -23,15 +23,25 @@ fn lower_source(source: &str) -> Result<Result<MirModule, LowerError>, Box<dyn s
 /// BC-4 adversarial fixture `nested_handlers` is out-of-intersection: the
 /// reference emitter accepts its `on failure` region, but the direct path does
 /// not yet lower `on failure`, so it refuses with the reference class anchored
-/// to the guarding step `fulfil` (line 13). Kept as a refusal ratchet so a
-/// future `on failure` lowering flips this pin loudly rather than silently.
+/// to the guarding step `fulfil`. The COMPLETE span (start/end/line/column) is
+/// pinned so range or column drift also fails, not just the line. Kept as a
+/// refusal ratchet so a future `on failure` lowering flips this pin loudly.
 #[test]
 fn bc4_nested_handlers_refuses_on_failure() -> Result<(), Box<dyn std::error::Error>> {
     let path = manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/nested_handlers.awl");
     match lower_fixture(&path)? {
         Err(LowerError::Unsupported { shape, span }) => {
             assert_eq!(shape, "on failure", "nested_handlers refusal drifted");
-            assert_eq!(span.line, 13, "nested_handlers refusal span drifted");
+            assert_eq!(
+                span,
+                crate::Span {
+                    start: 377,
+                    end: 383,
+                    line: 13,
+                    column: 6
+                },
+                "nested_handlers refusal span drifted"
+            );
         }
         other => {
             return Err(format!("nested_handlers must refuse at `on failure`: {other:?}").into());
@@ -43,10 +53,10 @@ fn bc4_nested_handlers_refuses_on_failure() -> Result<(), Box<dyn std::error::Er
 /// BC-4 adversarial fixture `zero_step_workflow` is below BOTH backends' floor:
 /// it checks clean but has no steps, so the direct path refuses. The refusal is
 /// the span-carrying `Message` variant (`LowerError::new` in `build.rs`), so the
-/// pin asserts the EXACT variant, the exact message, and the span anchored to
-/// the workflow header (line 1) — never a substring. It lives outside any
-/// `valid/` sweep directory because neither backend can produce runnable code
-/// for it (the reference emitter also refuses, "no steps to execute").
+/// pin asserts the EXACT variant, the exact message, and the COMPLETE span
+/// (start/end/line/column) — never a substring or a lone line. It lives outside
+/// any `valid/` sweep directory because neither backend can produce runnable
+/// code for it (the reference emitter also refuses, "no steps to execute").
 #[test]
 fn bc4_zero_step_workflow_refuses_no_start_region() -> Result<(), Box<dyn std::error::Error>> {
     let path = manifest_dir().join("tests/fixtures/rev2/header-types/zero_step_workflow.awl");
@@ -56,7 +66,16 @@ fn bc4_zero_step_workflow_refuses_no_start_region() -> Result<(), Box<dyn std::e
                 message, "the workflow has no start region",
                 "zero_step_workflow refusal message drifted"
             );
-            assert_eq!(span.line, 1, "zero_step_workflow refusal span drifted");
+            assert_eq!(
+                span,
+                crate::Span {
+                    start: 0,
+                    end: 189,
+                    line: 1,
+                    column: 1
+                },
+                "zero_step_workflow refusal span drifted"
+            );
         }
         other => {
             return Err(format!(
