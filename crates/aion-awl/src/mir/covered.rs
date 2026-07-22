@@ -9,6 +9,11 @@ pub(super) const COVERED: &[&str] = &[
     "dag-fork/valid/after_single",
     "dag-fork/valid/child_collection_fork",
     "dag-fork/valid/child_collection_fork_sequential",
+    // BC-4 adversarial fixtures (rev-2): a fork over a possibly-empty input
+    // collection (zero-item boundary) and a fork whose fan-out width is only
+    // known at run time — both lower, so both join the ratchet and the
+    // differential corpus.
+    "dag-fork/valid/empty_fork_collection",
     "dag-fork/valid/fall_through_chain",
     "dag-fork/valid/fork_action_fanout",
     "dag-fork/valid/fork_collection_join",
@@ -16,11 +21,17 @@ pub(super) const COVERED: &[&str] = &[
     "dag-fork/valid/fork_named_homogeneous",
     "dag-fork/valid/fork_sequential",
     "dag-fork/valid/fork_sequential_route",
+    // BC-4 adversarial: a runtime-sized fork over a plain input list.
+    "dag-fork/valid/runtime_sized_fork",
     "dag-fork/valid/sit_one",
     "declarations/valid/call_site_override",
     "declarations/valid/child_call_awaited",
+    // BC-4 adversarial: await a child, then fire-and-forget a detached child.
+    "declarations/valid/child_spawn_combo",
     "declarations/valid/declarations_combined",
     "declarations/valid/spawn_detached",
+    // BC-4 adversarial: a per-attempt timeout nested inside a retry schedule.
+    "declarations/valid/timeout_inside_retry",
     "declarations/valid/worker_action_config_lines",
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",
@@ -38,6 +49,8 @@ pub(super) const COVERED: &[&str] = &[
     "header-types/valid/doc_comments",
     "header-types/valid/enum",
     "header-types/valid/line_width",
+    // BC-4 adversarial: a high-arity record — a wide tuple through the codec.
+    "header-types/valid/max_arity_record",
     "header-types/valid/minimal",
     "header-types/valid/noncanonical_commas",
     "header-types/valid/signal_wait",
@@ -76,6 +89,8 @@ pub(super) const COVERED: &[&str] = &[
     "step-bodies/valid/pipe_chain_stages",
     "step-bodies/valid/predicates_and_operators",
     "step-bodies/valid/step_bodies_combined",
+    // BC-4 adversarial: UTF-8 string literals and concat through the wire.
+    "step-bodies/valid/unicode_payloads",
     "step-bodies/valid/wait_and_sleep",
     "step-bodies/valid/wait_timeout_optional",
     "step-bodies/valid/workflow_id",

@@ -1,0 +1,118 @@
+module unicode_payloads source=unicode_payloads.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families ==
+== atoms ==
+  [0] greeting
+  [1] unicode_payloads_input
+  [2] greeted_outcome
+  [3] ok
+== literals ==
+  [0] "message"
+  [1] "who"
+  [2] "name"
+  [3] "greeted"
+  [4] "outcome"
+  [5] ""
+  [6] ""
+  [7] "UnicodePayloadsOutcome"
+  [8] "greeted"
+  [9] "payload"
+  [10] "こんにちは 🚀 café Ω — "
+== types ==
+  record Greeting tag=greeting
+    message: string
+    who: string
+  record UnicodePayloadsInput tag=unicode_payloads_input
+    name: string
+  union UnicodePayloadsOutcome
+    greeted -> greeted_outcome(ref(Greeting))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=unicode_payloads_input_codec output=unicode_payloads_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(unicode_payloads.UnicodePayloadsInput, unicode_payloads.UnicodePayloadsOutcome, AwlError)
+  T-DEF name="unicode_payloads" input=unicode_payloads_input_codec output=unicode_payloads_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (unicode_payloads.UnicodePayloadsInput) -> Result(unicode_payloads.UnicodePayloadsOutcome, AwlError)
+  T-EXEC fields=[name:String] entry=step_greet args=[0]
+== fn greeting_codec/0 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: () -> Codec(unicode_payloads.Greeting)
+  v0 = make_closure greeting_to_json captures=[]
+  v1 = call_local greeting_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn greeting_to_json/1 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: (unicode_payloads.Greeting) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"message": v1|>awlc.string_to_json, "who": v2|>awlc.string_to_json}
+  return v3
+== fn greeting_decoder/0 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: () -> Decoder(unicode_payloads.Greeting)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure greeting_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn greeting_decoder$0/1 origin=lifted(greeting_decoder, #0) ==
+  sig: (String) -> Decoder(unicode_payloads.Greeting)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure greeting_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn greeting_decoder$1/2 origin=lifted(greeting_decoder, #1) ==
+  sig: (String, String) -> Decoder(unicode_payloads.Greeting)
+  v2 = record(greeting, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn unicode_payloads_input_codec/0 origin=codec_template(RecordTrio, UnicodePayloadsInput, record#1) ==
+  sig: () -> Codec(unicode_payloads.UnicodePayloadsInput)
+  v0 = make_closure unicode_payloads_input_to_json captures=[]
+  v1 = call_local unicode_payloads_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn unicode_payloads_input_to_json/1 origin=codec_template(RecordTrio, UnicodePayloadsInput, record#1) ==
+  sig: (unicode_payloads.UnicodePayloadsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn unicode_payloads_input_decoder/0 origin=codec_template(RecordTrio, UnicodePayloadsInput, record#1) ==
+  sig: () -> Decoder(unicode_payloads.UnicodePayloadsInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure unicode_payloads_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn unicode_payloads_input_decoder$0/1 origin=lifted(unicode_payloads_input_decoder, #0) ==
+  sig: (String) -> Decoder(unicode_payloads.UnicodePayloadsInput)
+  v1 = record(unicode_payloads_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn unicode_payloads_outcome_codec/0 origin=codec_template(UnionTrio, UnicodePayloadsOutcome, union#2) ==
+  sig: () -> Codec(unicode_payloads.UnicodePayloadsOutcome)
+  v0 = make_closure unicode_payloads_outcome_to_json captures=[]
+  v1 = call_local unicode_payloads_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn unicode_payloads_outcome_to_json/1 origin=codec_template(UnionTrio, UnicodePayloadsOutcome, union#2) ==
+  sig: (unicode_payloads.UnicodePayloadsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>greeting_to_json}
+  return v2
+== fn unicode_payloads_outcome_decoder/0 origin=codec_template(UnionTrio, UnicodePayloadsOutcome, union#2) ==
+  sig: () -> Decoder(unicode_payloads.UnicodePayloadsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure unicode_payloads_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn unicode_payloads_outcome_decoder$outcome/1 origin=lifted(unicode_payloads_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(unicode_payloads.UnicodePayloadsOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local greeting_decoder()
+    v4 = make_closure unicode_payloads_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(greeting, [lit#5, lit#6])
+    v2 = record(greeted_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn unicode_payloads_outcome_decoder$arm0/1 origin=lifted(unicode_payloads_outcome_decoder, #1) ==
+  sig: (unicode_payloads.Greeting) -> Decoder(unicode_payloads.UnicodePayloadsOutcome)
+  v1 = record(greeted_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn step_greet/1 origin=region(greet) ==
+  sig: (String) -> Result(unicode_payloads.UnicodePayloadsOutcome, AwlError)
+  v1 = concat lit#10 v0
+  v2 = record(greeting, [v1, v0])
+  v3 = record(greeted_outcome, [v2])
+  v4 = record(ok, [v3])
+  return v4

@@ -1,0 +1,209 @@
+module runtime_sized_fork source=runtime_sized_fork.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_fan:
+    aion@workflow:map/2 [activities] (v0, v1)
+  fan_fork_0:
+    aion@activity:task_queue/2 [activities] (v1, lit#10)
+== durable families == activities
+== atoms ==
+  [0] snapshot
+  [1] probes
+  [2] probe_region_input
+  [3] runtime_sized_fork_input
+  [4] probed_outcome
+  [5] ok
+== literals ==
+  [0] "region"
+  [1] "healthy"
+  [2] "snapshots"
+  [3] "region"
+  [4] "regions"
+  [5] "probed"
+  [6] "outcome"
+  [7] "RuntimeSizedForkOutcome"
+  [8] "probed"
+  [9] "payload"
+  [10] "probe"
+== types ==
+  record Snapshot tag=snapshot
+    region: string
+    healthy: bool
+  record Probes tag=probes
+    snapshots: list(ref(Snapshot))
+  record ProbeRegionInput tag=probe_region_input
+    region: string
+  record RuntimeSizedForkInput tag=runtime_sized_fork_input
+    regions: list(string)
+  union RuntimeSizedForkOutcome
+    probed -> probed_outcome(ref(Probes))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=runtime_sized_fork_input_codec output=runtime_sized_fork_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(runtime_sized_fork.RuntimeSizedForkInput, runtime_sized_fork.RuntimeSizedForkOutcome, AwlError)
+  T-DEF name="runtime_sized_fork" input=runtime_sized_fork_input_codec output=runtime_sized_fork_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (runtime_sized_fork.RuntimeSizedForkInput) -> Result(runtime_sized_fork.RuntimeSizedForkOutcome, AwlError)
+  T-EXEC fields=[regions:List(String)] entry=step_fan args=[0]
+== fn snapshot_codec/0 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: () -> Codec(runtime_sized_fork.Snapshot)
+  v0 = make_closure snapshot_to_json captures=[]
+  v1 = call_local snapshot_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn snapshot_to_json/1 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: (runtime_sized_fork.Snapshot) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"region": v1|>awlc.string_to_json, "healthy": v2|>awlc.bool_to_json}
+  return v3
+== fn snapshot_decoder/0 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: () -> Decoder(runtime_sized_fork.Snapshot)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure snapshot_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn snapshot_decoder$0/1 origin=lifted(snapshot_decoder, #0) ==
+  sig: (String) -> Decoder(runtime_sized_fork.Snapshot)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure snapshot_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn snapshot_decoder$1/2 origin=lifted(snapshot_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(runtime_sized_fork.Snapshot)
+  v2 = record(snapshot, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn probes_codec/0 origin=codec_template(RecordTrio, Probes, record#1) ==
+  sig: () -> Codec(runtime_sized_fork.Probes)
+  v0 = make_closure probes_to_json captures=[]
+  v1 = call_local probes_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn probes_to_json/1 origin=codec_template(RecordTrio, Probes, record#1) ==
+  sig: (runtime_sized_fork.Probes) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"snapshots": v1|>list_snapshot_to_json}
+  return v2
+== fn probes_decoder/0 origin=codec_template(RecordTrio, Probes, record#1) ==
+  sig: () -> Decoder(runtime_sized_fork.Probes)
+  v0 = call_local list_snapshot_decoder()
+  v1 = make_closure probes_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn probes_decoder$0/1 origin=lifted(probes_decoder, #0) ==
+  sig: (List(runtime_sized_fork.Snapshot)) -> Decoder(runtime_sized_fork.Probes)
+  v1 = record(probes, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn probe_region_input_codec/0 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: () -> Codec(runtime_sized_fork.ProbeRegionInput)
+  v0 = make_closure probe_region_input_to_json captures=[]
+  v1 = call_local probe_region_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn probe_region_input_to_json/1 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: (runtime_sized_fork.ProbeRegionInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"region": v1|>awlc.string_to_json}
+  return v2
+== fn probe_region_input_decoder/0 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: () -> Decoder(runtime_sized_fork.ProbeRegionInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure probe_region_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn probe_region_input_decoder$0/1 origin=lifted(probe_region_input_decoder, #0) ==
+  sig: (String) -> Decoder(runtime_sized_fork.ProbeRegionInput)
+  v1 = record(probe_region_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn runtime_sized_fork_input_codec/0 origin=codec_template(RecordTrio, RuntimeSizedForkInput, record#3) ==
+  sig: () -> Codec(runtime_sized_fork.RuntimeSizedForkInput)
+  v0 = make_closure runtime_sized_fork_input_to_json captures=[]
+  v1 = call_local runtime_sized_fork_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn runtime_sized_fork_input_to_json/1 origin=codec_template(RecordTrio, RuntimeSizedForkInput, record#3) ==
+  sig: (runtime_sized_fork.RuntimeSizedForkInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"regions": v1|>list_string_to_json}
+  return v2
+== fn runtime_sized_fork_input_decoder/0 origin=codec_template(RecordTrio, RuntimeSizedForkInput, record#3) ==
+  sig: () -> Decoder(runtime_sized_fork.RuntimeSizedForkInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure runtime_sized_fork_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn runtime_sized_fork_input_decoder$0/1 origin=lifted(runtime_sized_fork_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(runtime_sized_fork.RuntimeSizedForkInput)
+  v1 = record(runtime_sized_fork_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn runtime_sized_fork_outcome_codec/0 origin=codec_template(UnionTrio, RuntimeSizedForkOutcome, union#4) ==
+  sig: () -> Codec(runtime_sized_fork.RuntimeSizedForkOutcome)
+  v0 = make_closure runtime_sized_fork_outcome_to_json captures=[]
+  v1 = call_local runtime_sized_fork_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn runtime_sized_fork_outcome_to_json/1 origin=codec_template(UnionTrio, RuntimeSizedForkOutcome, union#4) ==
+  sig: (runtime_sized_fork.RuntimeSizedForkOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#5|>awlc.string_to_json, "payload": v1|>probes_to_json}
+  return v2
+== fn runtime_sized_fork_outcome_decoder/0 origin=codec_template(UnionTrio, RuntimeSizedForkOutcome, union#4) ==
+  sig: () -> Decoder(runtime_sized_fork.RuntimeSizedForkOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure runtime_sized_fork_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn runtime_sized_fork_outcome_decoder$outcome/1 origin=lifted(runtime_sized_fork_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(runtime_sized_fork.RuntimeSizedForkOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local probes_decoder()
+    v4 = make_closure runtime_sized_fork_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(probes, [nil])
+    v2 = record(probed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn runtime_sized_fork_outcome_decoder$arm0/1 origin=lifted(runtime_sized_fork_outcome_decoder, #1) ==
+  sig: (runtime_sized_fork.Probes) -> Decoder(runtime_sized_fork.RuntimeSizedForkOutcome)
+  v1 = record(probed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_snapshot_codec/0 origin=codec_template(CompositeTrio, List(Snapshot), composite(list(ref(Snapshot)))) ==
+  sig: () -> Codec(List(runtime_sized_fork.Snapshot))
+  v0 = make_closure list_snapshot_to_json captures=[]
+  v1 = call_local list_snapshot_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_snapshot_to_json/1 origin=codec_template(CompositeTrio, List(Snapshot), composite(list(ref(Snapshot)))) ==
+  sig: (List(runtime_sized_fork.Snapshot)) -> Json
+  v1 = make_closure snapshot_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_snapshot_decoder/0 origin=codec_template(CompositeTrio, List(Snapshot), composite(list(ref(Snapshot)))) ==
+  sig: () -> Decoder(List(runtime_sized_fork.Snapshot))
+  v0 = call_local snapshot_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn probe_region_activity/1 origin=activity_wrapper(probe_region, raw=false) ==
+  sig: (String) -> Activity(runtime_sized_fork.ProbeRegionInput, runtime_sized_fork.Snapshot)
+  T-ACT action=probe_region input_codec=probe_region_input_codec return=snapshot_codec
+== fn step_fan/1 origin=region(fan) ==
+  sig: (List(String)) -> Result(runtime_sized_fork.RuntimeSizedForkOutcome, AwlError)
+  v1 = make_closure fan_fork_0 captures=[]
+  v2 = call_rt aion@workflow:map/2(v0, v1)
+  v3 = call_rt aion@awl@error:map_activity_error/1(v2)
+  v4 = try_bind v3
+  v5 = record(probes, [v4])
+  v6 = record(probed_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn fan_fork_0/1 origin=fork(fan#0) ==
+  sig: (String) -> Activity(runtime_sized_fork.ProbeRegionInput, runtime_sized_fork.Snapshot)
+  v1 = call_local probe_region_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#10)
+  return v2
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

@@ -1,0 +1,21 @@
+//! Nested failure handling — a step guarding its body with an on-failure region.
+workflow nested_handlers
+  input order_id: String
+  outcome shipped: type Result, route success
+  outcome aborted: type Result, route failure
+
+type Result { order_id: String, ok: Bool }
+
+worker orders
+  action ship(order_id: String) -> Result
+  action refund(order_id: String) -> Result
+
+step fulfil
+  ship(order_id: order_id) -> shipped
+
+  on failure
+    refund(order_id: order_id) -> refunded
+    route aborted(order_id: refunded.order_id, ok: refunded.ok)
+
+  outcome done: otherwise,
+    route shipped(order_id: shipped.order_id, ok: shipped.ok)

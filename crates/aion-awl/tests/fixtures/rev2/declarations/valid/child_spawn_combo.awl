@@ -1,0 +1,14 @@
+//! Await a scoring child, then fire-and-forget a detached notifier child.
+workflow child_spawn_combo
+  input essay: String
+  outcome scored: type Grade, route success
+
+type Grade { score: Int }
+
+child score_essay(essay: String) -> Grade
+child notify_graded(score: Int) -> Nil
+
+step grade
+  score_essay(essay: essay) -> grade
+  spawn notify_graded(score: grade.score)
+  route scored(score: grade.score)

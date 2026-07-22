@@ -20,6 +20,52 @@ fn lower_source(source: &str) -> Result<Result<MirModule, LowerError>, Box<dyn s
     Ok(lower(&document, Some(Path::new("."))))
 }
 
+/// BC-4 adversarial fixture `nested_handlers` is out-of-intersection: the
+/// reference emitter accepts its `on failure` region, but the direct path does
+/// not yet lower `on failure`, so it refuses with the reference class anchored
+/// to the guarding step `fulfil` (line 13). Kept as a refusal ratchet so a
+/// future `on failure` lowering flips this pin loudly rather than silently.
+#[test]
+fn bc4_nested_handlers_refuses_on_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/nested_handlers.awl");
+    match lower_fixture(&path)? {
+        Err(LowerError::Unsupported { shape, span }) => {
+            assert_eq!(shape, "on failure", "nested_handlers refusal drifted");
+            assert_eq!(span.line, 13, "nested_handlers refusal span drifted");
+        }
+        other => {
+            return Err(format!("nested_handlers must refuse at `on failure`: {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+/// BC-4 adversarial fixture `zero_step_workflow` is below BOTH backends' floor:
+/// it checks clean but has no steps, so the direct path refuses with "no start
+/// region" (and the reference emitter likewise refuses "no steps to execute").
+/// It lives outside any `valid/` sweep directory precisely because neither
+/// backend can produce runnable code for it; this pin anchors the direct
+/// refusal at the workflow header (line 1).
+#[test]
+fn bc4_zero_step_workflow_refuses_no_start_region() -> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir().join("tests/fixtures/rev2/header-types/zero_step_workflow.awl");
+    match lower_fixture(&path)? {
+        Err(error @ (LowerError::Message { .. } | LowerError::Planning { .. })) => {
+            let text = error.to_string();
+            assert!(
+                text.contains("no start region"),
+                "zero_step_workflow refusal drifted: {text}"
+            );
+        }
+        other => {
+            return Err(
+                format!("zero_step_workflow must refuse (no start region): {other:?}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The two combined fixtures advance to their next honest refusal instead of
 /// silently claiming coverage: `dev_brief` refuses at its dependency-parallel
 /// layer, while `ship_release_combined` — its `max … visits` bound lowered by

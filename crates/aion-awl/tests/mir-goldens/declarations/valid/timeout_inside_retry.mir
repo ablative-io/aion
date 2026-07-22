@@ -1,0 +1,161 @@
+module timeout_inside_retry source=timeout_inside_retry.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_call:
+    aion@activity:retry/2 [activities] (v1, v5)
+    aion@activity:timeout/2 [activities] (v6, v7)
+    aion@activity:task_queue/2 [activities] (v8, lit#10)
+    aion@activity:node/2 [activities] (v9, lit#11)
+    aion@workflow:run/1 [activities] (v10)
+== durable families == activities
+== atoms ==
+  [0] fetched
+  [1] fetch_input
+  [2] timeout_inside_retry_input
+  [3] fetched_outcome
+  [4] exponential
+  [5] retry_policy
+  [6] ok
+== literals ==
+  [0] "body"
+  [1] "endpoint"
+  [2] "endpoint"
+  [3] "fetched"
+  [4] "outcome"
+  [5] ""
+  [6] "TimeoutInsideRetryOutcome"
+  [7] "fetched"
+  [8] "payload"
+  [9] float(2.0)
+  [10] "net"
+  [11] "network"
+== types ==
+  record Fetched tag=fetched
+    body: string
+  record FetchInput tag=fetch_input
+    endpoint: string
+  record TimeoutInsideRetryInput tag=timeout_inside_retry_input
+    endpoint: string
+  union TimeoutInsideRetryOutcome
+    fetched -> fetched_outcome(ref(Fetched))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=timeout_inside_retry_input_codec output=timeout_inside_retry_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(timeout_inside_retry.TimeoutInsideRetryInput, timeout_inside_retry.TimeoutInsideRetryOutcome, AwlError)
+  T-DEF name="timeout_inside_retry" input=timeout_inside_retry_input_codec output=timeout_inside_retry_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (timeout_inside_retry.TimeoutInsideRetryInput) -> Result(timeout_inside_retry.TimeoutInsideRetryOutcome, AwlError)
+  T-EXEC fields=[endpoint:String] entry=step_call args=[0]
+== fn fetched_codec/0 origin=codec_template(RecordTrio, Fetched, record#0) ==
+  sig: () -> Codec(timeout_inside_retry.Fetched)
+  v0 = make_closure fetched_to_json captures=[]
+  v1 = call_local fetched_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetched_to_json/1 origin=codec_template(RecordTrio, Fetched, record#0) ==
+  sig: (timeout_inside_retry.Fetched) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"body": v1|>awlc.string_to_json}
+  return v2
+== fn fetched_decoder/0 origin=codec_template(RecordTrio, Fetched, record#0) ==
+  sig: () -> Decoder(timeout_inside_retry.Fetched)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetched_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn fetched_decoder$0/1 origin=lifted(fetched_decoder, #0) ==
+  sig: (String) -> Decoder(timeout_inside_retry.Fetched)
+  v1 = record(fetched, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fetch_input_codec/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: () -> Codec(timeout_inside_retry.FetchInput)
+  v0 = make_closure fetch_input_to_json captures=[]
+  v1 = call_local fetch_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_input_to_json/1 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: (timeout_inside_retry.FetchInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"endpoint": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_input_decoder/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: () -> Decoder(timeout_inside_retry.FetchInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn fetch_input_decoder$0/1 origin=lifted(fetch_input_decoder, #0) ==
+  sig: (String) -> Decoder(timeout_inside_retry.FetchInput)
+  v1 = record(fetch_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn timeout_inside_retry_input_codec/0 origin=codec_template(RecordTrio, TimeoutInsideRetryInput, record#2) ==
+  sig: () -> Codec(timeout_inside_retry.TimeoutInsideRetryInput)
+  v0 = make_closure timeout_inside_retry_input_to_json captures=[]
+  v1 = call_local timeout_inside_retry_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timeout_inside_retry_input_to_json/1 origin=codec_template(RecordTrio, TimeoutInsideRetryInput, record#2) ==
+  sig: (timeout_inside_retry.TimeoutInsideRetryInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"endpoint": v1|>awlc.string_to_json}
+  return v2
+== fn timeout_inside_retry_input_decoder/0 origin=codec_template(RecordTrio, TimeoutInsideRetryInput, record#2) ==
+  sig: () -> Decoder(timeout_inside_retry.TimeoutInsideRetryInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure timeout_inside_retry_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn timeout_inside_retry_input_decoder$0/1 origin=lifted(timeout_inside_retry_input_decoder, #0) ==
+  sig: (String) -> Decoder(timeout_inside_retry.TimeoutInsideRetryInput)
+  v1 = record(timeout_inside_retry_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn timeout_inside_retry_outcome_codec/0 origin=codec_template(UnionTrio, TimeoutInsideRetryOutcome, union#3) ==
+  sig: () -> Codec(timeout_inside_retry.TimeoutInsideRetryOutcome)
+  v0 = make_closure timeout_inside_retry_outcome_to_json captures=[]
+  v1 = call_local timeout_inside_retry_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timeout_inside_retry_outcome_to_json/1 origin=codec_template(UnionTrio, TimeoutInsideRetryOutcome, union#3) ==
+  sig: (timeout_inside_retry.TimeoutInsideRetryOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>fetched_to_json}
+  return v2
+== fn timeout_inside_retry_outcome_decoder/0 origin=codec_template(UnionTrio, TimeoutInsideRetryOutcome, union#3) ==
+  sig: () -> Decoder(timeout_inside_retry.TimeoutInsideRetryOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure timeout_inside_retry_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn timeout_inside_retry_outcome_decoder$outcome/1 origin=lifted(timeout_inside_retry_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(timeout_inside_retry.TimeoutInsideRetryOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local fetched_decoder()
+    v4 = make_closure timeout_inside_retry_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(fetched, [lit#5])
+    v2 = record(fetched_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn timeout_inside_retry_outcome_decoder$arm0/1 origin=lifted(timeout_inside_retry_outcome_decoder, #1) ==
+  sig: (timeout_inside_retry.Fetched) -> Decoder(timeout_inside_retry.TimeoutInsideRetryOutcome)
+  v1 = record(fetched_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fetch_activity/1 origin=activity_wrapper(fetch, raw=false) ==
+  sig: (String) -> Activity(timeout_inside_retry.FetchInput, timeout_inside_retry.Fetched)
+  T-ACT action=fetch input_codec=fetch_input_codec return=fetched_codec
+== fn step_call/1 origin=region(call) ==
+  sig: (String) -> Result(timeout_inside_retry.TimeoutInsideRetryOutcome, AwlError)
+  v1 = call_local fetch_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(5000) live_after=[v1]
+  v3 = call_rt aion@duration:milliseconds/1(120000) live_after=[v1, v2]
+  v4 = record(exponential, [v2, lit#9, v3])
+  v5 = record(retry_policy, [4, v4])
+  v6 = call_rt aion@activity:retry/2(v1, v5)
+  v7 = call_rt aion@duration:milliseconds/1(30000) live_after=[v6]
+  v8 = call_rt aion@activity:timeout/2(v6, v7)
+  v9 = call_rt aion@activity:task_queue/2(v8, lit#10)
+  v10 = call_rt aion@activity:node/2(v9, lit#11)
+  v11 = call_rt aion@workflow:run/1(v10)
+  v12 = call_rt aion@awl@error:map_activity_error/1(v11)
+  v13 = try_bind v12
+  v14 = field(v13, 1)
+  v15 = record(fetched, [v14])
+  v16 = record(fetched_outcome, [v15])
+  v17 = record(ok, [v16])
+  return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

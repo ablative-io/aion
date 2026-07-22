@@ -1,0 +1,217 @@
+module empty_fork_collection source=empty_fork_collection.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_check_all:
+    aion@workflow:map/2 [activities] (v0, v1)
+  check_all_fork_0:
+    aion@activity:task_queue/2 [activities] (v1, lit#11)
+== durable families == activities
+== atoms ==
+  [0] doc
+  [1] verdict
+  [2] summary
+  [3] check_doc_input
+  [4] empty_fork_collection_input
+  [5] summarized_outcome
+  [6] ok
+== literals ==
+  [0] "title"
+  [1] "title"
+  [2] "ok"
+  [3] "checked"
+  [4] "doc"
+  [5] "docs"
+  [6] "summarized"
+  [7] "outcome"
+  [8] "EmptyForkCollectionOutcome"
+  [9] "summarized"
+  [10] "payload"
+  [11] "review"
+== types ==
+  record Doc tag=doc
+    title: string
+  record Verdict tag=verdict
+    title: string
+    ok: bool
+  record Summary tag=summary
+    checked: int
+  record CheckDocInput tag=check_doc_input
+    doc: ref(Doc)
+  record EmptyForkCollectionInput tag=empty_fork_collection_input
+    docs: list(ref(Doc))
+  union EmptyForkCollectionOutcome
+    summarized -> summarized_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=empty_fork_collection_input_codec output=empty_fork_collection_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(empty_fork_collection.EmptyForkCollectionInput, empty_fork_collection.EmptyForkCollectionOutcome, AwlError)
+  T-DEF name="empty_fork_collection" input=empty_fork_collection_input_codec output=empty_fork_collection_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (empty_fork_collection.EmptyForkCollectionInput) -> Result(empty_fork_collection.EmptyForkCollectionOutcome, AwlError)
+  T-EXEC fields=[docs:List(empty_fork_collection.Doc)] entry=step_check_all args=[0]
+== fn doc_codec/0 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: () -> Codec(empty_fork_collection.Doc)
+  v0 = make_closure doc_to_json captures=[]
+  v1 = call_local doc_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn doc_to_json/1 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: (empty_fork_collection.Doc) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"title": v1|>awlc.string_to_json}
+  return v2
+== fn doc_decoder/0 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: () -> Decoder(empty_fork_collection.Doc)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure doc_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn doc_decoder$0/1 origin=lifted(doc_decoder, #0) ==
+  sig: (String) -> Decoder(empty_fork_collection.Doc)
+  v1 = record(doc, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Codec(empty_fork_collection.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: (empty_fork_collection.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"title": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Decoder(empty_fork_collection.Verdict)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (String) -> Decoder(empty_fork_collection.Verdict)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure verdict_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v1, v2)
+== fn verdict_decoder$1/2 origin=lifted(verdict_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(empty_fork_collection.Verdict)
+  v2 = record(verdict, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: () -> Codec(empty_fork_collection.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: (empty_fork_collection.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"checked": v1|>awlc.int_to_json}
+  return v2
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: () -> Decoder(empty_fork_collection.Summary)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure summary_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn summary_decoder$0/1 origin=lifted(summary_decoder, #0) ==
+  sig: (Int) -> Decoder(empty_fork_collection.Summary)
+  v1 = record(summary, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn check_doc_input_codec/0 origin=codec_template(RecordTrio, CheckDocInput, record#3) ==
+  sig: () -> Codec(empty_fork_collection.CheckDocInput)
+  v0 = make_closure check_doc_input_to_json captures=[]
+  v1 = call_local check_doc_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn check_doc_input_to_json/1 origin=codec_template(RecordTrio, CheckDocInput, record#3) ==
+  sig: (empty_fork_collection.CheckDocInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"doc": v1|>doc_to_json}
+  return v2
+== fn check_doc_input_decoder/0 origin=codec_template(RecordTrio, CheckDocInput, record#3) ==
+  sig: () -> Decoder(empty_fork_collection.CheckDocInput)
+  v0 = call_local doc_decoder()
+  v1 = make_closure check_doc_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn check_doc_input_decoder$0/1 origin=lifted(check_doc_input_decoder, #0) ==
+  sig: (empty_fork_collection.Doc) -> Decoder(empty_fork_collection.CheckDocInput)
+  v1 = record(check_doc_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn empty_fork_collection_input_codec/0 origin=codec_template(RecordTrio, EmptyForkCollectionInput, record#4) ==
+  sig: () -> Codec(empty_fork_collection.EmptyForkCollectionInput)
+  v0 = make_closure empty_fork_collection_input_to_json captures=[]
+  v1 = call_local empty_fork_collection_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn empty_fork_collection_input_to_json/1 origin=codec_template(RecordTrio, EmptyForkCollectionInput, record#4) ==
+  sig: (empty_fork_collection.EmptyForkCollectionInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"docs": v1|>list_doc_to_json}
+  return v2
+== fn empty_fork_collection_input_decoder/0 origin=codec_template(RecordTrio, EmptyForkCollectionInput, record#4) ==
+  sig: () -> Decoder(empty_fork_collection.EmptyForkCollectionInput)
+  v0 = call_local list_doc_decoder()
+  v1 = make_closure empty_fork_collection_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn empty_fork_collection_input_decoder$0/1 origin=lifted(empty_fork_collection_input_decoder, #0) ==
+  sig: (List(empty_fork_collection.Doc)) -> Decoder(empty_fork_collection.EmptyForkCollectionInput)
+  v1 = record(empty_fork_collection_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn empty_fork_collection_outcome_codec/0 origin=codec_template(UnionTrio, EmptyForkCollectionOutcome, union#5) ==
+  sig: () -> Codec(empty_fork_collection.EmptyForkCollectionOutcome)
+  v0 = make_closure empty_fork_collection_outcome_to_json captures=[]
+  v1 = call_local empty_fork_collection_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn empty_fork_collection_outcome_to_json/1 origin=codec_template(UnionTrio, EmptyForkCollectionOutcome, union#5) ==
+  sig: (empty_fork_collection.EmptyForkCollectionOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>summary_to_json}
+  return v2
+== fn empty_fork_collection_outcome_decoder/0 origin=codec_template(UnionTrio, EmptyForkCollectionOutcome, union#5) ==
+  sig: () -> Decoder(empty_fork_collection.EmptyForkCollectionOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure empty_fork_collection_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn empty_fork_collection_outcome_decoder$outcome/1 origin=lifted(empty_fork_collection_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(empty_fork_collection.EmptyForkCollectionOutcome)
+  if cmp Eq v0 lit#9:
+    v3 = call_local summary_decoder()
+    v4 = make_closure empty_fork_collection_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#10, v3, v4)
+  else:
+    v1 = record(summary, [0])
+    v2 = record(summarized_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#8)
+== fn empty_fork_collection_outcome_decoder$arm0/1 origin=lifted(empty_fork_collection_outcome_decoder, #1) ==
+  sig: (empty_fork_collection.Summary) -> Decoder(empty_fork_collection.EmptyForkCollectionOutcome)
+  v1 = record(summarized_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_doc_codec/0 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: () -> Codec(List(empty_fork_collection.Doc))
+  v0 = make_closure list_doc_to_json captures=[]
+  v1 = call_local list_doc_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_doc_to_json/1 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: (List(empty_fork_collection.Doc)) -> Json
+  v1 = make_closure doc_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_doc_decoder/0 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: () -> Decoder(List(empty_fork_collection.Doc))
+  v0 = call_local doc_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn check_doc_activity/1 origin=activity_wrapper(check_doc, raw=false) ==
+  sig: (empty_fork_collection.Doc) -> Activity(empty_fork_collection.CheckDocInput, empty_fork_collection.Verdict)
+  T-ACT action=check_doc input_codec=check_doc_input_codec return=verdict_codec
+== fn step_check_all/1 origin=region(check_all) ==
+  sig: (List(empty_fork_collection.Doc)) -> Result(empty_fork_collection.EmptyForkCollectionOutcome, AwlError)
+  v1 = make_closure check_all_fork_0 captures=[]
+  v2 = call_rt aion@workflow:map/2(v0, v1)
+  v3 = call_rt aion@awl@error:map_activity_error/1(v2)
+  v4 = try_bind v3
+  v5 = call_rt gleam@list:length/1(v4)
+  v6 = record(summary, [v5])
+  v7 = record(summarized_outcome, [v6])
+  v8 = record(ok, [v7])
+  return v8
+== fn check_all_fork_0/1 origin=fork(check_all#0) ==
+  sig: (empty_fork_collection.Doc) -> Activity(empty_fork_collection.CheckDocInput, empty_fork_collection.Verdict)
+  v1 = call_local check_doc_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#11)
+  return v2
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

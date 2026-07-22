@@ -1,0 +1,278 @@
+module max_arity_record source=max_arity_record.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families ==
+== atoms ==
+  [0] wide
+  [1] max_arity_record_input
+  [2] built_outcome
+  [3] ok
+== literals ==
+  [0] "f01"
+  [1] "f02"
+  [2] "f03"
+  [3] "f04"
+  [4] "f05"
+  [5] "f06"
+  [6] "f07"
+  [7] "f08"
+  [8] "f09"
+  [9] "f10"
+  [10] "f11"
+  [11] "f12"
+  [12] "f13"
+  [13] "f14"
+  [14] "f15"
+  [15] "f16"
+  [16] "f17"
+  [17] "f18"
+  [18] "f19"
+  [19] "f20"
+  [20] "seed"
+  [21] "built"
+  [22] "outcome"
+  [23] ""
+  [24] ""
+  [25] ""
+  [26] ""
+  [27] ""
+  [28] ""
+  [29] ""
+  [30] ""
+  [31] ""
+  [32] ""
+  [33] ""
+  [34] ""
+  [35] ""
+  [36] ""
+  [37] ""
+  [38] ""
+  [39] ""
+  [40] ""
+  [41] ""
+  [42] ""
+  [43] "MaxArityRecordOutcome"
+  [44] "built"
+  [45] "payload"
+== types ==
+  record Wide tag=wide
+    f01: string
+    f02: string
+    f03: string
+    f04: string
+    f05: string
+    f06: string
+    f07: string
+    f08: string
+    f09: string
+    f10: string
+    f11: string
+    f12: string
+    f13: string
+    f14: string
+    f15: string
+    f16: string
+    f17: string
+    f18: string
+    f19: string
+    f20: string
+  record MaxArityRecordInput tag=max_arity_record_input
+    seed: string
+  union MaxArityRecordOutcome
+    built -> built_outcome(ref(Wide))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=max_arity_record_input_codec output=max_arity_record_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(max_arity_record.MaxArityRecordInput, max_arity_record.MaxArityRecordOutcome, AwlError)
+  T-DEF name="max_arity_record" input=max_arity_record_input_codec output=max_arity_record_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (max_arity_record.MaxArityRecordInput) -> Result(max_arity_record.MaxArityRecordOutcome, AwlError)
+  T-EXEC fields=[seed:String] entry=step_build args=[0]
+== fn wide_codec/0 origin=codec_template(RecordTrio, Wide, record#0) ==
+  sig: () -> Codec(max_arity_record.Wide)
+  v0 = make_closure wide_to_json captures=[]
+  v1 = call_local wide_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wide_to_json/1 origin=codec_template(RecordTrio, Wide, record#0) ==
+  sig: (max_arity_record.Wide) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = field(v0, 4)
+  v5 = field(v0, 5)
+  v6 = field(v0, 6)
+  v7 = field(v0, 7)
+  v8 = field(v0, 8)
+  v9 = field(v0, 9)
+  v10 = field(v0, 10)
+  v11 = field(v0, 11)
+  v12 = field(v0, 12)
+  v13 = field(v0, 13)
+  v14 = field(v0, 14)
+  v15 = field(v0, 15)
+  v16 = field(v0, 16)
+  v17 = field(v0, 17)
+  v18 = field(v0, 18)
+  v19 = field(v0, 19)
+  v20 = field(v0, 20)
+  v21 = json_obj {"f01": v1|>awlc.string_to_json, "f02": v2|>awlc.string_to_json, "f03": v3|>awlc.string_to_json, "f04": v4|>awlc.string_to_json, "f05": v5|>awlc.string_to_json, "f06": v6|>awlc.string_to_json, "f07": v7|>awlc.string_to_json, "f08": v8|>awlc.string_to_json, "f09": v9|>awlc.string_to_json, "f10": v10|>awlc.string_to_json, "f11": v11|>awlc.string_to_json, "f12": v12|>awlc.string_to_json, "f13": v13|>awlc.string_to_json, "f14": v14|>awlc.string_to_json, "f15": v15|>awlc.string_to_json, "f16": v16|>awlc.string_to_json, "f17": v17|>awlc.string_to_json, "f18": v18|>awlc.string_to_json, "f19": v19|>awlc.string_to_json, "f20": v20|>awlc.string_to_json}
+  return v21
+== fn wide_decoder/0 origin=codec_template(RecordTrio, Wide, record#0) ==
+  sig: () -> Decoder(max_arity_record.Wide)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wide_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn wide_decoder$0/1 origin=lifted(wide_decoder, #0) ==
+  sig: (String) -> Decoder(max_arity_record.Wide)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure wide_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn wide_decoder$1/2 origin=lifted(wide_decoder, #1) ==
+  sig: (String, String) -> Decoder(max_arity_record.Wide)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure wide_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn wide_decoder$2/3 origin=lifted(wide_decoder, #2) ==
+  sig: (String, String, String) -> Decoder(max_arity_record.Wide)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure wide_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v3, v4)
+== fn wide_decoder$3/4 origin=lifted(wide_decoder, #3) ==
+  sig: (String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v4 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3]
+  v5 = make_closure wide_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v4, v5)
+== fn wide_decoder$4/5 origin=lifted(wide_decoder, #4) ==
+  sig: (String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v5 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4]
+  v6 = make_closure wide_decoder$5 captures=[v1, v2, v3, v4, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v5, v6)
+== fn wide_decoder$5/6 origin=lifted(wide_decoder, #5) ==
+  sig: (String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v6 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5]
+  v7 = make_closure wide_decoder$6 captures=[v1, v2, v3, v4, v5, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v6, v7)
+== fn wide_decoder$6/7 origin=lifted(wide_decoder, #6) ==
+  sig: (String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v7 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6]
+  v8 = make_closure wide_decoder$7 captures=[v1, v2, v3, v4, v5, v6, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v7, v8)
+== fn wide_decoder$7/8 origin=lifted(wide_decoder, #7) ==
+  sig: (String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v8 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7]
+  v9 = make_closure wide_decoder$8 captures=[v1, v2, v3, v4, v5, v6, v7, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v8, v9)
+== fn wide_decoder$8/9 origin=lifted(wide_decoder, #8) ==
+  sig: (String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v9 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8]
+  v10 = make_closure wide_decoder$9 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v9, v10)
+== fn wide_decoder$9/10 origin=lifted(wide_decoder, #9) ==
+  sig: (String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v10 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9]
+  v11 = make_closure wide_decoder$10 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v10, v11)
+== fn wide_decoder$10/11 origin=lifted(wide_decoder, #10) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v11 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10]
+  v12 = make_closure wide_decoder$11 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v11, v12)
+== fn wide_decoder$11/12 origin=lifted(wide_decoder, #11) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v12 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11]
+  v13 = make_closure wide_decoder$12 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v12, v13)
+== fn wide_decoder$12/13 origin=lifted(wide_decoder, #12) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v13 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12]
+  v14 = make_closure wide_decoder$13 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v13, v14)
+== fn wide_decoder$13/14 origin=lifted(wide_decoder, #13) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v14 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13]
+  v15 = make_closure wide_decoder$14 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v14, v15)
+== fn wide_decoder$14/15 origin=lifted(wide_decoder, #14) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v15 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14]
+  v16 = make_closure wide_decoder$15 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#15, v15, v16)
+== fn wide_decoder$15/16 origin=lifted(wide_decoder, #15) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v16 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15]
+  v17 = make_closure wide_decoder$16 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v16, v17)
+== fn wide_decoder$16/17 origin=lifted(wide_decoder, #16) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v17 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16]
+  v18 = make_closure wide_decoder$17 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#17, v17, v18)
+== fn wide_decoder$17/18 origin=lifted(wide_decoder, #17) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v18 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17]
+  v19 = make_closure wide_decoder$18 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#18, v18, v19)
+== fn wide_decoder$18/19 origin=lifted(wide_decoder, #18) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v19 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v18]
+  v20 = make_closure wide_decoder$19 captures=[v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v18, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#19, v19, v20)
+== fn wide_decoder$19/20 origin=lifted(wide_decoder, #19) ==
+  sig: (String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String, String) -> Decoder(max_arity_record.Wide)
+  v20 = record(wide, [v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v0])
+  tail_rt gleam@dynamic@decode:success/1(v20)
+== fn max_arity_record_input_codec/0 origin=codec_template(RecordTrio, MaxArityRecordInput, record#1) ==
+  sig: () -> Codec(max_arity_record.MaxArityRecordInput)
+  v0 = make_closure max_arity_record_input_to_json captures=[]
+  v1 = call_local max_arity_record_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn max_arity_record_input_to_json/1 origin=codec_template(RecordTrio, MaxArityRecordInput, record#1) ==
+  sig: (max_arity_record.MaxArityRecordInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"seed": v1|>awlc.string_to_json}
+  return v2
+== fn max_arity_record_input_decoder/0 origin=codec_template(RecordTrio, MaxArityRecordInput, record#1) ==
+  sig: () -> Decoder(max_arity_record.MaxArityRecordInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure max_arity_record_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#20, v0, v1)
+== fn max_arity_record_input_decoder$0/1 origin=lifted(max_arity_record_input_decoder, #0) ==
+  sig: (String) -> Decoder(max_arity_record.MaxArityRecordInput)
+  v1 = record(max_arity_record_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn max_arity_record_outcome_codec/0 origin=codec_template(UnionTrio, MaxArityRecordOutcome, union#2) ==
+  sig: () -> Codec(max_arity_record.MaxArityRecordOutcome)
+  v0 = make_closure max_arity_record_outcome_to_json captures=[]
+  v1 = call_local max_arity_record_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn max_arity_record_outcome_to_json/1 origin=codec_template(UnionTrio, MaxArityRecordOutcome, union#2) ==
+  sig: (max_arity_record.MaxArityRecordOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#21|>awlc.string_to_json, "payload": v1|>wide_to_json}
+  return v2
+== fn max_arity_record_outcome_decoder/0 origin=codec_template(UnionTrio, MaxArityRecordOutcome, union#2) ==
+  sig: () -> Decoder(max_arity_record.MaxArityRecordOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure max_arity_record_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#22, v0, v1)
+== fn max_arity_record_outcome_decoder$outcome/1 origin=lifted(max_arity_record_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(max_arity_record.MaxArityRecordOutcome)
+  if cmp Eq v0 lit#44:
+    v3 = call_local wide_decoder()
+    v4 = make_closure max_arity_record_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#45, v3, v4)
+  else:
+    v1 = record(wide, [lit#23, lit#24, lit#25, lit#26, lit#27, lit#28, lit#29, lit#30, lit#31, lit#32, lit#33, lit#34, lit#35, lit#36, lit#37, lit#38, lit#39, lit#40, lit#41, lit#42])
+    v2 = record(built_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#43)
+== fn max_arity_record_outcome_decoder$arm0/1 origin=lifted(max_arity_record_outcome_decoder, #1) ==
+  sig: (max_arity_record.Wide) -> Decoder(max_arity_record.MaxArityRecordOutcome)
+  v1 = record(built_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn step_build/1 origin=region(build) ==
+  sig: (String) -> Result(max_arity_record.MaxArityRecordOutcome, AwlError)
+  v1 = record(wide, [v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0, v0])
+  v2 = record(built_outcome, [v1])
+  v3 = record(ok, [v2])
+  return v3
