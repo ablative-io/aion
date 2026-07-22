@@ -10,7 +10,7 @@ use crate::{BeamSet, Manifest, PackageError};
 const DIGEST_LEN: usize = 32;
 const TEXT_LEN: usize = DIGEST_LEN * 2;
 const WORKFLOW_TIMEOUT_DOMAIN: &[u8] = b"aion.package.version.workflow-timeout.v1";
-const WORKFLOW_TIMEOUTS_DOMAIN: &[u8] = b"aion.package.version.workflow-timeouts.v2";
+const WORKFLOW_TIMEOUTS_DOMAIN: &[u8] = b"aion.package.version.workflow-timeouts.v3";
 
 /// A SHA-256 package version identity.
 ///
@@ -94,27 +94,42 @@ pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentH
 
 /// Computes the per-entry timeout-bearing package version over the canonical
 /// BEAM set, then the framed ASCII domain
-/// `aion.package.version.workflow-timeouts.v2`, then a canonical encoding of
-/// EVERY entry's authored timeout: the primary entry's timeout, the additional
-/// entry count as `u64` big-endian, then for each additional entry (in manifest
-/// order) its framed `workflow_type` bytes and its authored timeout.
+/// `aion.package.version.workflow-timeouts.v3`, then a UNIFORM canonical encoding
+/// that treats the primary entry and every additional entry alike: the total
+/// entry count as `u64` big-endian, then — for the primary first and each
+/// additional entry in manifest order — the entry's framed routing identity
+/// followed by its authored timeout.
+///
+/// The framed routing identity is `manifest.entry_module` for the primary (the
+/// module the loader selects at `load.rs`) and `workflow_type` for each
+/// additional entry (its start/child-spawn routing name). Binding the primary's
+/// routing identity is what closes the v2 gap: re-pointing `entry_module` to a
+/// different module in the same beam closure re-routes entry selection, so it
+/// MUST change identity or an authenticated timeout could be reassigned to
+/// another workflow entry under an unchanged version.
 ///
 /// Each authored timeout is encoded presence-first (a single `1`/`0` byte),
 /// followed — only when present — by seconds as `u64` big-endian and subsecond
 /// nanoseconds as `u32` big-endian. Binding presence AND value AND the entry's
-/// own routing identity means no additional entry's timeout can be swapped,
-/// added, or removed without changing the version hash: declaredness is an
-/// authenticated per-entry property, not a package-wide inference from the
-/// primary alone.
+/// own routing identity, for every entry uniformly, means no entry's timeout or
+/// routing can be swapped, added, or removed without changing the version hash:
+/// declaredness is an authenticated per-entry property, never a package-wide
+/// inference from the primary alone.
+///
+/// This supersedes the pre-release `.v2` layout (which bound only the primary's
+/// timeout, not its routing identity); a `.v2`-stamped archive therefore decodes
+/// as wholly undeclared, exactly like any non-matching identity.
 #[must_use]
 pub fn content_hash_with_timeouts(beams: &BeamSet, manifest: &Manifest) -> ContentHash {
     let mut digest = Sha256::new();
     update_beams(&mut digest, beams);
     update_framed(&mut digest, WORKFLOW_TIMEOUTS_DOMAIN);
+    let entry_count = 1 + manifest.additional_workflows.len() as u64;
+    digest.update(entry_count.to_be_bytes());
+    // The primary entry, framed by the module the loader routes to.
+    update_framed(&mut digest, manifest.entry_module.as_bytes());
     update_timeout_field(&mut digest, manifest.timeout);
-    let additional = &manifest.additional_workflows;
-    digest.update((additional.len() as u64).to_be_bytes());
-    for entry in additional {
+    for entry in &manifest.additional_workflows {
         update_framed(&mut digest, entry.workflow_type.as_bytes());
         update_timeout_field(&mut digest, entry.timeout);
     }
@@ -125,9 +140,10 @@ pub fn content_hash_with_timeouts(beams: &BeamSet, manifest: &Manifest) -> Conte
 /// per-entry workflow timeouts.
 ///
 /// True only when the stored content hash is the domain-separated per-entry
-/// timeout-bearing identity ([`content_hash_with_timeouts`]) — never the
-/// beams-only legacy identity. A legacy (beams-only) archive, or one whose
-/// primary timeout was bound but whose additional entries were not, therefore
+/// timeout-bearing `.v3` identity ([`content_hash_with_timeouts`]) — never the
+/// beams-only legacy identity, and never a superseded pre-release `.v1`/`.v2`
+/// identity. A legacy (beams-only) archive, a pre-release single-value archive,
+/// or one whose routing/additional entries were not uniformly bound therefore
 /// reads as wholly NOT declared: no entry can arm a deadline. The check is
 /// tamper-evident: the timeout value returned by [`crate::Package`] for any
 /// entry is provably the one baked into the version hash, so a hand-edited or
@@ -141,6 +157,24 @@ pub(crate) fn has_explicit_timeout_identity(
     hash != &content_hash(beams) && hash == &content_hash_with_timeouts(beams, manifest)
 }
 
+/// Verifies the stored manifest version against the recomputed identities and
+/// returns the matching hash, or an integrity error.
+///
+/// Three forms load. The beams-only legacy identity and the per-entry `.v3`
+/// timeout-bearing identity both hold for freshly written archives; only the
+/// `.v3` form makes [`has_explicit_timeout_identity`] true (declaring).
+///
+/// The third is a migration accommodation: a pre-release `.v1` single-value
+/// identity ([`content_hash_with_timeout`], stamped only when a primary timeout
+/// was present) is accepted as INTEGRITY-VALID BUT WHOLLY UNDECLARING. Its beam
+/// closure is still authenticated by the `.v1` hash, so loading it is honest;
+/// but it did not bind routing identity or additional entries under the current
+/// law, so it is untrustworthy as a per-entry declaration and every entry reads
+/// undeclared (nothing arms). This lets a `.v1`-stamped deployment recover on
+/// restart instead of being skipped, without ever arming a deadline whose
+/// authorship the current identity cannot vouch for. A `.v2` archive (never
+/// released, and which likewise did not bind routing identity) is deliberately
+/// NOT accommodated: it matches none of these forms and is rejected.
 pub(crate) fn verified_content_hash(
     beams: &BeamSet,
     manifest: &Manifest,
@@ -153,6 +187,16 @@ pub(crate) fn verified_content_hash(
     let timeouts_hash = content_hash_with_timeouts(beams, manifest);
     if stored == timeouts_hash.to_string() {
         return Ok(timeouts_hash);
+    }
+    // Migration: a pre-release `.v1` single-primary-timeout archive is accepted
+    // as integrity-valid but non-declaring. `has_explicit_timeout_identity`
+    // returns false for it (it is not the `.v3` hash), so it loads yet arms
+    // nothing.
+    if let Some(primary) = manifest.timeout {
+        let v1_hash = content_hash_with_timeout(beams, primary);
+        if stored == v1_hash.to_string() {
+            return Ok(v1_hash);
+        }
     }
     Err(PackageError::IntegrityMismatch {
         expected: stored.to_owned(),
@@ -269,7 +313,7 @@ mod tests {
 
     use super::{
         ContentHash, content_hash, content_hash_with_timeout, content_hash_with_timeouts,
-        has_explicit_timeout_identity,
+        has_explicit_timeout_identity, verified_content_hash,
     };
     use crate::{
         BeamModule, BeamSet, CURRENT_FORMAT_VERSION, Manifest, ManifestVersion, PackageError,
@@ -387,6 +431,63 @@ mod tests {
             content_hash_with_timeouts(&beams, &base),
             content_hash_with_timeouts(&beams, &absent),
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v3_identity_binds_the_primary_routing_identity() -> Result<(), PackageError> {
+        // Two modules in one closure. Re-pointing the primary `entry_module`
+        // from one to the other re-routes entry selection, so it MUST change the
+        // version identity — otherwise an authenticated primary timeout could be
+        // reassigned to a different selected workflow (the v2 blocker).
+        let beams = BeamSet::new(vec![
+            BeamModule::new("workflow/a", vec![1, 2, 3]),
+            BeamModule::new("workflow/b", vec![4, 5, 6]),
+        ])?;
+        let on_a = manifest_with(Some(Duration::from_secs(60)), Vec::new());
+        let mut on_b = on_a.clone();
+        on_b.entry_module = "workflow/b".to_owned();
+        assert_ne!(
+            content_hash_with_timeouts(&beams, &on_a),
+            content_hash_with_timeouts(&beams, &on_b),
+            "re-routing the primary entry_module changes identity",
+        );
+        // The stored `.v3` hash for A does not authenticate B's selection: with
+        // B routed, A's stored identity reads as undeclared.
+        let stored_for_a = content_hash_with_timeouts(&beams, &on_a);
+        assert!(!has_explicit_timeout_identity(&beams, &on_b, &stored_for_a));
+        assert!(has_explicit_timeout_identity(&beams, &on_a, &stored_for_a));
+        Ok(())
+    }
+
+    #[test]
+    fn v1_single_value_archive_loads_but_reads_undeclared() -> Result<(), PackageError> {
+        // A pre-release `.v1` single-primary-timeout archive is accepted by
+        // `verified_content_hash` (its beam closure is authenticated) but is
+        // wholly undeclared: nothing arms. This keeps a `.v1`-stamped deployment
+        // loadable on restart without arming a timeout the current identity law
+        // cannot vouch for.
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let mut manifest = manifest_with(Some(Duration::from_secs(60)), Vec::new());
+        let v1 = content_hash_with_timeout(&beams, Duration::from_secs(60));
+        manifest.version = ManifestVersion::new(v1.to_string());
+        assert_eq!(verified_content_hash(&beams, &manifest)?, v1);
+        assert!(!has_explicit_timeout_identity(&beams, &manifest, &v1));
+        Ok(())
+    }
+
+    #[test]
+    fn non_v1_non_v3_timeout_identity_is_rejected() -> Result<(), PackageError> {
+        // Any non-legacy, non-`.v1`, non-`.v3` stored value (the pre-release
+        // `.v2` shape among them) matches none of the accepted forms and is
+        // rejected rather than silently loaded.
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let mut manifest = manifest_with(Some(Duration::from_secs(60)), Vec::new());
+        manifest.version = ManifestVersion::new("f".repeat(64));
+        assert!(matches!(
+            verified_content_hash(&beams, &manifest),
+            Err(PackageError::IntegrityMismatch { .. })
+        ));
         Ok(())
     }
 

@@ -68,6 +68,22 @@ fn archive_with_manifest(manifest: &Manifest) -> Result<Vec<u8>, PackageError> {
     write_zip([("manifest.json", manifest_bytes)])
 }
 
+/// Writes a `.aion` archive carrying `manifest` plus every module in `beams`,
+/// so a hand-crafted (possibly tampered) manifest can be loaded through the real
+/// [`Package::load_from_bytes`] integrity path.
+fn archive_with_beams(manifest: &Manifest, beams: &BeamSet) -> Result<Vec<u8>, PackageError> {
+    let manifest_bytes = serde_json::to_vec(manifest)
+        .map_err(|source| PackageError::ManifestSerialise { source })?;
+    let mut entries: Vec<(String, Vec<u8>)> = vec![("manifest.json".to_owned(), manifest_bytes)];
+    for module in beams.iter() {
+        entries.push((
+            format!("beam/{}.beam", module.name()),
+            module.bytes().to_vec(),
+        ));
+    }
+    write_zip(entries)
+}
+
 /// A DEFLATE-compressed zip — what a hostile uploader sends.
 /// [`crate::PackageBuilder`] writes Stored entries only, so bombs must be
 /// assembled here.
@@ -359,6 +375,32 @@ fn to_archive_bytes_preserves_explicit_timeout_identity() -> Result<(), PackageE
 
     assert_eq!(reloaded, package);
     assert_eq!(reloaded.content_hash(), package.content_hash());
+    Ok(())
+}
+
+#[test]
+fn re_routing_the_primary_entry_module_invalidates_the_stored_identity() -> Result<(), PackageError>
+{
+    // LAW-2 at the load boundary: a package whose stored `.v3` identity
+    // authenticated `workflow/order` as the selected primary (with a 30s
+    // timeout) cannot be re-pointed to `workflow/support` while keeping that
+    // identity. The loader rejects the tampered archive rather than handing the
+    // authenticated timeout to a re-routed selected workflow.
+    let beams = sample_beams()?;
+    let mut manifest = sample_manifest();
+    manifest.timeout = Some(Duration::from_secs(30));
+    let honest = crate::content_hash_with_timeouts(&beams, &manifest);
+    manifest.version = ManifestVersion::new(honest.to_string());
+    // Tamper: re-point the primary to another module in the same closure while
+    // keeping the stored identity that authenticated `workflow/order`.
+    manifest.entry_module = "workflow/support".to_owned();
+    let bytes = archive_with_beams(&manifest, &beams)?;
+
+    let result = Package::load_from_bytes(bytes, ExtractionLimits::unbounded());
+    assert!(
+        matches!(result, Err(PackageError::IntegrityMismatch { .. })),
+        "re-routing the primary entry must fail integrity, got {result:?}",
+    );
     Ok(())
 }
 
