@@ -63,12 +63,19 @@ normalized_trail(&b)?`.
    (lines ~695-736 — the authoritative, capstone-grounded contract; draft §4
    is the summary): IR-13 entry ABI (`run/1` → `{ok, ResultBinary}`, error →
    `{error, AwlErrorTerm}`), IR-5/6/7/8 value representations, IR-10 SDK
-   constructor atoms/arities, IR-12 module-name mangling, IR-14 calling
-   convention, IR-15 exact export set (`definition/0`, `run/1`, `execute/1`,
-   no `module_info`), IR-2 float literal byte-parity, writer-contract chunk
-   set/order. Where a row is already pinned by an existing aion-awl test,
-   reference it rather than duplicating; add what's missing at the package /
-   loaded-module level.
+   constructor atoms/arities, IR-12 module-name mangling, IR-15 exact export set
+   (`definition/0`, `run/1`, `execute/1`, no `module_info`), IR-2 float literal
+   byte-parity, writer-contract chunk set/order + header counts. Where a row is
+   already pinned by an existing aion-awl test, reference it rather than
+   duplicating; add what's missing at the package / loaded-module level.
+
+   **IR-14 (calling convention) — coordinator's ruling (round 3):** x/y register
+   allocation and tail-call instruction shape are NOT provable at the durable
+   trail level, and BC-4 does not assert them. They are exercised structurally by
+   aion-awl's `select` tests (which build and validate the instruction stream),
+   and direct byte/instruction-level assertion is DEFERRED to BC-5 codegen
+   inspection. BC-4 therefore makes no IR-14 claim; the ABI tests and their
+   comments state only what they prove.
 
 4. **The eight adversarial fixtures** (net-new; none exist): empty fork
    collection, runtime-sized fork, nested handlers, timeout-inside-retry,
