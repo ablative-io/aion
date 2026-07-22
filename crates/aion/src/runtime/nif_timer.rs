@@ -292,9 +292,37 @@ pub(super) fn decode_duration_arg(label: &str, term: Term) -> Result<Duration, N
     Ok(Duration::from_millis(millis))
 }
 
+/// Engine-minted timer-name prefixes an author may never mint.
+///
+/// `deadline:` is the per-run workflow-timeout deadline; `schedule:` is the
+/// schedule coordinator's trigger timer. Both are minted internally via
+/// `TimerId::named`, bypassing this author choke point, so refusing them here
+/// keeps a workflow's `start_timer`/`cancel_timer` from colliding with — or
+/// forging — an engine timer.
+const RESERVED_TIMER_NAME_PREFIXES: [&str; 2] = [crate::time::DEADLINE_TIMER_PREFIX, "schedule:"];
+
 fn decode_timer_id_arg(label: &str, term: Term) -> Result<TimerId, NifTimerError> {
     let raw = decode_string_arg(term).map_err(NifTimerError::Argument)?;
     let name = raw.strip_prefix("timer:named:").unwrap_or(raw.as_str());
+    author_timer_id(label, name)
+}
+
+/// Build a named timer id from an author-supplied name, refusing reserved
+/// engine prefixes.
+///
+/// The single choke point for author timer names: any name under a reserved
+/// prefix (`deadline:`, `schedule:`) is refused so workflow code can neither
+/// collide with nor forge an engine-minted timer. Empty names are refused by
+/// `TimerId::named`.
+fn author_timer_id(label: &str, name: &str) -> Result<TimerId, NifTimerError> {
+    if let Some(reserved) = RESERVED_TIMER_NAME_PREFIXES
+        .into_iter()
+        .find(|reserved| name.starts_with(reserved))
+    {
+        return Err(NifTimerError::Argument(format!(
+            "{label}: timer name `{name}` uses the reserved `{reserved}` prefix"
+        )));
+    }
     TimerId::named(name).map_err(|error| NifTimerError::Argument(format!("{label}: {error}")))
 }
 
@@ -697,6 +725,43 @@ mod tests {
         );
         assert!(harness.state.pending_awaits.get(&harness.pid).is_none());
         harness.shutdown()
+    }
+
+    /// An author-supplied timer name under the reserved `deadline:` prefix is
+    /// refused at the single decode choke point, so workflow code can never
+    /// mint (or address) a per-run workflow deadline.
+    #[test]
+    fn author_timer_id_refuses_reserved_deadline_prefix() -> TestResult {
+        match super::author_timer_id("start_timer", "deadline:some-run") {
+            Err(super::NifTimerError::Argument(message)) => {
+                assert!(message.contains("reserved"), "message: {message}");
+                assert!(message.contains("deadline:"), "message: {message}");
+                Ok(())
+            }
+            other => Err(format!("expected reserved-prefix refusal, got {other:?}").into()),
+        }
+    }
+
+    /// The schedule coordinator's `schedule:` prefix is equally reserved: it was
+    /// author-mintable before this guard (decode did no prefix check), so it is
+    /// refused here too.
+    #[test]
+    fn author_timer_id_refuses_reserved_schedule_prefix() -> TestResult {
+        match super::author_timer_id("start_timer", "schedule:daily") {
+            Err(super::NifTimerError::Argument(message)) => {
+                assert!(message.contains("schedule:"), "message: {message}");
+                Ok(())
+            }
+            other => Err(format!("expected reserved-prefix refusal, got {other:?}").into()),
+        }
+    }
+
+    /// An ordinary author timer name is accepted unchanged.
+    #[test]
+    fn author_timer_id_accepts_ordinary_name() -> TestResult {
+        let timer_id = super::author_timer_id("start_timer", "review-deadline")?;
+        assert_eq!(timer_id.name(), Some("review-deadline"));
+        Ok(())
     }
 
     /// The deterministic abort: no racing fire — the cancel wins, records
