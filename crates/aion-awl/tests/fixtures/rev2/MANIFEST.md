@@ -513,3 +513,32 @@ Invalid (all CHECK; one per region rule):
   "is its step's only line" @10.
 - `collect_not_first.awl` — collect as the second statement → CHECK
   "`collect` opens its step" @17.
+
+## BC-4 adversarial — the differential-harness corpus (net-new)
+
+Eight fixtures authored for the BC-4 differential harness. Six lower AND emit,
+so they join the covered ratchet and run through the differential to
+byte-identical durable trails; two are out-of-intersection and carry
+span-anchored deferred-refusal pins in `mir/deferred_tests.rs`.
+
+Lowering (both backends accept):
+- `dag-fork/valid/empty_fork_collection.awl` — fork over a possibly-empty input
+  collection; the differential drives it with `[]` (the zero-item fan-out).
+- `dag-fork/valid/runtime_sized_fork.awl` — fork whose fan-out width is only
+  known at run time (a plain input list).
+- `declarations/valid/timeout_inside_retry.awl` — an action with a per-attempt
+  `timeout` nested inside a `retry … backoff …` schedule.
+- `step-bodies/valid/unicode_payloads.awl` — UTF-8 string literals (日本語, emoji,
+  Ω) plus a concat, onto the wire.
+- `declarations/valid/child_spawn_combo.awl` — an awaited child call plus a
+  fire-and-forget `spawn` of a second child.
+- `header-types/valid/max_arity_record.awl` — a high-arity (20-field) record,
+  a wide tuple through the codec.
+
+Out-of-intersection (recorded refusals, never failed):
+- `loop-outcomes/valid/nested_handlers.awl` — checks clean and the reference
+  emits its `on failure` region, but the direct path does not yet lower
+  `on failure` (refusal anchored to the guarding step).
+- `header-types/zero_step_workflow.awl` — checks clean but has no steps, so
+  BOTH backends refuse (no runnable code). Lives outside any `valid/` sweep
+  directory for that reason.
