@@ -1,29 +1,31 @@
 //! Runs one package through a fresh real engine and returns its durable event
 //! trail together with a DETERMINISTIC disposition.
 //!
-//! Both backends run through the SAME builder shape (in-memory store +
-//! visibility, one scheduler thread, the one shared typed dispatcher), so the
-//! trails can only diverge on backend behavior.
+//! Two bindings make the run trustworthy:
 //!
-//! The disposition is read from the recorded history, never from a single
-//! wall-clock sample: the run is `Completed`/`Failed`/`Cancelled` the moment a
-//! terminal event is recorded, and `Parked` only once the history has stopped
-//! changing — byte-stable across several consecutive reads with no terminal
-//! event — i.e. the workflow is genuinely quiescent at a durable boundary
-//! (a `sleep`/`wait … timeout` timer, or a bare signal `wait`). Detection is
-//! event-driven, not a fixed drain: a run still producing events keeps
-//! resetting the stability counter, so a lucky early-prefix read can never be
-//! mistaken for a park. Whether the park carries a pending durable timer is
-//! reported as positive evidence (`timer_pending`) so the two park kinds are
-//! pinned distinctly. A run that never quiesces or terminates within the hard
-//! deadline is `Stuck` — an infrastructure failure, never a silent "unsettled".
+//! - Splice binding (r2 finding 1): the caller passes the EXACT entry-module
+//!   bytes it expects the engine to load; `run_package` refuses to run unless
+//!   the package's entry beam equals them, immediately before `load_workflows`.
+//!   The reference run is bound to the reference entry bytes and the direct run
+//!   to the `select()` bytes, so swapping `reference.clone()` in for the direct
+//!   package fails before execution — the oracle can never compare a package to
+//!   itself. `oracle_self_test.rs` exercises exactly that mis-binding.
+//!
+//! - Park evidence (r2 finding 3): a run is `Completed`/`Failed`/`Cancelled`
+//!   the moment its terminal event is recorded, and `Parked` only on POSITIVE
+//!   evidence — the engine's visibility surface reports the workflow `Running`
+//!   (non-terminal) AND the history carries a specific `TimerStarted` with no
+//!   matching `TimerFired`. A stability read is kept only as a supplementary
+//!   guard. Bare signal waits expose no positive registration evidence through
+//!   any engine surface, so signal-parking fixtures are excluded from the
+//!   oracle upstream (see `covered.rs`), never inferred from silence.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aion::EngineBuilder;
-use aion_core::{Event, Payload, TimerId, WorkflowId};
+use aion_core::{Event, Payload, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus};
 use aion_package::Package;
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::Value;
@@ -31,23 +33,19 @@ use uuid::Uuid;
 
 use crate::dispatcher::TypedDispatcher;
 
-/// Hard upper bound on a single run. No fixture that reaches a terminal state
-/// needs anywhere near this long (the dispatcher is synchronous); the only
-/// fixtures that approach it are those parked on a 30s+ durable timer, which
-/// are detected as `Parked` well before it. Exceeding it is a hard failure.
+/// Hard upper bound on a single run. No fixture that reaches a terminal or a
+/// durable-timer park needs anywhere near this long; exceeding it is `Stuck`.
 const RUN_DEADLINE: Duration = Duration::from_secs(15);
 
 /// History poll interval.
 const POLL: Duration = Duration::from_millis(20);
 
-/// Consecutive unchanged non-terminal reads that confirm quiescence. At the
-/// `POLL` cadence this is a settle window (~120ms) far longer than any
-/// inter-event gap the synchronous dispatcher produces, so a mid-execution
-/// scheduling gap can never masquerade as a park, while a genuinely parked
-/// workflow (no more events will ever come) confirms quickly.
-const STABLE_READS: u32 = 6;
+/// Supplementary stability guard: consecutive unchanged reads that must
+/// accompany the positive park evidence before a park is accepted.
+const STABLE_READS: u32 = 3;
 
-/// The recorded disposition of a run, derived entirely from durable history.
+/// The recorded disposition of a run, derived entirely from durable history plus
+/// the engine's visibility status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
     /// A terminal `WorkflowCompleted` was recorded.
@@ -56,53 +54,71 @@ pub enum Disposition {
     Failed,
     /// A terminal `WorkflowCancelled` was recorded.
     Cancelled,
-    /// Quiescent at a durable boundary: no terminal event and a history that
-    /// has stopped changing (a durable timer or a bare signal wait).
+    /// Positive durable-timer park: visibility `Running`, a pending
+    /// `TimerStarted`, no terminal event.
     Parked,
-    /// Neither terminal nor stably parked within the deadline (infra failure).
+    /// Neither terminal nor positively parked within the deadline (infra).
     Stuck,
 }
 
 /// The fixed workflow id both backends run under. Giving the reference and
 /// direct runs the SAME identity is what "the same workflow, two byte
 /// productions" means: a fixture that routes its own `workflow.id` into its
-/// output then produces the identical result on both sides, controlling
-/// identity at the experiment's inputs rather than in the normalizer
-/// (decision 11). Each run uses a fresh in-memory store, so one shared id never
-/// collides. The value is arbitrary but stable.
-fn shared_workflow_id() -> WorkflowId {
+/// output then produces the identical result on both sides, controlling identity
+/// at the experiment's inputs rather than in the normalizer (decision 11). Each
+/// run uses a fresh in-memory store, so one shared id never collides.
+pub fn shared_workflow_id() -> WorkflowId {
     WorkflowId::new(Uuid::from_u128(0x00bc_4d1f_0000_0000_0000_0000_0000_0001))
 }
 
-/// The outcome of one run: its durable trail, recorded disposition, and — as
-/// positive park evidence — whether a durable timer was pending at quiescence.
+/// The outcome of one run: its durable trail, disposition, and — as positive
+/// park evidence — the pending durable timers observed at quiescence.
 pub struct RunOutcome {
     /// The durable event trail (full when terminal, quiescent-partial when
     /// parked).
     pub trail: Vec<Event>,
-    /// The disposition derived from that trail.
+    /// The disposition derived from history + visibility.
     pub disposition: Disposition,
-    /// Whether the trail carries a `TimerStarted` with no matching `TimerFired`
-    /// — the positive evidence distinguishing a timer park from a signal-wait
-    /// park.
-    pub timer_pending: bool,
+    /// The `Display` forms of every `TimerStarted` with no matching
+    /// `TimerFired` — the identity of the timer(s) the run is parked on.
+    pub pending_timers: Vec<String>,
 }
 
-/// Runs `package`'s `workflow_type` on `input` through a fresh engine, using
-/// `action_results` to answer every dispatched activity, and returns the
-/// recorded trail plus its disposition.
+/// Runs `package`'s `workflow_type` on `input` through a fresh engine, refusing
+/// unless the package's entry beam equals `expected_entry` (splice binding), and
+/// returns the recorded trail plus its disposition.
 ///
 /// # Errors
 ///
-/// Fails when the engine cannot be built, the workflow cannot be started, or
-/// history cannot be read — every such error is infrastructure, surfaced by the
-/// caller, never folded into a run disposition.
+/// Fails when the loaded package's entry beam does not match `expected_entry`,
+/// or when the engine cannot be built/started or history cannot be read — every
+/// such error is infrastructure, surfaced by the caller, never a disposition.
 pub async fn run_package(
     package: Package,
     workflow_type: &str,
     input: &Value,
     action_results: HashMap<String, String>,
+    expected_entry: &[u8],
 ) -> Result<RunOutcome, Box<dyn std::error::Error>> {
+    // Splice binding: the package about to be loaded MUST carry the expected
+    // production's entry bytes. This ties the differential's comparison to the
+    // actual bytes each engine loads.
+    let entry_module = package.manifest().entry_module.clone();
+    let loaded_entry = package
+        .beams()
+        .get(&entry_module)
+        .ok_or_else(|| format!("package has no entry beam `{entry_module}`"))?;
+    if loaded_entry != expected_entry {
+        return Err(format!(
+            "splice binding violated: the package's entry beam `{entry_module}` \
+             ({} bytes) is not the expected production ({} bytes) — refusing to \
+             run a package the oracle did not bind",
+            loaded_entry.len(),
+            expected_entry.len()
+        )
+        .into());
+    }
+
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))
@@ -131,12 +147,18 @@ pub async fn run_package(
         if let Some(disposition) = terminal_disposition(&history) {
             break outcome(history, disposition);
         }
-        if previous.as_ref().is_some_and(|prior| prior == &history) {
-            stable += 1;
+        let pending = pending_timers(&history);
+        stable = if previous.as_ref() == Some(&history) {
+            stable + 1
         } else {
-            stable = 0;
-        }
-        if stable >= STABLE_READS {
+            0
+        };
+        // Positive park evidence: a specific pending timer AND visibility
+        // reports the workflow Running, confirmed by a supplementary stable read.
+        if !pending.is_empty()
+            && stable >= STABLE_READS
+            && is_running(&engine, workflow_type, handle.workflow_id()).await?
+        {
             break outcome(history, Disposition::Parked);
         }
         if Instant::now() >= deadline {
@@ -149,18 +171,41 @@ pub async fn run_package(
     Ok(outcome)
 }
 
-/// Assembles a run outcome, computing the park evidence from the trail.
+/// Assembles a run outcome, recording the pending-timer identities as evidence.
 fn outcome(trail: Vec<Event>, disposition: Disposition) -> RunOutcome {
-    let timer_pending = timer_pending(&trail);
+    let pending_timers = pending_timers(&trail)
+        .into_iter()
+        .map(|timer| timer.to_string())
+        .collect();
     RunOutcome {
         trail,
         disposition,
-        timer_pending,
+        pending_timers,
     }
 }
 
-/// Returns the terminal disposition when the history carries a terminal
-/// workflow event, else `None`.
+/// Whether the engine's visibility surface reports this workflow as `Running`
+/// (non-terminal) — the positive "actively parked, not finished" signal.
+async fn is_running(
+    engine: &aion::Engine,
+    workflow_type: &str,
+    workflow_id: &WorkflowId,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let filter = WorkflowFilter {
+        workflow_type: Some(workflow_type.to_owned()),
+        status: None,
+        started_after: None,
+        started_before: None,
+        parent: None,
+    };
+    let summaries = engine.list_workflows(filter).await?;
+    Ok(summaries.iter().any(|summary| {
+        &summary.workflow_id == workflow_id && summary.status == WorkflowStatus::Running
+    }))
+}
+
+/// Returns the terminal disposition when the history carries a terminal workflow
+/// event, else `None`.
 fn terminal_disposition(history: &[Event]) -> Option<Disposition> {
     history.iter().find_map(|event| match event {
         Event::WorkflowCompleted { .. } => Some(Disposition::Completed),
@@ -170,9 +215,9 @@ fn terminal_disposition(history: &[Event]) -> Option<Disposition> {
     })
 }
 
-/// Whether the history carries at least one durable timer that started and has
-/// not fired — the park evidence for a `sleep`/`wait … timeout` boundary.
-pub fn timer_pending(history: &[Event]) -> bool {
+/// The `TimerId`s of every `TimerStarted` with no matching `TimerFired` — the
+/// pending durable timers a run is parked on.
+pub fn pending_timers(history: &[Event]) -> Vec<TimerId> {
     let fired: Vec<&TimerId> = history
         .iter()
         .filter_map(|event| match event {
@@ -180,7 +225,13 @@ pub fn timer_pending(history: &[Event]) -> bool {
             _ => None,
         })
         .collect();
-    history.iter().any(
-        |event| matches!(event, Event::TimerStarted { timer_id, .. } if !fired.contains(&timer_id)),
-    )
+    history
+        .iter()
+        .filter_map(|event| match event {
+            Event::TimerStarted { timer_id, .. } if !fired.contains(&timer_id) => {
+                Some(timer_id.clone())
+            }
+            _ => None,
+        })
+        .collect()
 }

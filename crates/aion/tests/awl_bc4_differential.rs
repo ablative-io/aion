@@ -22,6 +22,8 @@ mod trail_norm;
 mod abi;
 #[path = "awl_bc4_differential/adversarial.rs"]
 mod adversarial;
+#[path = "awl_bc4_differential/child_boundary.rs"]
+mod child_boundary;
 #[path = "awl_bc4_differential/covered.rs"]
 mod covered;
 #[path = "awl_bc4_differential/dispatcher.rs"]
@@ -32,6 +34,8 @@ mod driver;
 mod fixtures;
 #[path = "awl_bc4_differential/harness.rs"]
 mod harness;
+#[path = "awl_bc4_differential/oracle_self_test.rs"]
+mod oracle_self_test;
 #[path = "awl_bc4_differential/report.rs"]
 mod report;
 #[path = "awl_bc4_differential/run.rs"]

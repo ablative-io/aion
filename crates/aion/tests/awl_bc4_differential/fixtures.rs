@@ -164,25 +164,21 @@ fn is_null_schema(schema: &Value) -> bool {
 /// generic echo, each value satisfies its action's declared return-type codec,
 /// so the workflow runs its REAL body instead of taking an activity-decode
 /// detour (the flagship's greet -> shout path actually executes).
+/// This map answers ONLY `ActivityDispatcher` dispatches — i.e. declared worker
+/// ACTIONS. Declared `child` workflows are launched through `workflow.spawn`,
+/// not the dispatcher (the reference emitter's `CHILD_WITNESS` is a type anchor
+/// the engine never calls), so children are deliberately NOT in this map: their
+/// workflow types are not registered for spawning in the differential's package,
+/// and the 4 child-spawning fixtures fail at that boundary (see `covered.rs`).
 pub fn action_results(document: &Document, root: &Path) -> HashMap<String, String> {
     let mut results = HashMap::new();
-    let mut insert = |name: &str, ty: &TypeRef| {
-        let value = example_for_schema(&schema_for_typeref(document, root, ty));
-        if let Ok(json) = serde_json::to_string(&value) {
-            results.insert(name.to_owned(), json);
-        }
-    };
     for worker in &document.workers {
         for action in &worker.actions {
-            insert(&action.name, &action.returns);
+            let value = example_for_schema(&schema_for_typeref(document, root, &action.returns));
+            if let Ok(json) = serde_json::to_string(&value) {
+                results.insert(action.name.clone(), json);
+            }
         }
-    }
-    // A `child name(…) -> Ret` synthesizes a child workflow that dispatches an
-    // activity named after the child to produce its `Ret`; provide that result
-    // too, so a child-spawning fixture runs its real body instead of failing at
-    // the child's unanswered activity.
-    for child in &document.children {
-        insert(&child.name, &child.returns);
     }
     results
 }

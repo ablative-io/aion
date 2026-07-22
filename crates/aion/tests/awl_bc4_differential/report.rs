@@ -40,22 +40,28 @@ pub struct Refusal {
 pub struct Report {
     /// Fixtures that COMPLETED in both backends with byte-identical trails.
     pub succeeded: Vec<String>,
-    /// Fixtures that FAILED terminally (a data-driven `route failure` / error
-    /// path) in both backends with byte-identical trails.
+    /// Fixtures that FAILED terminally (`WorkflowFailed`) in both backends with
+    /// byte-identical trails.
     pub failed: Vec<String>,
-    /// Fixtures parked at a durable TIMER boundary in both backends (a pending
-    /// `TimerStarted`), byte-identical on their quiescent partial trails.
-    pub parked_timer: Vec<String>,
-    /// Fixtures parked at a bare SIGNAL wait in both backends (quiescent with no
-    /// pending timer), byte-identical on their quiescent partial trails.
-    pub parked_signal: Vec<String>,
+    /// Fixtures that were CANCELLED terminally (`WorkflowCancelled`) in both
+    /// backends. Its own bucket so a `WorkflowFailed` -> `WorkflowCancelled`
+    /// regression cannot hide in `failed`.
+    pub cancelled: Vec<String>,
+    /// Fixtures parked at a durable TIMER boundary in both backends, proven by
+    /// visibility `Running` + a specific pending `TimerStarted`. Each entry is
+    /// `(fixture, sorted pending-timer identities)` — the timer's identity, not
+    /// just "some timer".
+    pub parked_timer: Vec<(String, Vec<String>)>,
+    /// Fixtures excluded from the oracle: their park boundary is not provable
+    /// through any engine surface without racy sampling (out-of-oracle).
+    pub excluded: Vec<String>,
     /// Fixtures with at least one divergence (deduplicated, input order).
     pub diverged: Vec<String>,
     /// Every field-level divergence found (must be empty to pass).
     pub divergences: Vec<Divergence>,
     /// Every out-of-intersection refusal, in fixture order.
     pub refusals: Vec<Refusal>,
-    /// Infrastructure failures — missing package/bytes, a splice-integrity
+    /// Infrastructure failures — missing package/bytes, a splice-binding
     /// violation, an engine build/start/read error, a `Stuck` run, a
     /// serialization error, or a disposition the harness cannot classify. This
     /// bucket MUST be empty to pass; nothing here is ever quiesced away.
@@ -73,14 +79,21 @@ impl Report {
         self.failed.push(fixture.to_owned());
     }
 
-    /// Records a fixture parked at a durable timer boundary.
-    pub fn record_parked_timer(&mut self, fixture: &str) {
-        self.parked_timer.push(fixture.to_owned());
+    /// Records a fixture that was cancelled terminally with identical trails.
+    pub fn record_cancelled(&mut self, fixture: &str) {
+        self.cancelled.push(fixture.to_owned());
     }
 
-    /// Records a fixture parked at a bare signal wait.
-    pub fn record_parked_signal(&mut self, fixture: &str) {
-        self.parked_signal.push(fixture.to_owned());
+    /// Records a fixture parked at a durable timer, with its pending-timer
+    /// identities as positive evidence.
+    pub fn record_parked_timer(&mut self, fixture: &str, mut pending: Vec<String>) {
+        pending.sort();
+        self.parked_timer.push((fixture.to_owned(), pending));
+    }
+
+    /// Records a fixture excluded from the oracle (out-of-oracle).
+    pub fn record_excluded(&mut self, fixture: &str) {
+        self.excluded.push(fixture.to_owned());
     }
 
     /// Records an infrastructure failure (hard — the differential must fail).
@@ -96,13 +109,10 @@ impl Report {
         });
     }
 
-    /// Fixtures whose full or partial trails compared byte-identical
-    /// (completed, failed, or parked) — the successful-comparison set.
+    /// Fixtures whose full or partial trails compared byte-identical (completed,
+    /// failed, cancelled, or timer-parked) — the successful-comparison set.
     pub fn identical_count(&self) -> usize {
-        self.succeeded.len()
-            + self.failed.len()
-            + self.parked_timer.len()
-            + self.parked_signal.len()
+        self.succeeded.len() + self.failed.len() + self.cancelled.len() + self.parked_timer.len()
     }
 
     /// Diffs two normalized trails and records every divergence found, marking
@@ -142,12 +152,13 @@ impl Report {
     /// A one-line-per-item human rendering for a test failure message.
     pub fn render(&self) -> String {
         let mut lines = vec![format!(
-            "differential report: {} succeeded, {} failed-path, {} timer-parked, \
-             {} signal-parked, {} refused, {} DIVERGENCES, {} INFRA",
+            "differential report: {} succeeded, {} failed-path, {} cancelled, \
+             {} timer-parked, {} excluded, {} refused, {} DIVERGENCES, {} INFRA",
             self.succeeded.len(),
             self.failed.len(),
+            self.cancelled.len(),
             self.parked_timer.len(),
-            self.parked_signal.len(),
+            self.excluded.len(),
             self.refusals.len(),
             self.divergences.len(),
             self.infra.len(),
@@ -168,25 +179,39 @@ impl Report {
         for refusal in &self.refusals {
             lines.push(format!("  refused {} :: {}", refusal.fixture, refusal.text));
         }
-        for parked in self.parked_timer.iter().chain(&self.parked_signal) {
-            lines.push(format!("  parked {parked}"));
+        for (fixture, timers) in &self.parked_timer {
+            lines.push(format!("  timer-parked {fixture} on {timers:?}"));
+        }
+        for excluded in &self.excluded {
+            lines.push(format!("  excluded {excluded}"));
         }
         lines.push(String::new());
         lines.join("\n")
     }
 
-    /// The sorted set of fixtures parked at a durable timer.
-    pub fn timer_parked_fixtures(&self) -> Vec<String> {
+    /// The sorted `(fixture, pending-timer identities)` pairs for timer parks.
+    pub fn timer_parked_evidence(&self) -> Vec<(String, Vec<String>)> {
         let mut parked = self.parked_timer.clone();
         parked.sort();
         parked
     }
 
-    /// The sorted set of fixtures parked at a bare signal wait.
-    pub fn signal_parked_fixtures(&self) -> Vec<String> {
-        let mut parked = self.parked_signal.clone();
-        parked.sort();
-        parked
+    /// The sorted set of timer-parked fixture names.
+    pub fn timer_parked_fixtures(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .parked_timer
+            .iter()
+            .map(|(fixture, _)| fixture.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The sorted set of excluded (out-of-oracle) fixture names.
+    pub fn excluded_fixtures(&self) -> Vec<String> {
+        let mut excluded = self.excluded.clone();
+        excluded.sort();
+        excluded
     }
 
     /// The sorted set of fixtures that failed terminally, for the pinned
@@ -195,6 +220,20 @@ impl Report {
         let mut failed = self.failed.clone();
         failed.sort();
         failed
+    }
+
+    /// The sorted set of fixtures that completed successfully.
+    pub fn succeeded_fixtures(&self) -> Vec<String> {
+        let mut succeeded = self.succeeded.clone();
+        succeeded.sort();
+        succeeded
+    }
+
+    /// The sorted set of fixtures that were cancelled.
+    pub fn cancelled_fixtures(&self) -> Vec<String> {
+        let mut cancelled = self.cancelled.clone();
+        cancelled.sort();
+        cancelled
     }
 
     /// The sorted set of refused fixture paths, for the ratchet assertion.

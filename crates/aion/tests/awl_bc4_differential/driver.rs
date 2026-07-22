@@ -108,9 +108,25 @@ fn classify_lowering(
 pub async fn run_differential(
     names: &[String],
     label: &str,
+    excluded: &[&str],
 ) -> Result<Report, Box<dyn std::error::Error>> {
-    let classified = classify(names)?;
     let mut report = Report::default();
+    // Excluded fixtures are out-of-oracle: recorded, never run (their park
+    // boundary is unprovable without racy sampling — see covered.rs).
+    let run_names: Vec<String> = names
+        .iter()
+        .filter(|name| {
+            if excluded.contains(&name.as_str()) {
+                report.record_excluded(name);
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+
+    let classified = classify(&run_names)?;
     for (fixture, text) in &classified.refusals {
         report.record_refusal(fixture, text.clone());
     }
@@ -139,6 +155,8 @@ pub struct SplicedFixture {
     pub entry_bytes: Vec<u8>,
     /// The reloaded direct package (spliced entry over the SDK closure).
     pub direct_package: aion_package::Package,
+    /// The reference (Gleam-built) package, for the oracle self-test.
+    pub reference_package: aion_package::Package,
     /// The minimal schema-valid start input.
     pub input: Value,
     /// The schema-valid canned activity results.
@@ -182,6 +200,7 @@ pub async fn build_spliced(
             entry_module: entry.entry_module.clone(),
             entry_bytes,
             direct_package,
+            reference_package: reference_package.clone(),
             input: classified
                 .inputs
                 .get(&entry.name)
@@ -214,10 +233,9 @@ async fn differential_one(
         report.record_infra(name, "no direct select bytes");
         return;
     };
-    // The splice is mutation-sensitive by construction (BLOCKER 1): it fails
-    // unless the reloaded direct package carries the select() bytes as its entry
-    // module, differs from the reference entry, and hashes differently — so the
-    // oracle can never silently compare a package to itself.
+    // The splice is mutation-sensitive by construction: it fails unless the
+    // reloaded direct package carries the select() bytes as its entry module,
+    // differs from the reference entry, and hashes differently.
     let direct_package = match harness::splice_direct(reference_package, direct_bytes) {
         Ok(package) => package,
         Err(error) => {
@@ -225,6 +243,11 @@ async fn differential_one(
             return;
         }
     };
+    let Some(reference_entry) = reference_package.beams().get(&entry.entry_module) else {
+        report.record_infra(name, "reference package has no entry beam");
+        return;
+    };
+    let reference_entry = reference_entry.to_vec();
     let input = classified.inputs.get(name).cloned().unwrap_or(Value::Null);
     let results = classified
         .action_results
@@ -233,14 +256,20 @@ async fn differential_one(
         .unwrap_or_default();
     let workflow_type = entry.entry_module.as_str();
 
+    // Splice binding (r2 finding 1): each run is bound to the exact entry bytes
+    // of ITS production — the reference run to the reference entry, the direct
+    // run to the select() bytes. run_package refuses a package whose entry does
+    // not match, so a run against the wrong package fails before execution.
     let reference_run = run_package(
         reference_package.clone(),
         workflow_type,
         &input,
         results.clone(),
+        &reference_entry,
     )
     .await;
-    let direct_run = run_package(direct_package, workflow_type, &input, results).await;
+    let direct_run =
+        run_package(direct_package, workflow_type, &input, results, direct_bytes).await;
     fold_runs(report, name, reference_run, direct_run);
 }
 
@@ -306,21 +335,18 @@ fn fold_runs(
         );
         return;
     }
-    // The two backends must agree on the park kind too (a timer park on one
-    // side and a signal park on the other would be a real behavioral split).
+    // The two backends must agree on the pending-timer identities too (a
+    // different timer on either side would be a real behavioral split).
     if reference.disposition == Disposition::Parked
-        && reference.timer_pending != direct.timer_pending
+        && reference.pending_timers != direct.pending_timers
     {
         report.compare(
             name,
             &[Value::String(format!(
-                "timer_pending={}",
-                reference.timer_pending
+                "timers={:?}",
+                reference.pending_timers
             ))],
-            &[Value::String(format!(
-                "timer_pending={}",
-                direct.timer_pending
-            ))],
+            &[Value::String(format!("timers={:?}", direct.pending_timers))],
         );
         return;
     }
@@ -329,9 +355,9 @@ fn fold_runs(
     }
     match reference.disposition {
         Disposition::Completed => report.record_succeeded(name),
-        Disposition::Failed | Disposition::Cancelled => report.record_failed(name),
-        Disposition::Parked if reference.timer_pending => report.record_parked_timer(name),
-        Disposition::Parked => report.record_parked_signal(name),
+        Disposition::Failed => report.record_failed(name),
+        Disposition::Cancelled => report.record_cancelled(name),
+        Disposition::Parked => report.record_parked_timer(name, reference.pending_timers.clone()),
         // `Stuck` was handled above as infra.
         Disposition::Stuck => report.record_infra(name, "unreachable stuck classification"),
     }

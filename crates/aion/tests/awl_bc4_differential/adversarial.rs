@@ -17,6 +17,7 @@
 //! - `zero_step_workflow` — below BOTH backends' floor (no steps to execute);
 //!   `Message("the workflow has no start region")`.
 
+use aion_awl::Span;
 use aion_awl::mir::{LowerError, lower};
 
 use crate::driver::run_differential;
@@ -50,25 +51,43 @@ fn adversarial_fixtures_classify_as_expected() -> TestResult {
             .map_err(|error| format!("{name} must lower but refused: {error}"))?;
     }
 
-    // `nested_handlers`: the reference class `Unsupported { shape: "on failure" }`
-    // anchored to the guarding step `fulfil` (line 13).
+    // `nested_handlers`: reference class `Unsupported { shape: "on failure" }`
+    // anchored to the guarding step `fulfil`, pinned to the COMPLETE span (kept
+    // identical to the aion-awl deferred ratchet so the two copies cannot drift).
     let nested = fixtures::load("loop-outcomes/valid/nested_handlers")?;
     match lower(&nested.document, Some(nested.dir.as_path())) {
         Err(LowerError::Unsupported { shape, span }) => {
             assert_eq!(shape, "on failure");
-            assert_eq!(span.line, 13);
+            assert_eq!(
+                span,
+                Span {
+                    start: 377,
+                    end: 383,
+                    line: 13,
+                    column: 6
+                }
+            );
         }
         other => {
             return Err(format!("nested_handlers must refuse at `on failure`: {other:?}").into());
         }
     }
 
-    // `zero_step_workflow`: `Message` (span-carrying) at the workflow header.
+    // `zero_step_workflow`: `Message` (span-carrying) at the workflow header,
+    // pinned to the COMPLETE span.
     let zero = fixtures::load("header-types/zero_step_workflow")?;
     match lower(&zero.document, Some(zero.dir.as_path())) {
         Err(LowerError::Message { message, span }) => {
             assert_eq!(message, "the workflow has no start region");
-            assert_eq!(span.line, 1);
+            assert_eq!(
+                span,
+                Span {
+                    start: 0,
+                    end: 189,
+                    line: 1,
+                    column: 1
+                }
+            );
         }
         other => {
             return Err(
@@ -87,15 +106,11 @@ fn adversarial_fixtures_classify_as_expected() -> TestResult {
 async fn adversarial_differential_is_byte_identical() -> TestResult {
     let mut names: Vec<String> = LOWERING.iter().map(|entry| (*entry).to_owned()).collect();
     names.extend(REFUSING.iter().map(|name| (*name).to_owned()));
-    let report = run_differential(&names, "adversarial").await?;
+    let report = run_differential(&names, "adversarial", &[]).await?;
     println!("{}", report.render());
     println!("SUCCEEDED {:?}", report.succeeded);
     println!("FAILED {:?}", report.failed_fixtures());
-    println!(
-        "PARKED timer={:?} signal={:?}",
-        report.timer_parked_fixtures(),
-        report.signal_parked_fixtures()
-    );
+    println!("TIMER-PARKED {:?}", report.timer_parked_fixtures());
 
     let mut expected_refusals: Vec<String> =
         REFUSING.iter().map(|name| (*name).to_owned()).collect();

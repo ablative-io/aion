@@ -7,14 +7,17 @@
 //! - IR-13 entry ABI: `run/1` is exported at arity one (the raw input payload
 //!   term), and — wired through a real run — a completing fixture records its
 //!   `{ok, ResultBinary}` bytes verbatim as `WorkflowCompleted.result`, while an
-//!   error-path fixture records `WorkflowFailed` (the `{error, AwlErrorTerm}`
-//!   path). The deeper x/y-register calling convention (IR-14) is not asserted
-//!   here — it is exercised end-to-end by every executing fixture in the
-//!   differential (`covered.rs`); no test is named for a contract it does not
-//!   check.
+//!   error-path fixture records `WorkflowFailed` whose decoded error term is an
+//!   `AwlError`-family tag (the `{error, AwlErrorTerm}` path).
+//! - IR-14 calling convention (x/y registers, tail calls): NOT proven here.
+//!   Per the coordinator's ruling (recorded in `BC-4-DIFFERENTIAL-BRIEF.md`),
+//!   register allocation and tail-call instruction shape are not observable at
+//!   the trail level; they are exercised structurally by aion-awl's `select`
+//!   tests, and direct byte/instruction assertion is deferred to BC-5 codegen
+//!   inspection. No test here claims IR-14.
 //! - IR-12 module mangling: the entry module's own atom equals the reference
-//!   mangled name AND its `ImpT` carries mangled IMPORTED module references
-//!   (`aion@…`).
+//!   mangled name AND EVERY imported module in `ImpT` is correctly mangled
+//!   (exact expected-set equality, not "any starts with `aion@`").
 //! - IR-2 float literal byte-parity: a `Float` literal in `LitT` equals Rust's
 //!   parse of the same source lexeme.
 //! - Writer contract: canonical chunk order, `AtU8`+`Code` always present, and
@@ -30,7 +33,7 @@
 //! `src/mir/select/assemble.rs`.
 
 use beamr::atom::AtomTable;
-use beamr::loader::decode::Literal;
+use beamr::loader::decode::{Instruction, Literal};
 use beamr::loader::load::ParsedModule;
 use beamr::loader::{load_beam_chunks, parse_beam_chunks};
 
@@ -46,6 +49,35 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// relative order.
 const CANONICAL_CHUNKS: &[&[u8; 4]] = &[
     b"AtU8", b"Code", b"ImpT", b"ExpT", b"FunT", b"LitT", b"StrT", b"Line",
+];
+
+/// The exact distinct set of mangled modules `awl_hello`'s entry imports (IR-12).
+const EXPECTED_HELLO_IMPORTS: &[&str] = &[
+    "aion@activity",
+    "aion@awl@codec",
+    "aion@awl@error",
+    "aion@awl@runtime",
+    "aion@codec",
+    "aion@error",
+    "aion@workflow",
+    "gleam@dynamic@decode",
+    "gleam@json",
+];
+
+/// The `AwlError` tag-atom family (IR-10) — the closed set of error terms a
+/// generated `run/1` may return in `{error, AwlErrorTerm}`.
+const AWL_ERROR_TAGS: &[&str] = &[
+    "AwlActivityFailed",
+    "AwlChildFailed",
+    "AwlDecodeInputFailed",
+    "AwlError",
+    "AwlFailed",
+    "AwlIndexOutOfRange",
+    "AwlOutcomeFailure",
+    "AwlSignalFailed",
+    "AwlTimedOut",
+    "AwlTimerFailed",
+    "AwlVisitsExceeded",
 ];
 
 /// The ABI fixtures: the flagship (a completing activity workflow with imports)
@@ -137,16 +169,32 @@ async fn abi_static_rows_over_spliced_entry() -> TestResult {
         Some("awl_hello"),
         "IR-12: entry module atom drifted"
     );
-    let imported: Vec<String> = parsed
+    // IR-12: EVERY imported module atom is correctly mangled — the distinct
+    // ImpT module set equals the exact expected set (not "any starts with
+    // aion@", which one intact import could satisfy while others drift).
+    let mut imported: Vec<String> = parsed
         .imports
         .iter()
         .filter_map(|import| table.resolve(import.module))
         .map(str::to_owned)
         .collect();
-    assert!(
-        imported.iter().any(|module| module.starts_with("aion@")),
-        "IR-12: ImpT must carry mangled aion@ imported modules, got {imported:?}"
+    imported.sort();
+    imported.dedup();
+    let mut expected_imports: Vec<String> = EXPECTED_HELLO_IMPORTS
+        .iter()
+        .map(|module| (*module).to_owned())
+        .collect();
+    expected_imports.sort();
+    assert_eq!(
+        imported, expected_imports,
+        "IR-12: awl_hello's ImpT module set drifted"
     );
+    for module in &imported {
+        assert!(
+            module.starts_with("aion@") || module.starts_with("gleam@"),
+            "IR-12: imported module `{module}` is not mangled (aion@/gleam@)"
+        );
+    }
 
     // Writer contract, over the spliced entry.
     assert_writer_contract(hello)?;
@@ -186,6 +234,7 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
         "awl_hello",
         &hello.input,
         hello.action_results.clone(),
+        &hello.entry_bytes,
     )
     .await?;
     assert_eq!(
@@ -210,6 +259,7 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
         "float_threshold_guard",
         &guard.input,
         guard.action_results.clone(),
+        &guard.entry_bytes,
     )
     .await?;
     assert_eq!(
@@ -217,12 +267,22 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
         Disposition::Failed,
         "IR-13: float_threshold_guard's 0.0 < 0.5 guard must take the error path"
     );
+    // Error half: decode WorkflowFailed.error.details and assert the term is an
+    // AwlError-family tag (IR-10 set) — not merely "some WorkflowFailed". A
+    // route-failure lowers to `{error, AwlOutcomeFailure{…}}`.
+    let details =
+        failed_details(&outcome.trail).ok_or("no WorkflowFailed.error.details recorded")?;
+    let tag = details
+        .get("tag")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("WorkflowFailed error term has no tag")?;
     assert!(
-        outcome
-            .trail
-            .iter()
-            .any(|event| matches!(event, Event::WorkflowFailed { .. })),
-        "IR-13: the error path must record WorkflowFailed (the error-term path)"
+        AWL_ERROR_TAGS.contains(&tag),
+        "IR-13: the error term tag `{tag}` is not in the AwlError family {AWL_ERROR_TAGS:?}"
+    );
+    assert_eq!(
+        tag, "AwlOutcomeFailure",
+        "IR-13: a route-failure must produce the AwlOutcomeFailure term, got `{tag}`"
     );
     Ok(())
 }
@@ -231,6 +291,17 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
 fn completed_result(trail: &[Event]) -> Option<Vec<u8>> {
     trail.iter().find_map(|event| match event {
         Event::WorkflowCompleted { result, .. } => Some(result.bytes().to_vec()),
+        _ => None,
+    })
+}
+
+/// The decoded `WorkflowFailed.error.details` JSON, if present.
+fn failed_details(trail: &[Event]) -> Option<serde_json::Value> {
+    trail.iter().find_map(|event| match event {
+        Event::WorkflowFailed { error, .. } => error
+            .details
+            .as_ref()
+            .and_then(|payload| serde_json::from_slice(payload.bytes()).ok()),
         _ => None,
     })
 }
@@ -292,7 +363,54 @@ fn assert_writer_contract(bytes: &[u8]) -> TestResult {
         !parsed.line_info.is_empty(),
         "Line vs line info"
     );
+
+    // Code header counts derived from the instruction stream, never hand-set
+    // (AWL-BC-IR.md writer-contract "header counts" row). The Code sub-header is
+    // `sub_size(0), version(4), max_opcode(8), label_count(12), function_count(16)`.
+    let code = chunks
+        .iter()
+        .find(|(id, _)| id == b"Code")
+        .map(|(_, body)| *body)
+        .ok_or("no Code chunk")?;
+    assert_eq!(read_u32_be(code, 0)?, 16, "Code sub_size must be 16");
+    let label_count = read_u32_be(code, 12)?;
+    let function_count = read_u32_be(code, 16)?;
+    let func_infos = u32::try_from(
+        parsed
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, Instruction::FuncInfo { .. }))
+            .count(),
+    )?;
+    let max_label = parsed
+        .instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::Label { label } => Some(*label),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    assert_eq!(
+        function_count, func_infos,
+        "Code function_count must equal the FuncInfo count (derived from stream)"
+    );
+    assert_eq!(
+        label_count, max_label,
+        "Code label_count must equal the highest Label in the stream (derived, never hand-set)"
+    );
+    // No `int_code_end` terminator (writer-contract row): beamr's decoder stops
+    // at end-of-bytes and models no such opcode, so a total decode whose
+    // function/label counts match the stream carries no trailing terminator.
     Ok(())
+}
+
+/// Reads a big-endian `u32` at `offset` from `bytes`.
+fn read_u32_be(bytes: &[u8], offset: usize) -> Result<u32, Box<dyn std::error::Error>> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or("chunk too short for u32 read")?;
+    Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 /// Recursively collects every `Float` value nested in a literal.
