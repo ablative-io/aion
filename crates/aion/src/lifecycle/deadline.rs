@@ -95,8 +95,7 @@ impl WorkflowDeadlineHandler {
         match disposition {
             DeadlineDisposition::LoseCleanly => Ok(()),
             DeadlineDisposition::Appended | DeadlineDisposition::ResumeTeardown => {
-                self.tear_down(&handle, &workflow_id, &run_id).await;
-                Ok(())
+                self.tear_down(&handle, &workflow_id, &run_id).await
             }
         }
     }
@@ -161,17 +160,37 @@ impl WorkflowDeadlineHandler {
     }
 
     /// Idempotent, resumable teardown after the `WorkflowTimedOut` terminal is
-    /// durable. Every step is independent and re-runnable: retire the run's
-    /// active timers, kill the process, refresh visibility, notify awaiters, and
-    /// deregister. One failing step is logged and never suppresses the rest, so an
-    /// interrupted teardown that a later re-fire resumes eventually completes.
-    async fn tear_down(&self, handle: &WorkflowHandle, workflow_id: &WorkflowId, run_id: &RunId) {
-        // Retire the run's still-live timers (the deadline itself and any parked
-        // sleeps) BEFORE deregistration, so recovery does not rediscover them and
-        // a late fire is refused. Recording is idempotent: a re-run finds them
-        // already retired and records nothing.
-        self.retire_active_timers(handle, workflow_id).await;
+    /// durable.
+    ///
+    /// Ordering is the invariant that makes resume reachable: the run's OWN
+    /// deadline timer stays live and its registry entry stays present until every
+    /// fallible teardown step has succeeded. So it retires the ordinary
+    /// (non-deadline) timers first, confirms process teardown and refreshes
+    /// visibility, notifies awaiters, and only THEN retires the deadline itself
+    /// and deregisters. A failure in any earlier step is PROPAGATED (not merely
+    /// logged): the handler returns it as a fire failure, the deadline remains
+    /// live, and recovery's `outstanding_future_timers` re-arms it so a later fire
+    /// re-enters here and resumes — rather than destroying both retry anchors
+    /// before the work that needs them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`crate::EngineError`] from the first failing durable
+    /// step so recovery retries the interrupted teardown.
+    async fn tear_down(
+        &self,
+        handle: &WorkflowHandle,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
+    ) -> Result<(), crate::EngineError> {
+        // 1. Retire the run's ordinary (non-deadline) timers. The deadline is
+        //    deliberately NOT retired here — it is the resume anchor.
+        self.retire_ordinary_timers(handle, workflow_id, run_id)
+            .await?;
 
+        // 2. Stop the timed-out process. A cancel failure means it already
+        //    exited (benign); a dropped runtime is propagated so a re-fire under a
+        //    live runtime completes the kill.
         match self.runtime.upgrade() {
             Some(runtime) => {
                 if let Err(error) = runtime.cancel_pid(handle.pid()) {
@@ -184,79 +203,87 @@ impl WorkflowDeadlineHandler {
                 }
             }
             None => {
-                tracing::warn!(
-                    %workflow_id,
-                    %run_id,
-                    "runtime dropped during deadline teardown; timeout is recorded and a later re-fire resumes teardown"
-                );
+                return Err(crate::EngineError::Runtime {
+                    reason: format!(
+                        "runtime dropped during deadline teardown of {workflow_id}/{run_id}; a later re-fire resumes teardown"
+                    ),
+                });
             }
         }
 
-        if let Err(error) = upsert_workflow_visibility(
+        // 3. Refresh visibility; a failure is propagated so it is retried.
+        upsert_workflow_visibility(
             Arc::clone(&self.store),
             Arc::clone(&self.visibility_store),
             workflow_id,
             run_id,
         )
-        .await
-        {
-            tracing::warn!(
-                %workflow_id,
-                %run_id,
-                %error,
-                "failed to refresh visibility during deadline teardown; a later re-fire resumes it"
-            );
-        }
+        .await?;
 
+        // 4. Notify awaiters (a doorbell send; never a retry condition).
         handle.completion().notify(TerminalOutcome::TimedOut(
             WORKFLOW_TIMEOUT_DESCRIPTOR.to_owned(),
         ));
 
-        if let Err(error) = self.registry.remove(workflow_id, run_id) {
-            tracing::warn!(
-                %workflow_id,
-                %run_id,
-                %error,
-                "failed to deregister timed-out run; a later re-fire resumes it"
-            );
-        }
+        // 5. Retire the deadline LAST, once teardown has otherwise succeeded, so
+        //    no earlier failure could have removed the resume anchor. Idempotent.
+        self.retire_deadline(handle, workflow_id, run_id).await?;
+
+        // 6. Deregister LAST.
+        self.registry.remove(workflow_id, run_id)?;
+        Ok(())
     }
 
-    /// Retires the timed-out run's still-live timers by recording
-    /// `TimerCancelled { WorkflowIntent }` for each, through the handle recorder
-    /// under its lock. Serialized against concurrent fires by that same recorder
-    /// lock, and idempotent — a re-run sees no live timers and records nothing.
-    async fn retire_active_timers(&self, handle: &WorkflowHandle, workflow_id: &WorkflowId) {
+    /// Retires the timed-out run's still-live ORDINARY timers (every live timer
+    /// except this run's own deadline) by recording `TimerCancelled { WorkflowIntent }`
+    /// for each, through the handle recorder under its lock. The deadline is
+    /// excluded so it stays live as the teardown resume anchor. Idempotent — a
+    /// re-run sees the same timers already retired and records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`crate::EngineError`] when history cannot be read or a
+    /// cancellation append fails, so the interrupted teardown is retried.
+    async fn retire_ordinary_timers(
+        &self,
+        handle: &WorkflowHandle,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
+    ) -> Result<(), crate::EngineError> {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
-        let history = match self.store.read_history(workflow_id).await {
-            Ok(history) => history,
-            Err(error) => {
-                tracing::warn!(
-                    %workflow_id,
-                    %error,
-                    "could not read history to retire timers during deadline teardown"
-                );
-                return;
-            }
-        };
+        let history = self.store.read_history(workflow_id).await?;
+        let deadline = crate::time::outstanding_deadline_timer(&history, run_id);
         for timer_id in live_timers_in_active_segment(&history) {
-            if let Err(error) = recorder
-                .record_timer_cancelled(
-                    Utc::now(),
-                    timer_id.clone(),
-                    TimerCancelCause::WorkflowIntent,
-                )
-                .await
-            {
-                tracing::warn!(
-                    %workflow_id,
-                    %timer_id,
-                    %error,
-                    "failed to retire a timer during deadline teardown; recovery will skip it if orphaned"
-                );
+            if deadline.as_ref() == Some(&timer_id) {
+                continue;
             }
+            recorder
+                .record_timer_cancelled(Utc::now(), timer_id, TimerCancelCause::WorkflowIntent)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// Retires this run's own declared-timeout deadline as the final teardown
+    /// step, via the shared `retire_run_deadline` primitive. Idempotent — a
+    /// resumed teardown whose deadline is already retired records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`crate::EngineError`] when history cannot be read or the
+    /// cancellation append fails.
+    async fn retire_deadline(
+        &self,
+        handle: &WorkflowHandle,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
+    ) -> Result<(), crate::EngineError> {
+        let recorder = handle.recorder();
+        let mut recorder = recorder.lock().await;
+        let history = self.store.read_history(workflow_id).await?;
+        crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
+        Ok(())
     }
 }
 

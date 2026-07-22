@@ -207,6 +207,159 @@ fn count_timed_out(history: &[Event]) -> usize {
         .count()
 }
 
+/// A visibility store whose `record_visibility` errors while armed, then
+/// delegates once disarmed — to inject a real post-terminal teardown failure.
+struct FlakyVisibility {
+    inner: Arc<dyn VisibilityStore>,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl FlakyVisibility {
+    fn armed(inner: Arc<dyn VisibilityStore>) -> Self {
+        Self {
+            inner,
+            fail: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    fn disarm(&self) {
+        self.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl VisibilityStore for FlakyVisibility {
+    async fn record_visibility(
+        &self,
+        record: aion_store::visibility::VisibilityRecord,
+    ) -> Result<(), aion_store::StoreError> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(aion_store::StoreError::Backend(
+                "forced visibility failure during deadline teardown".to_owned(),
+            ));
+        }
+        self.inner.record_visibility(record).await
+    }
+
+    async fn list_workflows(
+        &self,
+        filter: aion_store::visibility::ListWorkflowsFilter,
+    ) -> Result<Vec<aion_store::visibility::WorkflowSummary>, aion_store::StoreError> {
+        self.inner.list_workflows(filter).await
+    }
+
+    async fn count_workflows(
+        &self,
+        filter: aion_store::visibility::ListWorkflowsFilter,
+    ) -> Result<u64, aion_store::StoreError> {
+        self.inner.count_workflows(filter).await
+    }
+}
+
+/// A real post-append teardown failure (visibility unavailable) does NOT destroy
+/// the retry anchors: the terminal is recorded, but the deadline stays live and
+/// the run stays registered, and the handler PROPAGATES the failure. Once
+/// visibility recovers, a re-fire resumes teardown to completion — proving the
+/// deadline-stays-live-until-done ordering makes `ResumeTeardown` reachable after
+/// a genuine failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn teardown_failure_preserves_retry_anchors_then_resumes() -> TestResult {
+    let backing = Arc::new(InMemoryStore::default());
+    let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+    let visibility = Arc::new(FlakyVisibility::armed(backing));
+    let visibility_store: Arc<dyn VisibilityStore> =
+        Arc::clone(&visibility) as Arc<dyn VisibilityStore>;
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let registry = Arc::new(Registry::default());
+    let workflow_id = aion_core::WorkflowId::new_v4();
+    let run_id = aion_core::RunId::new_v4();
+    let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
+    recorder
+        .record_workflow_started(
+            chrono::Utc::now(),
+            crate::durability::WorkflowStartRecord {
+                workflow_type: "sleeper".to_owned(),
+                input: Payload::from_json(&json!({}))?,
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+        )
+        .await?;
+    let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+    recorder
+        .record_timer_started(chrono::Utc::now(), deadline_id.clone(), chrono::Utc::now())
+        .await?;
+    let pid = runtime.spawn_test_process_with_trap_exit(true)?;
+    let handle = WorkflowHandle::new(WorkflowHandleParts {
+        workflow_id: workflow_id.clone(),
+        run_id: run_id.clone(),
+        pid,
+        workflow_type: "sleeper".to_owned(),
+        namespace: String::from("default"),
+        loaded_version: ContentHash::from_bytes([7; 32]),
+        cached_status: WorkflowStatus::Running,
+        residency: HandleResidency::Resident,
+        recorder,
+        completion: CompletionNotifier::new(),
+    });
+    registry.insert((workflow_id.clone(), run_id.clone()), handle.clone())?;
+    let handler = WorkflowDeadlineHandler::new(
+        Arc::downgrade(&runtime),
+        Arc::clone(&store),
+        Arc::clone(&visibility_store),
+        Arc::clone(&registry),
+    );
+
+    // First fire: the terminal records, then visibility fails and teardown is
+    // propagated as an error.
+    let first = handler
+        .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+        .await;
+    assert!(
+        first.is_err(),
+        "an incomplete teardown must be propagated, not swallowed"
+    );
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        count_timed_out(&history),
+        1,
+        "the terminal is recorded once"
+    );
+    assert!(
+        crate::time::outstanding_deadline_timer(&history, &run_id).is_some(),
+        "the deadline stays live as the resume anchor: {history:#?}"
+    );
+    assert!(
+        registry.get(&workflow_id, &run_id)?.is_some(),
+        "the run stays registered as the second resume anchor"
+    );
+
+    // Visibility recovers; a re-fire resumes teardown to completion.
+    visibility.disarm();
+    handler
+        .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+        .await?;
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        count_timed_out(&history),
+        1,
+        "resuming records no second terminal: {history:#?}"
+    );
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&history, &run_id),
+        None,
+        "the resumed teardown finally retires the deadline"
+    );
+    assert_eq!(
+        registry.get(&workflow_id, &run_id)?,
+        None,
+        "the resumed teardown deregisters the run"
+    );
+    runtime.shutdown()?;
+    Ok(())
+}
+
 /// Teardown retires the run's active timers: an elapsed deadline records
 /// `WorkflowTimedOut`, then cancels its own deadline timer AND a parked sleep
 /// (both `TimerCancelled`), so recovery finds no live timer to rediscover.
