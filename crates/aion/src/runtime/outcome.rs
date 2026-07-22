@@ -3,15 +3,16 @@
 use aion_core::{Payload, WorkflowError};
 use beamr::atom::{Atom, AtomTable};
 use beamr::process::ExitReason;
-use beamr::scheduler::Scheduler;
 use beamr::term::Term;
 use beamr::term::boxed::Tuple;
 
 use crate::{EngineError, Pid};
 
 use super::payload::term_to_payload;
+use super::process_exit::OwnedProcessExitOutcome;
 
 /// Runtime-converted terminal workflow process outcome.
+#[derive(Clone)]
 pub enum WorkflowProcessOutcome {
     /// The workflow process returned normally with a payload result.
     Completed(Payload),
@@ -20,46 +21,51 @@ pub enum WorkflowProcessOutcome {
 }
 
 pub(super) fn workflow_outcome(
-    scheduler: &Scheduler,
     atoms: &AtomTable,
     pid: Pid,
+    owned: &OwnedProcessExitOutcome,
 ) -> Result<Result<Payload, WorkflowError>, EngineError> {
-    match workflow_process_outcome(scheduler, atoms, pid)? {
+    match workflow_outcome_from_owned_exit(atoms, pid, owned)? {
         WorkflowProcessOutcome::Completed(payload) => Ok(Ok(payload)),
         WorkflowProcessOutcome::Failed(error) => Ok(Err(error)),
     }
 }
 
-pub(super) fn workflow_process_outcome(
-    scheduler: &Scheduler,
+pub(super) fn workflow_outcome_from_owned_exit(
     atoms: &AtomTable,
     pid: Pid,
+    owned: &OwnedProcessExitOutcome,
 ) -> Result<WorkflowProcessOutcome, EngineError> {
-    let (reason, owned_result) = scheduler.run_until_exit(pid);
-    if reason != ExitReason::Normal {
+    let observed = match owned {
+        OwnedProcessExitOutcome::Observed(observed) => observed,
+        OwnedProcessExitOutcome::ObservationFailed {
+            process_id,
+            failure,
+        } => return Err(failure.into_engine_error(*process_id)),
+    };
+    if observed.reason != ExitReason::Normal {
         // The VM execution error, when present, is the authoritative exit
-        // cause and must be checked first: beamr leaves `current_exception`
-        // set after a *caught* raise until the next try_end/catch_end, so a
-        // later unrelated VM error exits with that stale exception attached
-        // and reporting the exception first would blame workflow code for an
-        // engine-level failure. The residue is appended as context.
-        let exception = scheduler.take_exit_exception(pid);
-        if let Some(error) = scheduler.take_exit_error(pid) {
+        // cause. A caught raise can leave a residual exception until try_end.
+        if let Some(error) = &observed.execution_error {
             let formatted = error.format_with_atoms(atoms);
-            let residue = exception.map_or_else(String::new, |exception| {
-                format!(
-                    " (residual exception: {})",
-                    exception.format_with_atoms(atoms)
-                )
-            });
+            let residue = observed
+                .exception
+                .as_ref()
+                .map_or_else(String::new, |exception| {
+                    format!(
+                        " (residual exception: {})",
+                        exception.format_with_atoms(atoms)
+                    )
+                });
             return Ok(WorkflowProcessOutcome::Failed(WorkflowError {
                 message: format!(
-                    "workflow process {pid} exited: {reason:?}: VM execution error: {formatted}{residue}"
+                    "workflow process {pid} exited: {:?}: VM execution error: {formatted}{residue}",
+                    observed.reason
                 ),
                 details: None,
             }));
         }
-        if let Some(exception) = exception {
+        if let Some(exception) = &observed.exception {
             let formatted = exception.format_with_atoms(atoms);
             let view = exception.view();
             let details = term_to_payload(view.reason, atoms).ok();
@@ -69,7 +75,7 @@ pub(super) fn workflow_process_outcome(
             }));
         }
     }
-    convert_process_outcome(atoms, pid, reason, owned_result.root())
+    convert_process_outcome(atoms, pid, observed.reason, observed.result.root())
 }
 
 pub(super) fn convert_process_outcome(

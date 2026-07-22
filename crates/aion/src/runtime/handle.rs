@@ -1,12 +1,11 @@
 //! `RuntimeHandle` spawn, register, cancel, and shutdown support.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aion_core::{ActivityError, Payload};
 use beamr::atom::AtomTable;
 use beamr::module::ModuleRegistry;
-use beamr::native::{BifRegistryImpl, NativeRegistrationError};
+use beamr::native::BifRegistryImpl;
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig};
 use beamr::term::Term;
@@ -14,8 +13,12 @@ use beamr::term::Term;
 use crate::error::EngineError;
 
 use super::config::{RuntimeConfig, SignalDeliveryConfig};
-use super::nif::{Mfa, NifRegistration};
+#[cfg(test)]
+use super::nif::Mfa;
+use super::nif::NifRegistration;
 use super::payload::payload_to_term;
+
+use self::registration::{nif_registration_error, register_all_bifs};
 
 /// Local BEAM process identifier exposed by the runtime boundary.
 pub type Pid = u64;
@@ -68,31 +71,39 @@ impl RuntimeInput {
 
 /// Handle to the embedded beamr scheduler and code-server state.
 pub struct RuntimeHandle {
-    pub(super) scheduler: Scheduler,
+    pub(super) scheduler: Arc<Scheduler>,
     pub(super) atom_table: Arc<AtomTable>,
     pub(super) module_registry: Arc<ModuleRegistry>,
     pub(super) native_registry: Arc<BifRegistryImpl>,
     nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    /// Per-workflow synchronization for retained activity delivery and death draining.
+    ///
+    /// Each workflow has an independent gate, so an exited process that remains
+    /// in beamr's process table cannot block unrelated workflows. A
+    /// dead gate remains until process-table removal is observed, preventing
+    /// delivery from inserting behind that workflow's death sweep.
+    activity_delivery_gates: dashmap::DashMap<Pid, Arc<activity_delivery::ActivityDeliveryGate>>,
     /// One-based delivery attempt that produced a retained two-phase activity
     /// outcome, keyed like [`Self::activity_results`] / [`Self::activity_errors`]
-    /// (#197). Noted by the completion task's retry loop when it delivers a
-    /// final outcome; taken by the awaiting NIF so recorded terminals carry
-    /// the genuine attempt. Absence means the first delivery (paths that never
-    /// retry — outbox re-delivery, in-VM — note nothing).
+    /// (#197). Retained in the same gate transaction as the final outcome and
+    /// taken atomically with that outcome, so recorded terminals carry the
+    /// genuine attempt. Absence means the first delivery (paths that never
+    /// retry — outbox re-delivery and in-VM execution — retain nothing).
     activity_delivery_attempts: Arc<dashmap::DashMap<(Pid, Pid), u32>>,
+    #[cfg(test)]
+    activity_delivery_test_seams: activity_delivery::ActivityDeliveryTestSeams,
     /// Live in-VM activity children per workflow pid.
     ///
     /// A BEAM link tears a child down when its workflow dies ABNORMALLY, but
     /// a `Normal` exit never propagates through links (classic BEAM
     /// semantics), so a workflow that completes while an in-VM runner is
     /// still executing — e.g. after a `with_timeout` expiry abandoned the
-    /// await — would orphan the child forever, pinning its exit watcher's
-    /// blocking thread. The workflow process monitor kills any children
-    /// still registered here when the workflow exits (for any reason), and
-    /// [`Self::shutdown`] kills every remaining child so no watcher outlives
-    /// the scheduler.
+    /// await — would orphan the child and its completion waiter forever. The
+    /// workflow process monitor kills children still registered here when the
+    /// workflow exits (for any reason), and [`Self::shutdown`] kills every
+    /// remaining child so no waiter outlives the scheduler.
     in_vm_children: Arc<dashmap::DashMap<Pid, std::collections::HashSet<Pid>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
@@ -103,14 +114,12 @@ pub struct RuntimeHandle {
     /// Bounded follow-up wakes for delivered mailbox markers, healing
     /// beamr 0.4.9's lost-wakeup window (see [`super::wake_confirm`]).
     pub(super) wake_confirmer: super::wake_confirm::WakeConfirmer,
-    /// Highest process identifier this runtime has spawned.
-    ///
-    /// beamr allocates pids from a monotonic counter, so any pid at or below
-    /// this watermark was spawned here and its exit outcome stays observable
-    /// through the scheduler's exit tombstones even after the process leaves
-    /// the live table. Monitor installation uses this to accept processes
-    /// that exited between spawn and monitor setup.
-    spawned_pid_watermark: AtomicU64,
+    /// Per-pid outcomes established before top-level process pids are published.
+    pub(super) process_exits: Arc<super::process_exit::ProcessExitRegistry>,
+    /// Runtime-provisioned owner for every process abort and shared cleanup.
+    pub(super) cleanup_executor: super::cleanup_executor::CleanupExecutor,
+    /// Identity-bearing abort jobs retained for deduplicated retries.
+    pub(super) abort_jobs: dashmap::DashMap<Pid, Arc<super::monitor::UnmonitoredProcessAbortJob>>,
 }
 
 impl RuntimeHandle {
@@ -119,6 +128,8 @@ impl RuntimeHandle {
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when beamr cannot start its scheduler.
+    /// Returns [`EngineError::Gate3BifReplacementMissing`] if beamr's complete
+    /// Gate-3 table no longer contains a required tracked fun-spawn BIF.
     pub fn new(config: RuntimeConfig) -> Result<Self, EngineError> {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let module_registry = Arc::new(ModuleRegistry::new());
@@ -131,14 +142,30 @@ impl RuntimeHandle {
             ..Default::default()
         };
         let native_registry = Arc::new(BifRegistryImpl::new());
-        register_all_bifs(&native_registry, &atom_table)?;
-        let scheduler = Scheduler::with_code_server(
-            scheduler_config,
-            Arc::clone(&module_registry),
-            Arc::clone(&atom_table),
-            Arc::clone(&native_registry),
-        )
-        .map_err(runtime_error_from_display)?;
+        register_all_bifs(&native_registry, &atom_table, &nif_state)?;
+        let scheduler = Arc::new(
+            Scheduler::with_code_server(
+                scheduler_config,
+                Arc::clone(&module_registry),
+                Arc::clone(&atom_table),
+                Arc::clone(&native_registry),
+            )
+            .map_err(runtime_error_from_display)?,
+        );
+        let wake_confirmer = super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?;
+        let shutdown_timeout = config.signal_delivery.cleanup_shutdown_timeout();
+        let cleanup_executor = super::cleanup_executor::CleanupExecutor::new(
+            config.signal_delivery.max_enqueue_attempts as usize,
+            shutdown_timeout,
+        )?;
+        // Claim beamr's singleton stream before this scheduler can publish a pid
+        // through any RuntimeHandle spawn API.
+        let process_exits = super::process_exit::ProcessExitRegistry::new(
+            Arc::clone(&scheduler),
+            shutdown_timeout,
+            config.signal_delivery.max_enqueue_attempts as usize,
+        )?;
+        nif_state.set_process_exit_registry(&process_exits)?;
 
         Ok(Self {
             scheduler,
@@ -148,14 +175,19 @@ impl RuntimeHandle {
             nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            activity_delivery_gates: dashmap::DashMap::new(),
             activity_delivery_attempts: Arc::new(dashmap::DashMap::new()),
+            #[cfg(test)]
+            activity_delivery_test_seams: activity_delivery::ActivityDeliveryTestSeams::default(),
             in_vm_children: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
             outbox_enabled: config.outbox_enabled,
-            wake_confirmer: super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?,
-            spawned_pid_watermark: AtomicU64::new(0),
+            wake_confirmer,
+            process_exits,
+            cleanup_executor,
+            abort_jobs: dashmap::DashMap::new(),
         })
     }
 
@@ -262,11 +294,11 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = self
-            .scheduler
-            .spawn_trap_exit(module, function, terms)
-            .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_trap_exit(module, function, terms)
+                .map_err(runtime_error_from_display)
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -292,16 +324,17 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = if self.is_dirty_with_arity(deployed_module, function, arity) {
-            self.scheduler
-                .spawn_link_dirty(parent_pid, module, function_atom, terms)
-                .map_err(runtime_error_from_display)?
-        } else {
-            self.scheduler
-                .spawn_link(parent_pid, module, function_atom, terms)
-                .map_err(runtime_error_from_display)?
-        };
-        self.record_spawned_pid(pid);
+        let pid = self.spawn_with_exit_ownership(|| {
+            if self.is_dirty_with_arity(deployed_module, function, arity) {
+                self.scheduler
+                    .spawn_link_dirty(parent_pid, module, function_atom, terms)
+                    .map_err(runtime_error_from_display)
+            } else {
+                self.scheduler
+                    .spawn_link(parent_pid, module, function_atom, terms)
+                    .map_err(runtime_error_from_display)
+            }
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -332,11 +365,11 @@ impl RuntimeHandle {
     ) -> Result<Pid, EngineError> {
         self.release_dead_spawn_heaps();
         self.ensure_live_pid(parent_pid)?;
-        let pid = self
-            .scheduler
-            .spawn_link_closure(parent_pid, closure_term)
-            .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_link_closure(parent_pid, closure_term)
+                .map_err(runtime_error_from_display)
+        })?;
         self.in_vm_children
             .entry(parent_pid)
             .or_default()
@@ -363,7 +396,7 @@ impl RuntimeHandle {
     }
 
     /// Drop a finished in-VM child from its workflow's teardown set (called
-    /// by the exit watcher once the child's outcome is decoded).
+    /// by the completion waiter once the child's cached outcome is decoded).
     pub(crate) fn deregister_in_vm_child(&self, parent_pid: Pid, child_pid: Pid) {
         if let Some(mut children) = self.in_vm_children.get_mut(&parent_pid) {
             children.remove(&child_pid);
@@ -376,10 +409,9 @@ impl RuntimeHandle {
     ///
     /// Invoked by the workflow process monitor on workflow exit: a `Normal`
     /// exit does not propagate through BEAM links, so a completed workflow
-    /// would otherwise orphan a still-running runner (and pin its exit
-    /// watcher's blocking thread forever). Killing writes the child's exit
-    /// tombstone, which unblocks the watcher; its delivery to the dead
-    /// workflow is refused and nothing is retained.
+    /// would otherwise orphan a still-running runner and its completion waiter.
+    /// Killing publishes the child's durable outcome, which wakes that waiter;
+    /// delivery to the dead workflow is refused and nothing is retained.
     pub(crate) fn kill_in_vm_children(&self, workflow_pid: Pid) {
         let Some((_, children)) = self.in_vm_children.remove(&workflow_pid) else {
             return;
@@ -471,15 +503,8 @@ impl RuntimeHandle {
     ///
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
-        // Stop the wake-confirmation worker first: its only job is healing
-        // lost wakeups for a running scheduler, and pending follow-ups are
-        // moot once the scheduler stops.
-        self.wake_confirmer.shutdown();
-        // Kill every still-live in-VM activity child BEFORE stopping the
-        // scheduler: the kill writes each child's exit tombstone while the
-        // scheduler can still process it, releasing the exit watchers'
-        // blocking threads (`run_until_exit` polls tombstones forever and
-        // would otherwise pin its thread past this shutdown).
+        // Kill every still-live in-VM activity child before stopping the
+        // scheduler so the singleton drainer can capture each durable outcome.
         let workflow_pids: Vec<Pid> = self
             .in_vm_children
             .iter()
@@ -488,6 +513,18 @@ impl RuntimeHandle {
         for workflow_pid in workflow_pids {
             self.kill_in_vm_children(workflow_pid);
         }
+        for pid in self.process_exits.begin_shutdown()? {
+            if self.is_live(pid) {
+                self.scheduler.terminate_process(pid, ExitReason::Kill);
+            }
+        }
+        // Abort jobs may be blocked waiting for exactly the exits published
+        // above, so drain the bounded executor only after every registered pid
+        // has been force-unblocked.
+        self.cleanup_executor.shutdown()?;
+        // Pending wake follow-ups are moot once process observation is closed.
+        self.wake_confirmer.shutdown();
+        self.process_exits.close_and_join_all()?;
         self.scheduler.shutdown();
         self.spawn_heaps.clear();
         Ok(())
@@ -503,17 +540,13 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = self
-            .scheduler
-            .spawn(module, function, terms)
-            .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn(module, function, terms)
+                .map_err(runtime_error_from_display)
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
-    }
-
-    fn record_spawned_pid(&self, pid: Pid) {
-        self.spawned_pid_watermark.fetch_max(pid, Ordering::AcqRel);
     }
 
     fn retain_spawn_heaps(&self, pid: Pid, heaps: RetainedHeaps) {
@@ -553,63 +586,9 @@ impl RuntimeHandle {
         }
     }
 
-    /// Ensure `pid` has an observable exit outcome: it is either live now or
-    /// was spawned by this runtime and already exited.
-    ///
-    /// A workflow can run to completion on a scheduler thread between its
-    /// spawn and the caller's monitor installation. The exited process is no
-    /// longer in the live table, but beamr keeps its exit tombstone, so
-    /// `run_until_exit` still returns the recorded outcome immediately.
-    /// Rejecting such pids would spuriously fail the spawn of any workflow
-    /// that finishes faster than its monitor is installed.
-    pub(super) fn ensure_monitorable_pid(&self, pid: Pid) -> Result<(), EngineError> {
-        if self.scheduler.process_table().get(pid).is_some() {
-            return Ok(());
-        }
-        if pid > 0 && pid <= self.spawned_pid_watermark.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        Err(runtime_error(format!(
-            "process {pid} was never spawned by this runtime"
-        )))
-    }
-
-    /// Register a test module whose exported function waits indefinitely.
-    ///
-    /// This keeps lifecycle tests at the runtime boundary while still exercising
-    /// real module lookup and trap-exit workflow spawning.
     #[cfg(test)]
-    pub fn register_waiting_test_module(&self, deployed_name: &str, function: &str) {
-        use std::collections::HashMap;
-
-        use beamr::loader::Instruction;
-        use beamr::loader::decode::compact::Operand;
-        use beamr::module::Module;
-
-        let module = self.atom_table.intern(deployed_name);
-        let function = self.atom_table.intern(function);
-        let label = 10;
-        self.module_registry.insert(Module {
-            name: module,
-            generation: 0,
-            origin: beamr::module::ModuleOrigin::Preloaded,
-            exports: HashMap::from([((function, 1), label)]),
-            label_index: HashMap::from([(label, 0)]),
-            code: vec![
-                Instruction::Label { label },
-                Instruction::Wait {
-                    fail: Operand::Label(label),
-                },
-            ],
-            function_table: Vec::new(),
-            line_table: Vec::new(),
-            literals: Vec::new(),
-            constant_pool: beamr::constant_pool::ConstantPool::new(),
-            resolved_imports: Vec::new(),
-            lambdas: Vec::new(),
-            string_table: Vec::new(),
-            line_info: Vec::new(),
-        });
+    pub(crate) fn live_processes_for_test(&self) -> usize {
+        self.scheduler.process_table().len()
     }
 
     /// Spawn an inert test process without module code.
@@ -619,9 +598,7 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
-        let pid = self.scheduler.spawn_test_process(false);
-        self.record_spawned_pid(pid);
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| Ok(self.scheduler.spawn_test_process(false)))
     }
 
     /// Spawn an inert test process with explicit trap-exit state.
@@ -631,9 +608,7 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
-        let pid = self.scheduler.spawn_test_process(trap_exit);
-        self.record_spawned_pid(pid);
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| Ok(self.scheduler.spawn_test_process(trap_exit)))
     }
 
     /// Spawn an inert linked test child without enabling trap-exit on the child.
@@ -645,12 +620,11 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub fn spawn_linked_test_process(&self, parent_pid: Pid) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        let pid = self
-            .scheduler
-            .spawn_linked_test_process(parent_pid)
-            .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_linked_test_process(parent_pid)
+                .map_err(runtime_error_from_display)
+        })
     }
 
     /// Return true when a live process has a trapped EXIT message from `source_pid`.
@@ -726,13 +700,6 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
-        let (reason, owned_result) = self.scheduler.run_until_exit(pid);
-        self.release_spawn_heaps(pid);
-        (reason, owned_result.root())
-    }
-
-    #[cfg(test)]
     pub(crate) fn retained_spawn_heap_count_for_test(&self) -> usize {
         self.release_dead_spawn_heaps();
         self.spawn_heaps.len()
@@ -747,36 +714,12 @@ fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
     runtime_error(reason.to_string())
 }
 
-fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) -> EngineError {
-    match error {
-        NativeRegistrationError::DuplicateMfa { .. } => EngineError::NifRegistration {
-            reason: format!("native function already registered for {}", mfa.display()),
-        },
-    }
-}
-
-fn register_all_bifs(
-    registry: &BifRegistryImpl,
-    atom_table: &AtomTable,
-) -> Result<(), EngineError> {
-    use beamr::native::{
-        bifs::register_gate1_bifs, gate3_bifs::register_gate3_bifs,
-        gleam_ffi::register_gleam_ffi_bifs, otp_stubs::init_otp_atoms,
-        otp_stubs::register_otp_stubs, process_bifs::register_gate2_bifs,
-        selector_ffi::register_selector_bifs, stdlib_stubs::register_stdlib_stubs,
-    };
-    register_gate1_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_gate2_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_gate3_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_stdlib_stubs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_selector_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_gleam_ffi_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    init_otp_atoms(atom_table);
-    register_otp_stubs(registry, atom_table).map_err(runtime_error_from_display)?;
-    Ok(())
-}
-
+mod activity_delivery;
 mod delivery;
+mod process_ownership;
+mod readiness;
+mod registration;
+mod spawn_bifs;
 
 pub(crate) use delivery::InVmChildOutcome;
 
@@ -785,330 +728,5 @@ pub(crate) use delivery::InVmChildOutcome;
 mod test_support;
 
 #[cfg(test)]
-mod tests {
-    use aion_core::Payload;
-    use std::time::Duration;
-
-    use beamr::loader::Instruction;
-    use beamr::loader::decode::compact::Operand;
-    use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
-    use beamr::native::ProcessContext;
-    use beamr::term::Term;
-    use beamr::term::binary_ref::BinaryRef;
-
-    use super::{RuntimeHandle, RuntimeInput};
-    use crate::error::EngineError;
-    use crate::runtime::{Mfa, NifEntry, NifRegistration, RuntimeConfig, SignalDeliveryConfig};
-
-    fn forty_two(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-        if args.len() > 255 {
-            return Err(Term::small_int(0));
-        }
-        Ok(Term::small_int(42))
-    }
-
-    fn thirteen(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-        if args.len() > 255 {
-            return Err(Term::small_int(0));
-        }
-        Ok(Term::small_int(13))
-    }
-
-    fn binary_length(args: &[Term], _context: &mut ProcessContext) -> Result<Term, Term> {
-        match args {
-            [term] => BinaryRef::new(*term)
-                .and_then(|binary| i64::try_from(binary.as_bytes().len()).ok())
-                .map(Term::small_int)
-                .ok_or_else(|| Term::small_int(0)),
-            _ => Err(Term::small_int(0)),
-        }
-    }
-
-    fn native_call_module_for_test(
-        module: beamr::atom::Atom,
-        function: beamr::atom::Atom,
-        target_module: beamr::atom::Atom,
-        target_function: beamr::atom::Atom,
-        native_entry: Option<beamr::native::NativeEntry>,
-    ) -> Module {
-        native_call_module_with_arity_for_test(
-            module,
-            function,
-            target_module,
-            target_function,
-            0,
-            native_entry,
-        )
-    }
-
-    fn native_call_module_with_arity_for_test(
-        module: beamr::atom::Atom,
-        function: beamr::atom::Atom,
-        target_module: beamr::atom::Atom,
-        target_function: beamr::atom::Atom,
-        arity: u8,
-        native_entry: Option<beamr::native::NativeEntry>,
-    ) -> Module {
-        let label = 1;
-        let code = vec![
-            Instruction::Label { label },
-            Instruction::CallExt {
-                arity: Operand::Unsigned(arity.into()),
-                import: Operand::Unsigned(0),
-            },
-            Instruction::Return,
-        ];
-        let mut module_data = Module {
-            name: module,
-            generation: 0,
-            origin: beamr::module::ModuleOrigin::Preloaded,
-            exports: std::collections::HashMap::from([((function, arity), label)]),
-            label_index: std::collections::HashMap::from([(label, 0)]),
-            code,
-            function_table: Vec::new(),
-            line_table: Vec::new(),
-            literals: Vec::new(),
-            constant_pool: beamr::constant_pool::ConstantPool::new(),
-            resolved_imports: Vec::new(),
-            lambdas: Vec::new(),
-            string_table: Vec::new(),
-            line_info: Vec::new(),
-        };
-        if let Some(native_entry) = native_entry {
-            module_data.resolved_imports.push(ResolvedImport {
-                module: target_module,
-                function: target_function,
-                arity,
-                target: ResolvedImportTarget::Native(native_entry),
-            });
-        }
-        module_data
-    }
-
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    fn fixture_workflow_beam() -> &'static [u8] {
-        include_bytes!("../../tests/fixtures/aion_fixture_workflow.beam")
-    }
-
-    #[test]
-    fn runtime_handle_is_send_sync() {
-        assert_send_sync::<RuntimeHandle>();
-    }
-
-    #[test]
-    fn registers_spawns_and_shuts_down() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        runtime.register_module("aion_fixture_workflow", fixture_workflow_beam())?;
-
-        let pid =
-            runtime.spawn_workflow("aion_fixture_workflow", "wait", RuntimeInput::default())?;
-        assert!(runtime.cancel_pid(pid).is_ok());
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn signal_delivery_to_dead_process_returns_typed_error()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let signal_delivery =
-            SignalDeliveryConfig::new(Duration::ZERO, 1, Duration::ZERO, Duration::ZERO);
-        let runtime =
-            RuntimeHandle::new(RuntimeConfig::new(Some(1)).with_signal_delivery(signal_delivery))?;
-        let pid = runtime.spawn_test_process()?;
-        runtime.terminate_test_process_with_error(pid)?;
-
-        let error = runtime
-            .deliver_signal_received(pid)
-            .err()
-            .ok_or("dead process delivery unexpectedly succeeded")?;
-
-        assert!(matches!(error, EngineError::Runtime { .. }));
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_nif_mfa_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let mfa = Mfa::new("host", "answer", 0);
-        let mut registration = NifRegistration::new();
-        registration.add_host_nifs([
-            NifEntry::new(mfa.clone(), forty_two),
-            NifEntry::dirty(mfa, thirteen),
-        ]);
-
-        let error = runtime.install_nifs(registration).err();
-
-        assert!(matches!(
-            error,
-            Some(EngineError::NifRegistration { reason })
-                if reason.contains("host:answer/0")
-        ));
-        assert_eq!(runtime.registered_nif_modules(), vec!["host"]);
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn payload_binary_remains_valid_through_spawn_and_is_released()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let mfa = Mfa::new("host", "binary_length", 1);
-        let mut registration = NifRegistration::new();
-        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
-        runtime.install_nifs(registration)?;
-
-        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
-        let module = native_call_module_with_arity_for_test(
-            runtime.atom_table.intern("payload_echo"),
-            runtime.atom_table.intern("run"),
-            runtime.atom_table.intern("host"),
-            runtime.atom_table.intern("binary_length"),
-            1,
-            native_entry,
-        );
-        runtime.module_registry.insert(module);
-        let payload = Payload::new(
-            aion_core::ContentType::Json,
-            br#"{"hello":"world"}"#.to_vec(),
-        );
-
-        let pid =
-            runtime.spawn_workflow("payload_echo", "run", RuntimeInput::from_payload(&payload)?)?;
-        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
-        let (reason, result) = runtime.run_until_exit_for_test(pid);
-
-        assert_eq!(reason, beamr::process::ExitReason::Normal);
-        assert_eq!(
-            result.as_small_int(),
-            Some(i64::try_from(payload.bytes().len()).unwrap_or(0))
-        );
-        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn workflow_outcome_releases_payload_heaps() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let mfa = Mfa::new("host", "binary_length", 1);
-        let mut registration = NifRegistration::new();
-        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
-        runtime.install_nifs(registration)?;
-
-        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
-        let module = native_call_module_with_arity_for_test(
-            runtime.atom_table.intern("payload_workflow_outcome"),
-            runtime.atom_table.intern("run"),
-            runtime.atom_table.intern("host"),
-            runtime.atom_table.intern("binary_length"),
-            1,
-            native_entry,
-        );
-        runtime.module_registry.insert(module);
-        let payload = Payload::new(
-            aion_core::ContentType::Json,
-            br#"{"workflow":"outcome"}"#.to_vec(),
-        );
-
-        let pid = runtime.spawn_workflow(
-            "payload_workflow_outcome",
-            "run",
-            RuntimeInput::from_payload(&payload)?,
-        )?;
-        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
-        let outcome = runtime.workflow_outcome(pid)?;
-
-        assert_eq!(
-            outcome?,
-            Payload::from_json(&serde_json::json!(payload.bytes().len()))?
-        );
-        assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn repeated_completed_payload_spawns_do_not_accumulate_retained_heaps()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let mfa = Mfa::new("host", "binary_length", 1);
-        let mut registration = NifRegistration::new();
-        registration.add_host_nifs([NifEntry::new(mfa, binary_length)]);
-        runtime.install_nifs(registration)?;
-
-        let native_entry = runtime.lookup_native_for_test("host", "binary_length", 1);
-        let module = native_call_module_with_arity_for_test(
-            runtime.atom_table.intern("payload_echo_many"),
-            runtime.atom_table.intern("run"),
-            runtime.atom_table.intern("host"),
-            runtime.atom_table.intern("binary_length"),
-            1,
-            native_entry,
-        );
-        runtime.module_registry.insert(module);
-        let payload = Payload::new(
-            aion_core::ContentType::Json,
-            br#"{"iteration":true}"#.to_vec(),
-        );
-
-        for _ in 0..1_000 {
-            let pid = runtime.spawn_workflow(
-                "payload_echo_many",
-                "run",
-                RuntimeInput::from_payload(&payload)?,
-            )?;
-            let (reason, result) = runtime.run_until_exit_for_test(pid);
-            assert_eq!(reason, beamr::process::ExitReason::Normal);
-            assert_eq!(
-                result.as_small_int(),
-                Some(i64::try_from(payload.bytes().len()).unwrap_or(0))
-            );
-            assert_eq!(runtime.retained_spawn_heap_count_for_test(), 0);
-        }
-
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn distinct_nifs_are_registered_and_callable() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let mut registration = NifRegistration::new();
-        registration.add_engine_nifs().add_host_nifs([
-            NifEntry::new(Mfa::new("host", "answer", 0), forty_two),
-            NifEntry::dirty(Mfa::new("host", "thirteen", 0), thirteen),
-        ]);
-
-        runtime.install_nifs(registration)?;
-
-        assert_eq!(
-            runtime.registered_nif_modules(),
-            vec!["aion_flow_ffi", "host"]
-        );
-        let answer = runtime.lookup_native_for_test("host", "answer", 0);
-        assert!(answer.is_some());
-        assert!(
-            runtime
-                .lookup_native_for_test("host", "thirteen", 0)
-                .is_some_and(|entry| entry.dirty_kind.is_some())
-        );
-
-        let host_nif_call = native_call_module_for_test(
-            runtime.atom_table.intern("host_nif_call"),
-            runtime.atom_table.intern("answer"),
-            runtime.atom_table.intern("host"),
-            runtime.atom_table.intern("answer"),
-            answer,
-        );
-        runtime.module_registry.insert(host_nif_call);
-        let pid = runtime.spawn_workflow("host_nif_call", "answer", RuntimeInput::default())?;
-        let (reason, result) = runtime.run_until_exit_for_test(pid);
-
-        assert_eq!(reason, beamr::process::ExitReason::Normal);
-        assert_eq!(result, Term::small_int(42));
-        runtime.shutdown()?;
-        Ok(())
-    }
-}
+#[path = "handle/tests.rs"]
+mod tests;

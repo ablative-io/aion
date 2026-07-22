@@ -14,7 +14,9 @@ use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed::Cons;
 
 use crate::runtime::nif_activity::runtime_context;
-use crate::runtime::nif_collect::{ActivitySpec, CollectDeps, CollectStep, collect_step};
+use crate::runtime::nif_collect::{
+    ActivitySpec, CollectDeps, CollectError, CollectStep, collect_step,
+};
 use crate::runtime::nif_state::{CollectKind, engine_nif_state};
 
 /// Build `{Tag, <<bytes>>}` on the calling process heap.
@@ -188,8 +190,11 @@ fn run_collect(
             ctx.request_suspend(None);
             Ok(Term::NIL)
         }
-        Err(message) => {
+        Err(CollectError::Message(message)) => {
             Ok(error_result_term(ctx, &format!("{label}:{message}")).unwrap_or(Term::NIL))
+        }
+        Err(CollectError::Engine(error)) => {
+            Err(error_result_term(ctx, &error.to_string()).unwrap_or(Term::NIL))
         }
     }
 }

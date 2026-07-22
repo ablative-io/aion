@@ -178,8 +178,7 @@ pub async fn start_workflow_with_options(
         .supervision
         .place_workflow(loaded.workflow_type(), pid)
     {
-        let _ = context.runtime.cancel_pid(pid);
-        return Err(error);
+        return Err(abort_unmonitored_start(&context.runtime, pid, error));
     }
 
     let completion = CompletionNotifier::new();
@@ -196,25 +195,59 @@ pub async fn start_workflow_with_options(
         completion,
     });
 
-    if let Err(error) = context
-        .registry
-        .insert((workflow_id, run_id), handle.clone())
-        .map(|_| ())
-    {
-        let _ = context.runtime.cancel_pid(pid);
-        return Err(error);
-    }
-
-    if let Err(error) = install_completion_monitor(&context, pid, &handle) {
-        let _ = context
-            .registry
-            .remove(handle.workflow_id(), handle.run_id());
-        let _ = context.runtime.cancel_pid(pid);
-        return Err(error);
-    }
+    register_started_handle(&context, &handle)?;
     deliver_deferred_signals(&context, &handle);
 
     Ok(handle)
+}
+
+fn register_started_handle(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
+    let pid = handle.pid();
+    if let Err(error) = context
+        .registry
+        .insert(
+            (handle.workflow_id().clone(), handle.run_id().clone()),
+            handle.clone(),
+        )
+        .map(|_| ())
+    {
+        if let Err(remove_error) = context
+            .registry
+            .remove(handle.workflow_id(), handle.run_id())
+        {
+            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract partial workflow registry publication after insert failed");
+        }
+        return Err(abort_unmonitored_start(&context.runtime, pid, error));
+    }
+    #[cfg(test)]
+    context.runtime.pause_at_start_publication_for_test(pid)?;
+    if let Err(error) = install_completion_monitor(context, pid, handle) {
+        if let Err(remove_error) = context
+            .registry
+            .remove(handle.workflow_id(), handle.run_id())
+        {
+            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract workflow registry publication after monitor installation failed");
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn abort_unmonitored_start(
+    runtime: &Arc<RuntimeHandle>,
+    pid: crate::Pid,
+    cause: EngineError,
+) -> EngineError {
+    match runtime.abort_unmonitored_process(pid) {
+        Ok(()) => cause,
+        Err(abort_error) => {
+            tracing::error!(pid, error = %abort_error, cause = %cause, "bounded workflow abort failed after start registration error");
+            abort_error.into_engine_error()
+        }
+    }
 }
 
 fn install_completion_monitor(

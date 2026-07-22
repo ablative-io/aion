@@ -61,6 +61,20 @@ impl SignalDeliveryConfig {
             max_backoff,
         }
     }
+
+    /// Bound for draining the single cleanup worker after every registered
+    /// process has been force-unblocked.
+    ///
+    /// A zero process-readiness bound is valid for refusal tests, but is not a
+    /// useful thread-shutdown observation window. Use at least the standard
+    /// readiness window and scale it by every job the worker can own (one
+    /// running plus the bounded queue) rather than imposing an unrelated
+    /// timeout constant.
+    pub(crate) fn cleanup_shutdown_timeout(self) -> Duration {
+        self.ready_timeout
+            .max(Self::default().ready_timeout)
+            .saturating_mul(self.max_enqueue_attempts.max(1).saturating_add(1))
+    }
 }
 
 impl RuntimeConfig {

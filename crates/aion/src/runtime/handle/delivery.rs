@@ -13,6 +13,7 @@ use beamr::process::ExitReason;
 use crate::error::EngineError;
 use crate::registry::Registry;
 
+use super::activity_delivery::{ActivityOutcomeKind, RetainedActivityDelivery};
 use super::{Pid, RuntimeHandle, runtime_error};
 use crate::runtime::payload::term_to_payload;
 
@@ -33,10 +34,10 @@ impl RuntimeHandle {
         activity_pid: Pid,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        let (reason, owned_result) = self.scheduler.run_until_exit(activity_pid);
+        let observed = self.activity_process_exit_outcome(activity_pid)?;
         self.release_spawn_heaps(activity_pid);
-        if reason == ExitReason::Normal {
-            let payload = term_to_payload(owned_result.root(), &self.atom_table)?;
+        if observed.reason == ExitReason::Normal {
+            let payload = term_to_payload(observed.result.root(), &self.atom_table)?;
             self.deliver_activity_result(parent_pid, activity_pid, payload)
         } else {
             let error = self
@@ -45,7 +46,7 @@ impl RuntimeHandle {
                 .map_or_else(
                     || ActivityError {
                         kind: ActivityErrorKind::Terminal,
-                        message: activity_exit_message(activity_pid, reason),
+                        message: activity_exit_message(activity_pid, observed.reason),
                         details: None,
                     },
                     |entry| entry.clone(),
@@ -69,20 +70,24 @@ impl RuntimeHandle {
     /// Deliberately NOT keyed through the legacy `(parent, child_pid)` maps:
     /// the caller delivers the decoded outcome by correlation id into the
     /// ordinal-keyed two-phase maps, the same regime the remote wire uses.
-    pub(crate) fn in_vm_child_outcome(&self, child_pid: Pid) -> InVmChildOutcome {
-        let (reason, owned_result) = self.scheduler.run_until_exit(child_pid);
+    pub(crate) fn in_vm_child_outcome(
+        &self,
+        child_pid: Pid,
+    ) -> Result<InVmChildOutcome, EngineError> {
+        let observed = self.activity_process_exit_outcome(child_pid)?;
         self.release_spawn_heaps(child_pid);
-        if reason == ExitReason::Normal {
-            decode_in_vm_result(owned_result.root()).unwrap_or_else(|| {
-                InVmChildOutcome::Failed(format!(
+        if observed.reason == ExitReason::Normal {
+            match decode_in_vm_result(observed.result.root()) {
+                Some(outcome) => Ok(outcome),
+                None => Ok(InVmChildOutcome::Failed(format!(
                     "terminal:activity process {child_pid} returned an unexpected result shape"
-                ))
-            })
+                ))),
+            }
         } else {
-            InVmChildOutcome::Failed(format!(
+            Ok(InVmChildOutcome::Failed(format!(
                 "terminal:{}",
-                activity_exit_message(child_pid, reason)
-            ))
+                activity_exit_message(child_pid, observed.reason)
+            )))
         }
     }
 
@@ -183,42 +188,88 @@ impl RuntimeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
-    /// marker cannot be queued.
+    /// Returns [`EngineError::ActivityDeliveryPoisoned`] when this workflow's
+    /// scoped delivery gate was poisoned, or [`EngineError::Runtime`] when the
+    /// workflow is not live or the marker cannot be queued.
     pub(crate) fn deliver_activity_completion_message(
         &self,
         workflow_pid: Pid,
         correlation_id: &str,
         result: String,
     ) -> Result<(), EngineError> {
-        self.ensure_live_pid(workflow_pid)?;
+        self.deliver_activity_completion_message_with_attempt(
+            workflow_pid,
+            correlation_id,
+            result,
+            None,
+        )
+    }
+
+    pub(crate) fn deliver_activity_completion_message_with_attempt(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        result: String,
+        attempt: Option<u32>,
+    ) -> Result<(), EngineError> {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
-        self.activity_results.insert(
-            (workflow_pid, activity_id),
-            Payload::new(ContentType::Json, result.into_bytes()),
-        );
+        let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_complete");
-        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+        self.retain_activity_outcome_and_deliver_marker(
+            workflow_pid,
+            &self.activity_results,
+            RetainedActivityDelivery {
+                key,
+                outcome: Payload::new(ContentType::Json, result.into_bytes()),
+                kind: ActivityOutcomeKind::Result,
+                attempt,
+            },
+            || self.enqueue_activity_marker(workflow_pid, marker, activity_id, correlation_id),
+        )
     }
 
     /// Deliver a two-phase activity failure marker to the workflow mailbox.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
-    /// marker cannot be queued.
+    /// Returns [`EngineError::ActivityDeliveryPoisoned`] when this workflow's
+    /// scoped delivery gate was poisoned, or [`EngineError::Runtime`] when the
+    /// workflow is not live or the marker cannot be queued.
     pub(crate) fn deliver_activity_failure_message(
         &self,
         workflow_pid: Pid,
         correlation_id: &str,
         reason: String,
     ) -> Result<(), EngineError> {
-        self.ensure_live_pid(workflow_pid)?;
+        self.deliver_activity_failure_message_with_attempt(
+            workflow_pid,
+            correlation_id,
+            reason,
+            None,
+        )
+    }
+
+    pub(crate) fn deliver_activity_failure_message_with_attempt(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        reason: String,
+        attempt: Option<u32>,
+    ) -> Result<(), EngineError> {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
-        self.activity_errors
-            .insert((workflow_pid, activity_id), activity_failure(reason));
+        let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_failed");
-        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+        self.retain_activity_outcome_and_deliver_marker(
+            workflow_pid,
+            &self.activity_errors,
+            RetainedActivityDelivery {
+                key,
+                outcome: activity_failure(reason),
+                kind: ActivityOutcomeKind::Error,
+                attempt,
+            },
+            || self.enqueue_activity_marker(workflow_pid, marker, activity_id, correlation_id),
+        )
     }
 
     /// Route an unmatched durable-outbox activity completion into the live
@@ -236,9 +287,11 @@ impl RuntimeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::RegistryPoisoned`] if the registry index lock was
-    /// poisoned, or [`EngineError::Runtime`] if the resolved process is not
-    /// live or the mailbox marker cannot be queued.
+    /// Returns [`EngineError::RegistryPoisoned`] when the registry index lock
+    /// was poisoned, [`EngineError::ActivityDeliveryPoisoned`] when the
+    /// resolved workflow's scoped delivery gate was poisoned, or
+    /// [`EngineError::Runtime`] when the process is not live or the mailbox
+    /// marker cannot be queued.
     pub fn deliver_outbox_completion(
         &self,
         registry: &Registry,
@@ -268,9 +321,11 @@ impl RuntimeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::RegistryPoisoned`] if the registry index lock was
-    /// poisoned, or [`EngineError::Runtime`] if the resolved process is not
-    /// live or the mailbox marker cannot be queued.
+    /// Returns [`EngineError::RegistryPoisoned`] when the registry index lock
+    /// was poisoned, [`EngineError::ActivityDeliveryPoisoned`] when the
+    /// resolved workflow's scoped delivery gate was poisoned, or
+    /// [`EngineError::Runtime`] when the process is not live or the mailbox
+    /// marker cannot be queued.
     pub fn deliver_outbox_failure(
         &self,
         registry: &Registry,
@@ -293,26 +348,35 @@ impl RuntimeHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when the workflow is not live or the
-    /// mailbox marker cannot be queued.
+    /// Returns [`EngineError::ActivityDeliveryPoisoned`] when the parent's
+    /// scoped delivery gate was poisoned, or [`EngineError::Runtime`] when the
+    /// workflow is not live or the mailbox marker cannot be queued.
     pub fn deliver_activity_result(
         &self,
         parent_pid: Pid,
         activity_pid: Pid,
         payload: Payload,
     ) -> Result<(), EngineError> {
-        self.ensure_live_pid(parent_pid)?;
-        self.activity_results
-            .insert((parent_pid, activity_pid), payload);
+        let key = (parent_pid, activity_pid);
         let marker = self.atom_table.intern("aion_activity_result");
-        if self.scheduler.enqueue_atom_message(parent_pid, marker) {
-            self.confirm_marker_wake(parent_pid);
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "failed to deliver activity result from {activity_pid} to {parent_pid}"
-            )))
-        }
+        self.retain_activity_outcome_and_deliver_marker(
+            parent_pid,
+            &self.activity_results,
+            RetainedActivityDelivery {
+                key,
+                outcome: payload,
+                kind: ActivityOutcomeKind::Result,
+                attempt: None,
+            },
+            || {
+                self.enqueue_activity_marker(
+                    parent_pid,
+                    marker,
+                    activity_pid,
+                    &format!("activity process {activity_pid}"),
+                )
+            },
+        )
     }
 
     /// Wake a suspended workflow process so blocking awaits re-run their
@@ -332,42 +396,26 @@ impl RuntimeHandle {
         self.enqueue_signal_marker_with_retry(workflow_pid, marker)
     }
 
-    fn enqueue_activity_marker(
-        &self,
-        workflow_pid: Pid,
-        marker: Atom,
-        correlation_id: &str,
-    ) -> Result<(), EngineError> {
-        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
-            self.confirm_marker_wake(workflow_pid);
-            tracing::debug!(
-                workflow_pid,
-                correlation_id,
-                "delivered activity completion marker to workflow mailbox via scheduler queue"
-            );
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "failed to deliver activity completion marker {correlation_id} to {workflow_pid}"
-            )))
-        }
-    }
-
     /// Store a typed activity error for a trapped activity EXIT signal.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when the workflow process is not live.
+    /// Returns [`EngineError::ActivityDeliveryPoisoned`] when the parent's
+    /// scoped delivery gate was poisoned, or [`EngineError::Runtime`] when the
+    /// workflow process is not live.
     pub fn deliver_activity_error(
         &self,
         parent_pid: Pid,
         activity_pid: Pid,
         error: ActivityError,
     ) -> Result<(), EngineError> {
-        self.ensure_live_pid(parent_pid)?;
-        self.activity_errors
-            .insert((parent_pid, activity_pid), error);
-        Ok(())
+        self.with_activity_delivery(parent_pid, |state| {
+            self.ensure_activity_delivery_live(parent_pid, state)?;
+            self.activity_errors
+                .insert((parent_pid, activity_pid), error);
+            state.retain_outcome(activity_pid, ActivityOutcomeKind::Error);
+            Ok(())
+        })
     }
 
     /// Read a previously delivered activity result payload.
@@ -390,65 +438,26 @@ impl RuntimeHandle {
         &self,
         parent_pid: Pid,
         activity_sequence: Pid,
-    ) -> Option<Payload> {
-        self.activity_results
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, payload)| payload)
+    ) -> Result<Option<(Payload, Option<u32>)>, EngineError> {
+        self.take_activity_outcome(
+            parent_pid,
+            activity_sequence,
+            &self.activity_results,
+            ActivityOutcomeKind::Result,
+        )
     }
 
     pub(crate) fn take_activity_error(
         &self,
         parent_pid: Pid,
         activity_sequence: Pid,
-    ) -> Option<ActivityError> {
-        self.activity_errors
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, error)| error)
-    }
-
-    /// Retain the one-based delivery attempt that produced the outcome about
-    /// to be delivered for `(parent_pid, activity_sequence)` (#197).
-    ///
-    /// Called by the completion task's retry loop right before it retains the
-    /// final payload/error, so the awaiting NIF records the terminal with the
-    /// genuine attempt instead of assuming the first delivery.
-    pub(crate) fn note_delivery_attempt(
-        &self,
-        parent_pid: Pid,
-        activity_sequence: Pid,
-        attempt: u32,
-    ) {
-        self.activity_delivery_attempts
-            .insert((parent_pid, activity_sequence), attempt);
-    }
-
-    /// Take the noted delivery attempt for a retained outcome, if any.
-    ///
-    /// `None` means the outcome arrived through a path that never retries
-    /// (outbox re-delivery, in-VM children) and is the first delivery.
-    pub(crate) fn take_delivery_attempt(
-        &self,
-        parent_pid: Pid,
-        activity_sequence: Pid,
-    ) -> Option<u32> {
-        self.activity_delivery_attempts
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, attempt)| attempt)
-    }
-
-    /// Drop every retained activity completion and failure for a workflow pid.
-    ///
-    /// Called from the workflow process monitor when the process exits: a
-    /// completion delivered after the workflow stopped awaiting it — a race
-    /// loser's late settle, or any delivery after exit — is never `take`n by
-    /// an await and would otherwise be retained forever (D5).
-    pub(crate) fn drain_activity_completions(&self, workflow_pid: Pid) {
-        self.activity_results
-            .retain(|(parent, _), _| *parent != workflow_pid);
-        self.activity_errors
-            .retain(|(parent, _), _| *parent != workflow_pid);
-        self.activity_delivery_attempts
-            .retain(|(parent, _), _| *parent != workflow_pid);
+    ) -> Result<Option<(ActivityError, Option<u32>)>, EngineError> {
+        self.take_activity_outcome(
+            parent_pid,
+            activity_sequence,
+            &self.activity_errors,
+            ActivityOutcomeKind::Error,
+        )
     }
 
     /// Number of retained two-phase activity completion entries (results
@@ -488,38 +497,6 @@ impl RuntimeHandle {
 
     pub(crate) fn child_terminal_atom(&self) -> Atom {
         self.atom_table.intern("aion_child_terminal")
-    }
-
-    pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
-        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
-        while std::time::Instant::now() < deadline {
-            if self.scheduler.trap_exit(pid).is_some() {
-                return Ok(());
-            }
-            sleep_signal_delivery_backoff(self.signal_delivery.initial_backoff);
-        }
-        self.scheduler
-            .trap_exit(pid)
-            .map(|_| ())
-            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
-    }
-
-    /// Async twin of [`Self::wait_for_process_ready`]: identical readiness
-    /// semantics, but the waits yield to the executor (`tokio::time::sleep`)
-    /// so one slow-to-materialize process never parks a worker thread other
-    /// deliveries share.
-    pub(crate) async fn wait_for_process_ready_async(&self, pid: Pid) -> Result<(), EngineError> {
-        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
-        while std::time::Instant::now() < deadline {
-            if self.scheduler.trap_exit(pid).is_some() {
-                return Ok(());
-            }
-            yield_signal_delivery_backoff(self.signal_delivery.initial_backoff).await;
-        }
-        self.scheduler
-            .trap_exit(pid)
-            .map(|_| ())
-            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
     }
 
     fn enqueue_signal_marker_with_retry(
@@ -607,7 +584,7 @@ impl RuntimeHandle {
     /// NOTE: this workaround was written against beamr 0.4.9. The crate is now
     /// pinned to beamr 0.6.4; the `Wait`-arm gap may have been fixed upstream,
     /// so this ladder needs re-validation against 0.6.4 and may now be stale.
-    fn confirm_marker_wake(&self, workflow_pid: Pid) {
+    pub(super) fn confirm_marker_wake(&self, workflow_pid: Pid) {
         let state = std::sync::Arc::clone(self.nif_state());
         let snapshot = state.wake_observation_epoch(workflow_pid);
         self.wake_confirmer
@@ -718,7 +695,7 @@ fn correlation_to_activity_pid(correlation_id: &str) -> Result<Pid, EngineError>
     })
 }
 
-fn next_signal_delivery_backoff(
+pub(super) fn next_signal_delivery_backoff(
     current: std::time::Duration,
     max: std::time::Duration,
 ) -> std::time::Duration {
@@ -726,7 +703,7 @@ fn next_signal_delivery_backoff(
     if doubled > max { max } else { doubled }
 }
 
-fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
+pub(super) fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
     if duration.is_zero() {
         std::thread::yield_now();
     } else {
@@ -734,7 +711,7 @@ fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
     }
 }
 
-async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
+pub(super) async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
     if duration.is_zero() {
         tokio::task::yield_now().await;
     } else {
@@ -743,186 +720,5 @@ async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use aion_core::{ActivityId, RunId, WorkflowId, WorkflowStatus};
-    use aion_package::ContentHash;
-
-    use crate::registry::Registry;
-    use crate::registry::handle::{
-        CompletionNotifier, HandleResidency, WorkflowHandle, WorkflowHandleParts,
-    };
-    use crate::runtime::config::RuntimeConfig;
-
-    use super::RuntimeHandle;
-
-    fn live_handle(workflow_id: &WorkflowId, run_id: &RunId, pid: u64) -> WorkflowHandle {
-        let store = Arc::new(aion_store::InMemoryStore::default());
-        let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
-        WorkflowHandle::new(WorkflowHandleParts {
-            workflow_id: workflow_id.clone(),
-            run_id: run_id.clone(),
-            pid,
-            workflow_type: "checkout".to_owned(),
-            namespace: String::from("default"),
-            loaded_version: ContentHash::from_bytes([1; 32]),
-            cached_status: WorkflowStatus::Running,
-            residency: HandleResidency::Resident,
-            recorder,
-            completion: CompletionNotifier::new(),
-        })
-    }
-
-    #[test]
-    fn outbox_completion_lands_where_take_reads_it() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let registry = Registry::default();
-        let workflow_id = WorkflowId::new_v4();
-        let run_id = RunId::new_v4();
-        // A live test process supplies the pid the registry resolves to.
-        let pid = runtime.spawn_test_process()?;
-        registry.insert(
-            (workflow_id.clone(), run_id.clone()),
-            live_handle(&workflow_id, &run_id, pid),
-        )?;
-
-        let ordinal = 3;
-        let activity_id = ActivityId::from_sequence_position(ordinal);
-        let delivered = runtime.deliver_outbox_completion(
-            &registry,
-            &workflow_id,
-            &activity_id,
-            None,
-            r#"{"ok":true}"#.to_owned(),
-        )?;
-
-        assert!(delivered, "delivery to a live workflow must report true");
-        let payload = runtime
-            .take_activity_result(pid, ordinal)
-            .ok_or("completion was not retained where take_activity_result reads it")?;
-        assert_eq!(payload.bytes(), br#"{"ok":true}"#);
-
-        // An unknown workflow id is the not-live outcome, never an error.
-        let unknown = runtime.deliver_outbox_completion(
-            &registry,
-            &WorkflowId::new_v4(),
-            &activity_id,
-            None,
-            "{}".to_owned(),
-        )?;
-        assert!(
-            !unknown,
-            "an unknown workflow must report not-live, not error"
-        );
-
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn outbox_completion_is_run_scoped_across_continue_as_new()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let registry = Registry::default();
-        let workflow_id = WorkflowId::new_v4();
-        // R1 is the prior run; R2 is the live run after a continue-as-new. The
-        // index tracks the newest run, so the workflow's live run is R2.
-        let r1 = RunId::new_v4();
-        let r2 = RunId::new_v4();
-        let pid = runtime.spawn_test_process()?;
-        registry.insert(
-            (workflow_id.clone(), r2.clone()),
-            live_handle(&workflow_id, &r2, pid),
-        )?;
-
-        // A reused ordinal that exists in both R1's and R2's ordinal space.
-        let ordinal = 3;
-        let activity_id = ActivityId::from_sequence_position(ordinal);
-
-        // A completion belonging to the superseded run R1 must NOT be delivered
-        // and must NOT resolve R2's reused ordinal.
-        let stale = runtime.deliver_outbox_completion(
-            &registry,
-            &workflow_id,
-            &activity_id,
-            Some(&r1),
-            r#"{"from":"r1"}"#.to_owned(),
-        )?;
-        assert!(
-            !stale,
-            "a completion for a superseded run must not be delivered"
-        );
-        assert!(
-            runtime.take_activity_result(pid, ordinal).is_none(),
-            "a superseded run's completion must not resolve the live run's reused ordinal"
-        );
-
-        // A completion for the live run R2 IS delivered and resolves the ordinal.
-        let live = runtime.deliver_outbox_completion(
-            &registry,
-            &workflow_id,
-            &activity_id,
-            Some(&r2),
-            r#"{"from":"r2"}"#.to_owned(),
-        )?;
-        assert!(live, "a completion for the live run must be delivered");
-        let payload = runtime
-            .take_activity_result(pid, ordinal)
-            .ok_or("live-run completion was not retained where take_activity_result reads it")?;
-        assert_eq!(payload.bytes(), br#"{"from":"r2"}"#);
-
-        runtime.shutdown()?;
-        Ok(())
-    }
-
-    #[test]
-    fn outbox_failure_is_run_scoped_across_continue_as_new()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
-        let registry = Registry::default();
-        let workflow_id = WorkflowId::new_v4();
-        let r1 = RunId::new_v4();
-        let r2 = RunId::new_v4();
-        let pid = runtime.spawn_test_process()?;
-        registry.insert(
-            (workflow_id.clone(), r2.clone()),
-            live_handle(&workflow_id, &r2, pid),
-        )?;
-
-        let ordinal = 5;
-        let activity_id = ActivityId::from_sequence_position(ordinal);
-
-        let stale = runtime.deliver_outbox_failure(
-            &registry,
-            &workflow_id,
-            &activity_id,
-            Some(&r1),
-            "r1 failed".to_owned(),
-        )?;
-        assert!(
-            !stale,
-            "a failure for a superseded run must not be delivered"
-        );
-        assert!(
-            runtime.take_activity_error(pid, ordinal).is_none(),
-            "a superseded run's failure must not resolve the live run's reused ordinal"
-        );
-
-        let live = runtime.deliver_outbox_failure(
-            &registry,
-            &workflow_id,
-            &activity_id,
-            Some(&r2),
-            "r2 failed".to_owned(),
-        )?;
-        assert!(live, "a failure for the live run must be delivered");
-        assert!(
-            runtime.take_activity_error(pid, ordinal).is_some(),
-            "live-run failure must be retained where take_activity_error reads it"
-        );
-
-        runtime.shutdown()?;
-        Ok(())
-    }
-}
+#[path = "delivery_tests.rs"]
+mod tests;

@@ -109,6 +109,112 @@ pub enum EngineError {
         reason: String,
     },
 
+    /// A Gate-3 BIF required for tracked local fun spawns was not registered.
+    #[error("required Gate-3 BIF `{module}:{function}/{arity}` was missing during runtime startup")]
+    Gate3BifReplacementMissing {
+        /// Native module containing the required function.
+        module: String,
+        /// Required native function.
+        function: String,
+        /// Required native function arity.
+        arity: u8,
+    },
+
+    /// The runtime-owned cleanup executor's ownership state was poisoned.
+    #[error("process cleanup executor state was poisoned")]
+    CleanupExecutorPoisoned,
+
+    /// The runtime cleanup worker did not stop within the configured bound.
+    #[error("process cleanup executor did not stop within {timeout_millis}ms")]
+    CleanupExecutorShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
+    },
+
+    /// The process-exit registry lifecycle lock was poisoned.
+    #[error("process exit registry lifecycle state was poisoned")]
+    ProcessExitRegistryPoisoned,
+
+    /// A process exit record's installation/abort ownership gate was poisoned.
+    #[error("process exit ownership gate for process {process_id} was poisoned")]
+    ProcessExitOwnershipPoisoned {
+        /// Process whose monitor/abort ownership could not be serialized.
+        process_id: u64,
+    },
+
+    /// A process exit record's fan-out state was poisoned.
+    #[error("process exit outcome state for process {process_id} was poisoned")]
+    ProcessExitStatePoisoned {
+        /// Process whose cached exit state could not be accessed.
+        process_id: u64,
+    },
+
+    /// The scheduler's one exit-event subscription was already claimed.
+    #[error("beamr process exit-event subscription is already owned")]
+    ProcessExitSubscriptionUnavailable,
+
+    /// The singleton process-exit drainer could not be spawned.
+    #[error("process exit drainer could not start: {reason}")]
+    ProcessExitDrainerSpawn {
+        /// Operating-system thread creation failure.
+        reason: String,
+    },
+
+    /// The singleton process-exit drainer's ownership lock was poisoned.
+    #[error("process exit drainer state was poisoned")]
+    ProcessExitDrainerPoisoned,
+
+    /// beamr published an exit event without the promised durable outcome.
+    #[error("process {process_id} exit event had no takeable outcome")]
+    ProcessExitOutcomeMissingAfterEvent {
+        /// Process named by the contract-breaking event.
+        process_id: u64,
+    },
+
+    /// beamr disconnected its event publisher while the runtime still owned it.
+    #[error("beamr process exit-event publisher disconnected")]
+    ProcessExitEventStreamDisconnected,
+
+    /// The process-exit drainer did not stop within the configured bound.
+    #[error("process exit drainer did not stop within {timeout_millis}ms")]
+    ProcessExitDrainerShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
+    },
+
+    /// The process-exit drainer thread panicked.
+    #[error("process exit drainer terminated unexpectedly")]
+    ProcessExitDrainerPanicked,
+
+    /// The process-exit callback dispatcher's ownership state was poisoned.
+    #[error("process exit callback dispatcher state was poisoned")]
+    ProcessExitCallbackDispatcherPoisoned,
+
+    /// The process-exit callback dispatcher had already stopped.
+    #[error("process exit callback dispatcher is unavailable")]
+    ProcessExitCallbackDispatcherUnavailable,
+
+    /// The process-exit callback dispatcher did not stop within its configured bound.
+    #[error("process exit callback dispatcher did not stop within {timeout_millis}ms")]
+    ProcessExitCallbackDispatcherShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
+    },
+
+    /// A retired process generation cannot accept another outcome consumer.
+    #[error("process {process_id} already reached its terminal runtime outcome")]
+    ProcessExitAlreadyTerminal {
+        /// Process generation whose heavyweight exit record was retired.
+        process_id: u64,
+    },
+
+    /// A workflow's activity-delivery synchronization lock was poisoned.
+    #[error("activity delivery lock for process {process_id} was poisoned")]
+    ActivityDeliveryPoisoned {
+        /// Workflow process whose scoped delivery lock was poisoned.
+        process_id: u64,
+    },
+
     /// The active workflow registry lock was poisoned.
     #[error("active workflow registry lock was poisoned")]
     RegistryPoisoned,

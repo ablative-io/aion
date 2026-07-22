@@ -355,7 +355,7 @@ async fn package_loaded_under_content_hash_namespace_spawns_entrypoint() -> Test
         record.entry_function(),
         RuntimeInput::default(),
     )?;
-    let (reason, result) = runtime.run_until_exit_for_test(pid);
+    let (reason, result) = runtime.process_exit_for_test(pid)?;
 
     assert_eq!(reason, beamr::process::ExitReason::Normal);
     assert_eq!(result, beamr::term::Term::small_int(42));

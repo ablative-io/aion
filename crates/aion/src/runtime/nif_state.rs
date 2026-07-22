@@ -9,10 +9,10 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use aion_core::TimerId;
-use beamr::native::ProcessContext;
+use beamr::native::{NativeEntry, ProcessContext};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
@@ -74,16 +74,30 @@ pub(crate) struct EngineNifState {
     pub(super) servicing_queries: DashMap<u64, String>,
     /// Per-pid suspending-native entry counter consumed by the wake
     /// confirmation ladder (see [`super::wake_confirm`]): every suspending
-    /// await bumps its caller's epoch on entry, and process exit stamps the
+    /// await bumps its caller's epoch on entry, and process cleanup start stamps the
     /// [`WAKE_EPOCH_EXITED`] tombstone, so an armed ladder can observe "this
-    /// process ran (or died) after my marker was delivered" and stop.
+    /// process ran (or began exit cleanup) after my marker was delivered" and stop.
     /// Entries are never removed — beamr never reuses pids within a
     /// scheduler, and a removed tombstone would make a late ladder re-wake a
     /// dead pid forever.
     wake_observation_epochs: DashMap<u64, u64>,
+    /// Identity-bearing claims that serialize completion-monitor installation
+    /// per workflow process. A committed claim remains until that exact
+    /// monitor completes; failed uncommitted claims remove only themselves.
+    pub(super) monitor_installations: DashMap<u64, Arc<super::monitor::MonitorInstallation>>,
+    /// Original Gate-3 fun-spawn entries retained for tracked wrapper delegation.
+    gate3_fun_spawn_delegates: OnceLock<Gate3FunSpawnDelegates>,
+    /// Weak access used by wrapped local spawn BIFs to reserve outcome classification.
+    process_exits: OnceLock<Weak<super::process_exit::ProcessExitRegistry>>,
 }
 
-/// Epoch tombstone recorded for an exited workflow pid.
+#[derive(Copy, Clone)]
+struct Gate3FunSpawnDelegates {
+    spawn: NativeEntry,
+    spawn_link: NativeEntry,
+}
+
+/// Epoch tombstone recorded at the start of exited-workflow cleanup.
 const WAKE_EPOCH_EXITED: u64 = u64::MAX;
 
 /// One query delivered to a workflow pid, awaiting pump pickup.
@@ -148,6 +162,47 @@ pub(crate) enum CollectKind {
 }
 
 impl EngineNifState {
+    pub(super) fn set_gate3_fun_spawn_delegates(
+        &self,
+        spawn: NativeEntry,
+        spawn_link: NativeEntry,
+    ) -> Result<(), crate::EngineError> {
+        self.gate3_fun_spawn_delegates
+            .set(Gate3FunSpawnDelegates { spawn, spawn_link })
+            .map_err(|_| crate::EngineError::Runtime {
+                reason: String::from("Gate-3 fun-spawn delegates were already installed"),
+            })
+    }
+
+    pub(super) fn gate3_spawn_delegate(&self) -> Option<NativeEntry> {
+        self.gate3_fun_spawn_delegates
+            .get()
+            .map(|delegates| delegates.spawn)
+    }
+
+    pub(super) fn gate3_spawn_link_delegate(&self) -> Option<NativeEntry> {
+        self.gate3_fun_spawn_delegates
+            .get()
+            .map(|delegates| delegates.spawn_link)
+    }
+
+    pub(super) fn set_process_exit_registry(
+        &self,
+        registry: &Arc<super::process_exit::ProcessExitRegistry>,
+    ) -> Result<(), crate::EngineError> {
+        self.process_exits
+            .set(Arc::downgrade(registry))
+            .map_err(|_| crate::EngineError::Runtime {
+                reason: String::from("process exit registry was already installed in NIF state"),
+            })
+    }
+
+    pub(super) fn process_exit_registry(
+        &self,
+    ) -> Option<Arc<super::process_exit::ProcessExitRegistry>> {
+        self.process_exits.get().and_then(Weak::upgrade)
+    }
+
     /// Install the activity dispatcher executing this engine's activities.
     pub(crate) fn set_activity_dispatcher(&self, dispatcher: Arc<dyn ActivityDispatcher>) {
         match self.activity_dispatcher.write() {
@@ -194,6 +249,11 @@ impl EngineNifState {
         }
     }
 
+    /// Whether `pid` has completed a suspending await's park decision.
+    pub(crate) fn has_pending_await(&self, pid: u64) -> bool {
+        self.pending_awaits.contains_key(&pid)
+    }
+
     /// Record one suspending-native entry for `pid`.
     ///
     /// Called on every suspending-await invocation (fresh entry and wake
@@ -216,6 +276,14 @@ impl EngineNifState {
         self.wake_observation_epochs
             .get(&pid)
             .map_or(0, |epoch| *epoch)
+    }
+
+    /// Whether shared process cleanup has started and stamped the wake tombstone.
+    #[cfg(test)]
+    pub(crate) fn process_cleanup_started(&self, pid: u64) -> bool {
+        self.wake_observation_epochs
+            .get(&pid)
+            .is_some_and(|epoch| *epoch == WAKE_EPOCH_EXITED)
     }
 
     /// Whether a wake ladder armed at `snapshot` may stop for `pid`.
