@@ -297,21 +297,11 @@ impl EngineHandle for TimerNifBridge {
         let nif_state = Weak::clone(&self.nif_state);
         let handle = self.tokio_handle.spawn(async move {
             tokio::time::sleep(delay).await;
-            let bridge = nif_state
+            fire_wheel_timer(&nif_state, &workflow_id, &timer_id, fire_at).await;
+            if let Some(bridge) = nif_state
                 .upgrade()
-                .ok_or_else(|| "engine NIF state has been dropped".to_owned())
-                .and_then(|state| timer_bridge(&state).map_err(|error| error.to_string()));
-            let service = match &bridge {
-                Ok(bridge) => bridge.service(),
-                Err(error) => {
-                    tracing::warn!(error = %error, "timer wheel could not resolve timer service");
-                    return;
-                }
-            };
-            if let Err(error) = service.fire_timer(workflow_id, timer_id, fire_at).await {
-                tracing::warn!(error = %error, "timer wheel fire callback failed");
-            }
-            if let Ok(bridge) = bridge {
+                .and_then(|state| timer_bridge(&state).ok())
+            {
                 if bridge
                     .pending_timers
                     .get(&task_key)
@@ -502,6 +492,85 @@ where
             Err(panic) => std::panic::resume_unwind(panic),
         },
     )
+}
+
+/// Fire a due wheel timer, retrying a DEADLINE fire with bounded backoff while
+/// its history timer remains live.
+///
+/// The live wheel is one-shot and production runs no periodic recovery tick, so
+/// without this a transient timeout-teardown/fire failure would be dropped and
+/// never re-driven in the same engine epoch. Only a reserved `deadline:{run}`
+/// timer that is STILL live in durable history is retried; an ordinary timer's
+/// fire failure — or a deadline already retired/superseded — is logged and
+/// dropped exactly as before. The backoff interval grows and is capped (never a
+/// hot loop), attempts are bounded, and the durable deadline row stays live so
+/// restart recovery remains the final backstop.
+async fn fire_wheel_timer(
+    nif_state: &Weak<EngineNifState>,
+    workflow_id: &WorkflowId,
+    timer_id: &TimerId,
+    fire_at: DateTime<Utc>,
+) {
+    const MAX_ATTEMPTS: u32 = 6;
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
+    const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+    let mut backoff = INITIAL_BACKOFF;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let Some(bridge) = nif_state
+            .upgrade()
+            .and_then(|state| timer_bridge(&state).ok())
+        else {
+            return;
+        };
+        let result = bridge
+            .service()
+            .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
+            .await;
+        let Err(error) = result else {
+            return;
+        };
+        if !crate::time::is_deadline_timer(timer_id) {
+            tracing::warn!(error = %error, "timer wheel fire callback failed");
+            return;
+        }
+        match deadline_remains_live(&bridge, workflow_id, timer_id).await {
+            Ok(true) => tracing::warn!(
+                error = %error,
+                attempt,
+                "workflow deadline fire failed while its timer is still live; retrying with backoff"
+            ),
+            Ok(false) => return,
+            Err(read_error) => {
+                tracing::warn!(
+                    error = %read_error,
+                    "could not check deadline liveness for wheel retry; leaving it to restart recovery"
+                );
+                return;
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+    }
+    tracing::error!(
+        %workflow_id,
+        %timer_id,
+        "workflow deadline fire exhausted same-epoch retries; the durable timer stays live for restart recovery"
+    );
+}
+
+/// Whether the reserved deadline timer `timer_id` is still live in durable
+/// history (its run has not retired it), so a failed fire is worth retrying.
+async fn deadline_remains_live(
+    bridge: &TimerNifBridge,
+    workflow_id: &WorkflowId,
+    timer_id: &TimerId,
+) -> Result<bool, StoreError> {
+    let Some(run_id) = crate::time::deadline_run_id(timer_id) else {
+        return Ok(false);
+    };
+    let history = bridge.store.read_history(workflow_id).await?;
+    Ok(crate::time::outstanding_deadline_timer(&history, &run_id).is_some())
 }
 
 fn event_kind(event: &Event) -> &'static str {

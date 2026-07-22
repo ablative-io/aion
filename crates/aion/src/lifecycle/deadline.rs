@@ -15,11 +15,12 @@
 
 use std::sync::{Arc, Weak};
 
-use aion_core::{RunId, TimerCancelCause, WorkflowId};
+use aion_core::{Event, RunId, TimerCancelCause, WorkflowId};
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 use chrono::Utc;
 
+use crate::durability::Recorder;
 use crate::registry::{Registry, TerminalOutcome, WorkflowHandle};
 use crate::runtime::RuntimeHandle;
 use crate::time::timer_service::live_timers_in_active_segment;
@@ -79,14 +80,16 @@ impl WorkflowDeadlineHandler {
         run_id: RunId,
     ) -> Result<(), crate::EngineError> {
         let Some(handle) = self.registry.get(&workflow_id, &run_id)? else {
-            // The run already left the registry (a concurrent terminal won and
-            // deregistered it, teardown complete). The deadline lost the race.
-            tracing::debug!(
-                %workflow_id,
-                %run_id,
-                "workflow deadline elapsed but the run is no longer registered; a terminal already won"
-            );
-            return Ok(());
+            // No registered handle. This is NOT automatically a no-op: a cold
+            // engine (or a shard adopter) never registers a terminal run, so a
+            // recovered deadline row whose durable history shows `WorkflowTimedOut`
+            // with teardown left unfinished reaches here with no handle. Complete
+            // that teardown registry-free — this is the ONLY actor that finishes
+            // it. A non-timeout terminal, or a fully-torn-down run, is a genuine
+            // no-op (its deadline is already retired or was never this run's).
+            return self
+                .finalize_timed_out_without_handle(&workflow_id, &run_id)
+                .await;
         };
 
         let disposition = self
@@ -262,15 +265,56 @@ impl WorkflowDeadlineHandler {
         let recorder = handle.recorder();
         let mut recorder = recorder.lock().await;
         let history = self.store.read_history(workflow_id).await?;
-        let deadline = crate::time::outstanding_deadline_timer(&history, run_id);
-        for timer_id in live_timers_in_active_segment(&history) {
-            if deadline.as_ref() == Some(&timer_id) {
-                continue;
-            }
-            recorder
-                .record_timer_cancelled(Utc::now(), timer_id, TimerCancelCause::WorkflowIntent)
-                .await?;
+        record_ordinary_timer_retirements(&mut recorder, &history, run_id).await?;
+        Ok(())
+    }
+
+    /// Registry-free completion of an interrupted timeout teardown.
+    ///
+    /// A cold engine and a shard adopter never register a terminal run, so a
+    /// recovered due deadline row reaches [`Self::drive_timed_out`] with no
+    /// handle. When durable history shows this run's own `WorkflowTimedOut` with
+    /// teardown left unfinished (an outstanding deadline or still-live ordinary
+    /// timers), this finishes the SAME durable steps the handle path runs —
+    /// ordinary timers first, visibility, then the deadline LAST — through an
+    /// independent recorder. It deliberately omits the handle-only side effects:
+    /// the process is already gone (the run is terminal), there are no local
+    /// awaiters this epoch, and nothing is registered to deregister. A non-timeout
+    /// or already-finished run is a clean no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`crate::EngineError`] from the first failing durable
+    /// step so the caller (recovery) retries.
+    async fn finalize_timed_out_without_handle(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: &RunId,
+    ) -> Result<(), crate::EngineError> {
+        let history = self.store.read_history(workflow_id).await?;
+        if !matches!(
+            terminal_outcome_from_history(&history, run_id),
+            Some(TerminalOutcome::TimedOut(_))
+        ) {
+            tracing::debug!(
+                %workflow_id,
+                %run_id,
+                "unregistered deadline elapsed for a run that is not TimedOut; nothing to finalize"
+            );
+            return Ok(());
         }
+        let head = history.iter().map(Event::seq).max().unwrap_or_default();
+        let mut recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&self.store), head);
+        // Ordinary timers first (the deadline is retired LAST), then visibility.
+        record_ordinary_timer_retirements(&mut recorder, &history, run_id).await?;
+        upsert_workflow_visibility(
+            Arc::clone(&self.store),
+            Arc::clone(&self.visibility_store),
+            workflow_id,
+            run_id,
+        )
+        .await?;
+        crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
         Ok(())
     }
 
@@ -294,6 +338,33 @@ impl WorkflowDeadlineHandler {
         crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
         Ok(())
     }
+}
+
+/// Records `TimerCancelled { WorkflowIntent }` for every still-live ORDINARY
+/// timer in the run's active segment — the deadline itself is excluded so it
+/// stays live as the teardown resume anchor. Shared by the handle-based teardown
+/// and the registry-free finalizer so both settle ordinary timers identically.
+/// Idempotent: a re-run sees the same timers already retired and records nothing.
+///
+/// # Errors
+///
+/// Returns the recorder's [`crate::durability::DurabilityError`] when a
+/// cancellation append fails.
+async fn record_ordinary_timer_retirements(
+    recorder: &mut Recorder,
+    history: &[Event],
+    run_id: &RunId,
+) -> Result<(), crate::durability::DurabilityError> {
+    let deadline = crate::time::outstanding_deadline_timer(history, run_id);
+    for timer_id in live_timers_in_active_segment(history) {
+        if deadline.as_ref() == Some(&timer_id) {
+            continue;
+        }
+        recorder
+            .record_timer_cancelled(Utc::now(), timer_id, TimerCancelCause::WorkflowIntent)
+            .await?;
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]

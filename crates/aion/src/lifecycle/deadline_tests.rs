@@ -207,6 +207,83 @@ fn count_timed_out(history: &[Event]) -> usize {
         .count()
 }
 
+/// Engine-rebuild shape: durable history holds `WorkflowTimedOut` with an
+/// outstanding (due) deadline and the registry is EMPTY — a cold engine never
+/// re-registers a terminal run, so `recover_due` reaches the handler with no
+/// handle. The registry-free finalizer must complete teardown and retire the
+/// deadline EXACTLY ONCE, rather than the old no-op that left the deadline live
+/// forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_start_finalizes_timed_out_teardown_without_a_registered_handle() -> TestResult {
+    let backing = Arc::new(InMemoryStore::default());
+    let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+    let visibility_store: Arc<dyn VisibilityStore> = backing;
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let registry = Arc::new(Registry::default());
+    let workflow_id = aion_core::WorkflowId::new_v4();
+    let run_id = aion_core::RunId::new_v4();
+    let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+    let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
+    recorder
+        .record_workflow_started(
+            chrono::Utc::now(),
+            crate::durability::WorkflowStartRecord {
+                workflow_type: "sleeper".to_owned(),
+                input: Payload::from_json(&json!({}))?,
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+        )
+        .await?;
+    recorder
+        .record_timer_started(chrono::Utc::now(), deadline_id.clone(), chrono::Utc::now())
+        .await?;
+    recorder
+        .record_workflow_timed_out(chrono::Utc::now(), String::from("workflow"))
+        .await?;
+    // The registry is intentionally empty (no handle for the terminal run).
+    let handler = WorkflowDeadlineHandler::new(
+        Arc::downgrade(&runtime),
+        Arc::clone(&store),
+        Arc::clone(&visibility_store),
+        Arc::clone(&registry),
+    );
+
+    // Two fires (as recover_due could re-drive across restarts) — still exactly
+    // one cancellation.
+    handler
+        .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+        .await?;
+    handler
+        .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+        .await?;
+
+    let history = store.read_history(&workflow_id).await?;
+    let cancels = history
+        .iter()
+        .filter(
+            |event| matches!(event, Event::TimerCancelled { timer_id, .. } if timer_id == &deadline_id),
+        )
+        .count();
+    assert_eq!(
+        cancels, 1,
+        "registry-free teardown retires the deadline exactly once: {history:#?}"
+    );
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&history, &run_id),
+        None,
+        "the deadline is retired"
+    );
+    assert_eq!(
+        count_timed_out(&history),
+        1,
+        "no second terminal is recorded"
+    );
+    runtime.shutdown()?;
+    Ok(())
+}
+
 /// A deadline that fires behind a competing NON-timeout terminal REPAIRS the
 /// interrupted terminal transition: it retires the still-outstanding deadline
 /// (rather than losing without cancelling it), so whole-history recovery stops
