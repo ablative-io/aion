@@ -712,7 +712,7 @@ is annotated otherwise (IR-14):
 | IR-11 | `Codec(a)` | record whose `encode`/`decode` fields are funs (T-ACTRAW's `call_fun` depends on this row; pinned by test) | `wrappers.rs:121-138` |
 | IR-12 | module reference | mangled atom (`aion@workflow`, `gleam@dynamic@decode`, …) | draft §4; capstone imports |
 | IR-13 | entry ABI | `run/1` receives the raw input payload term; returns `{ok, ResultBinary}` — bytes recorded verbatim as `WorkflowCompleted.result`; error path `{error, AwlErrorTerm}` | capstone obs. 8 |
-| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate`/`trim`; routes/loop recursion are tail calls. **NOT asserted by a BC-4 fixture test** — x/y register allocation and tail-call instruction shape are not observable at the durable trail level; exercised structurally by aion-awl's `select` tests, direct byte/instruction-level assertion deferred to BC-5 codegen inspection (coordinator ruling, BC-4 round 3) | draft §4; capstone B; validator recon 4 |
+| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate` (never `trim`, R6); routes/loop recursion are tail calls. **Asserted at the instruction level by BC-5 codegen inspection** (`aion-awl` `mir::select::inspect_tests`): the covered-ratchet sweep `covered_ratchet_upholds_ir14_and_section_11` plus the targeted `targeted_framed_function_brackets_and_single_exits`, `targeted_frameless_body_uses_no_frame_or_y`, `targeted_loop_recursion_is_a_self_tail_call`, and `targeted_route_lowers_to_a_tail_call`. Decodes `select()` output with the beamr 0.15.4 decoder and proves: args marshaled into `x0..x(k-1)` (fun in `x(arity)` for `call_fun`), result stored from `x0`; framed↔`frame_size>0` (R8) with a single leading `Allocate F`, prologue param spills `move x_i→y_i`, one shared `Deallocate F; Return` linearly last (R7) or frame-tearing tail calls; no `Trim` (R6); `TestHeap`/`GcBif` `Live` equals the recomputed live-`X` root high-water (R8, 2101 heap ops, zero drift); routes/loop recursion are `call_(ext_)last`/`call_(ext_)only` tails. **One §11.2 wording DIVERGENCE stopped and recorded (see §11.9):** "Y touched only by `move`" holds for WRITES, but guard/heap ops (`Comparison`/`TypeTest`/`IsTaggedTuple`/`SelectVal`/`GetTupleElement`) READ `Y` homes directly — the inspection asserts the byte-true form (Y written only by `move`; no `Y` on any call) rather than the overstated §11.2 claim. Structurally still exercised by aion-awl's `select` tests; the durable trail cannot witness IR-14 (BC-4 round-3 ruling) | draft §4; capstone B; validator recon 4; §11.9 |
 | IR-15 | export set | exactly `definition/0`, `run/1`, `execute/1`; no `module_info/0,1` | decision 12; capstone obs. 4 |
 | IR-16 | error propagation | `result.try` sites lower structurally as flattened `TryBind` (§2.2); trail-invariant; instruction streams intentionally differ from erlc's; fallback R1 | capstone B |
 | IR-17 | durations | constructed only via `aion@duration:milliseconds/1` from precomputed ms; no duration wire codec exists or can be constructed | codec design §2; `exprs.rs:23-34` |
@@ -1387,3 +1387,60 @@ dependency note), never emitting a shape it cannot verify.
 loader treats an absent `Line` chunk as empty; R4 is explicitly droppable and
 A2 records the shipped encoder writes no filename table). Re-add from op spans
 if runtime stacktraces are wanted; it changes no ABI.
+
+### 11.9 BC-5 codegen-inspection findings (2026-07-23)
+
+The IR-14 row and its §11 refinements R5–R8 are now asserted at the instruction
+level by `aion-awl` `mir::select::inspect_tests` (the BC-4 round-3 deferral,
+closed). The suite decodes `select()` output with the beamr 0.15.4
+`Instruction`/`Operand` surface (no writer, no MIR — the bytes witness the
+contract) over the full covered ratchet (every `valid/` fixture the direct
+compiler lowers) plus targeted per-shape fixtures.
+
+**Confirmed against the bytes (held on every covered fixture):**
+
+- **IR-14 args/result.** Each call marshals its arguments into `x0..x(k-1)`
+  (`call_fun` additionally homes the fun in `x(arity)`); a value-producing call
+  stores its result from `x0`; a framed function's prologue spills its params
+  `move x_i → y_i` (args arrived in `x0..x(n-1)`).
+- **R5 tiers / R8 predicate.** `framed ⟺ contains Allocate ⟺ frame_size > 0`; a
+  framed function opens with exactly one leading `Allocate F` (F ≥ 1) and spills
+  its params; a frameless body has arity 0, no `Allocate`/`Deallocate`, and no
+  `Y` operand.
+- **R6.** `Trim` is never emitted (proven by a closed-alphabet membership check —
+  26 opcodes, `Trim` absent — over the whole stream).
+- **R7.** At most one standalone `Deallocate` per framed function; when present it
+  releases the frame size, is immediately followed by `Return`, is linearly
+  last, and no `Y` operand survives it; every `Return` is a deallocated return;
+  framed tails (`call_last`/`call_ext_last`) deallocate exactly `F`.
+- **R8 `Live` accuracy.** For every `TestHeap`/`GcBif` heap op, the declared
+  `Live` equals the live-`X` root high-water recomputed directly from the decoded
+  stream (GC clears `X` at/above `Live`, §11.1 fact 4). **2101 heap ops across
+  the ratchet, zero drift.** The emitter emits `Live` as a constant (0 where `X`
+  is empty at the emission point, 1 where `x0` holds a call/encode result), and
+  that constant is exactly the recomputed high-water in every case.
+- **Tail calls.** Routes lower to `call_ext_last`/`call_ext_only`; a counted
+  loop's back-edge is a self `call_last`/`call_only` targeting the loop
+  function's own body label.
+
+**DIVERGENCE stopped and recorded (not weakened to green):** §11.2's X-discipline
+paragraph states "Y slots are touched **only by `move`** … every other
+instruction sees X/literal/atom operands only." Against the bytes this is
+**false for reads.** The emitter's `operand()` helper (`select/emit/burst.rs:15`)
+returns `Operand::Y(home)` directly, so `Comparison`, `TypeTest`,
+`IsTaggedTuple`, `SelectVal`, and `GetTupleElement` READ `Y` homes without a
+prior `move`-to-`X` reload (first seen at `dag-fork/valid/after_single`:
+`Comparison { op: EqExact, left: Y(0), right: Literal(5) }`). This is legal and
+safe — a `Y` operand is valid under a live `Allocate…Deallocate` bracket
+(§11.1 fact 2), these ops neither clobber `X` nor GC the `Y` value across a
+call — but it contradicts the stated discipline and the R8 "Y is touched ONLY
+by `move`" wording (§11.6 table). The inspection therefore asserts the
+**byte-true** invariant instead: `Y` is *written* only by `move` (every `Y`
+destination is a `move` — spills, stores, `TryBind`, json accumulators,
+`let assert` binds), and **no call carries a `Y` operand** (marshaling always
+reloads to `X`, so no value crosses a call from a `Y` home and `X` never holds a
+live value across a call — the real register-safety guarantee). The stronger
+"Y read only via `move`" claim is left unasserted and flagged here for the
+design seat to reconcile: either tighten the emitter to reload every `Y` read
+through `X` (uniform burst templates, as §11.2 intends) or amend §11.2/§11.6 to
+permit direct `Y` reads on non-call guard/heap ops (the shipped, safe behaviour).

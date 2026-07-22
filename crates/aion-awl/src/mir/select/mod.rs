@@ -22,6 +22,10 @@ mod shells;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]
+mod inspect_support;
+#[cfg(test)]
+mod inspect_tests;
+#[cfg(test)]
 mod tests;
 
 pub use error::SelectError;
