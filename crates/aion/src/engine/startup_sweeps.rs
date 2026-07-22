@@ -220,8 +220,6 @@ pub(super) async fn sweep_continued_as_new_replacements(
     Ok(())
 }
 
-/// Whether a successor `WorkflowStarted` continuing `continued_run_id` is
-/// durable for `workflow_id`.
 /// Retire every declared-timeout deadline left uncancelled behind a NON-timeout
 /// terminal — the crash-window repair for the two-write terminal transition.
 ///
@@ -230,18 +228,24 @@ pub(super) async fn sweep_continued_as_new_replacements(
 /// between the two leaves a run that is durably `Completed`/`Failed`/`Cancelled`
 /// or continued-as-new while its `deadline:{run}` timer is still live —
 /// permanently violating D5 and letting whole-history recovery keep re-arming it.
-/// This sweep drives that condition to closure at startup, in addition to the
-/// process-exit re-entry (`handle_process_exit`) and the deadline-fire repair
-/// (`WorkflowDeadlineHandler`), so no history can hold a terminal + an
-/// uncancelled recorded deadline across a restart.
+/// This sweep drives that condition to closure at startup and at shard adoption,
+/// in addition to the process-exit re-entry (`handle_process_exit`) and the
+/// deadline-fire repair (`WorkflowDeadlineHandler`), so no history can hold a
+/// terminal + an uncancelled recorded deadline across a restart or a failover.
 ///
 /// The candidate set is the durable timer rows (bounded by armed timers, not all
 /// workflows), filtered to deadline ids. A `WorkflowTimedOut` terminal is
 /// deliberately SKIPPED: its deadline is owned by `WorkflowDeadlineHandler`
-/// teardown as that teardown's resume anchor, and `recover_due` re-fires it to
-/// drive `ResumeTeardown`. A run with no terminal yet keeps its live deadline.
-/// Idempotent: an already-retired deadline reads as not outstanding and records
-/// nothing.
+/// teardown, and `recover_due` re-fires it to drive `ResumeTeardown`. A run with
+/// no terminal yet keeps its live deadline. Idempotent.
+///
+/// Single-writer discipline (never a second recorder against a live head): each
+/// retirement goes through the registered handle's recorder when one exists, and
+/// otherwise through an independent recorder guarded by a `SequenceConflict`
+/// re-read. On cold boot this sweep runs BEFORE repopulation and continue-as-new
+/// successor start, so no local recorder yet exists; on live adoption it runs
+/// after repopulation, where a workflow with a live successor already holds a
+/// registered recorder.
 pub(super) async fn sweep_uncancelled_terminal_deadlines(
     context: &StartupRecoveryContext,
 ) -> Result<(), EngineError> {
@@ -253,35 +257,107 @@ pub(super) async fn sweep_uncancelled_terminal_deadlines(
         let Some(run_id) = crate::time::deadline_run_id(&entry.timer_id) else {
             continue;
         };
-        let history = context
-            .store
-            .as_ref()
-            .read_history(&entry.workflow_id)
-            .await?;
-        if crate::time::outstanding_deadline_timer(&history, &run_id).is_none() {
-            continue;
-        }
-        match crate::lifecycle::completion::terminal_outcome_from_history(&history, &run_id) {
-            Some(crate::registry::TerminalOutcome::TimedOut(_)) | None => {}
-            Some(_) => {
-                let head = history.iter().map(Event::seq).max().unwrap_or_default();
-                let mut recorder = crate::durability::Recorder::resume_at(
-                    entry.workflow_id.clone(),
-                    Arc::clone(&context.store),
-                    head,
-                );
-                tracing::info!(
-                    workflow_id = %entry.workflow_id,
-                    run_id = %run_id,
-                    "retiring an uncancelled deadline left behind a non-timeout terminal (startup repair)"
-                );
-                crate::time::retire_run_deadline(&mut recorder, &history, &run_id).await?;
-            }
-        }
+        retire_orphaned_terminal_deadline(context, &entry.workflow_id, &run_id).await?;
     }
     Ok(())
 }
 
+/// Retire one run's uncancelled non-timeout-terminal deadline with single-writer
+/// discipline. When a registered handle exists for the workflow (its live run —
+/// e.g. a continue-as-new successor, or an adopted active run), append through
+/// THAT handle's recorder under its lock; otherwise use an independent recorder
+/// with `SequenceConflict` reconciliation. A no-longer-orphaned run is a no-op.
+async fn retire_orphaned_terminal_deadline(
+    context: &StartupRecoveryContext,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+) -> Result<(), EngineError> {
+    if let Some(handle) = registered_handle_for_workflow(context, workflow_id)? {
+        let recorder = handle.recorder();
+        let mut recorder = recorder.lock().await;
+        let history = context.store.as_ref().read_history(workflow_id).await?;
+        if is_orphaned_terminal_deadline(&history, run_id) {
+            tracing::info!(
+                %workflow_id,
+                %run_id,
+                "retiring an orphaned non-timeout terminal deadline through the live workflow recorder"
+            );
+            crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
+        }
+        return Ok(());
+    }
+    retire_orphaned_terminal_deadline_independent(context, workflow_id, run_id).await
+}
+
+/// The registered handle for any live run of `workflow_id`, if one exists.
+fn registered_handle_for_workflow(
+    context: &StartupRecoveryContext,
+    workflow_id: &aion_core::WorkflowId,
+) -> Result<Option<crate::registry::WorkflowHandle>, EngineError> {
+    Ok(context
+        .registry
+        .list()?
+        .into_iter()
+        .find(|handle| handle.workflow_id() == workflow_id))
+}
+
+/// Whether `run_id`'s history shows a NON-timeout terminal with a still-outstanding
+/// deadline — the crash-window condition this sweep repairs.
+fn is_orphaned_terminal_deadline(history: &[Event], run_id: &RunId) -> bool {
+    if crate::time::outstanding_deadline_timer(history, run_id).is_none() {
+        return false;
+    }
+    matches!(
+        crate::lifecycle::completion::terminal_outcome_from_history(history, run_id),
+        Some(terminal) if !matches!(terminal, crate::registry::TerminalOutcome::TimedOut(_))
+    )
+}
+
+/// Retire the deadline through an independent recorder (no live handle exists for
+/// the workflow), tolerant of a concurrent writer: on `SequenceConflict`, re-read
+/// and treat an already-retired deadline as done; otherwise surface the typed
+/// error — never swallow it.
+async fn retire_orphaned_terminal_deadline_independent(
+    context: &StartupRecoveryContext,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+) -> Result<(), EngineError> {
+    let history = context.store.as_ref().read_history(workflow_id).await?;
+    if !is_orphaned_terminal_deadline(&history, run_id) {
+        return Ok(());
+    }
+    let head = history.iter().map(Event::seq).max().unwrap_or_default();
+    let mut recorder = crate::durability::Recorder::resume_at(
+        workflow_id.clone(),
+        Arc::clone(&context.store),
+        head,
+    );
+    tracing::info!(
+        %workflow_id,
+        %run_id,
+        "retiring an orphaned non-timeout terminal deadline via an independent recorder (startup repair)"
+    );
+    match crate::time::retire_run_deadline(&mut recorder, &history, run_id).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if matches!(
+                error,
+                crate::durability::DurabilityError::Store(
+                    aion_store::StoreError::SequenceConflict { .. }
+                )
+            ) {
+                let history = context.store.as_ref().read_history(workflow_id).await?;
+                if crate::time::outstanding_deadline_timer(&history, run_id).is_none() {
+                    return Ok(());
+                }
+            }
+            Err(error.into())
+        }
+    }
+}
+
+/// Whether a successor `WorkflowStarted` continuing `continued_run_id` is
+/// durable for `workflow_id`.
 async fn successor_started(
     context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,

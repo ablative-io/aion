@@ -17,7 +17,9 @@ use super::{
 };
 use crate::EngineError;
 use crate::loader::WorkflowCatalog;
-use crate::registry::Registry;
+use crate::registry::{
+    CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
+};
 use crate::runtime::{RuntimeConfig, RuntimeHandle, RuntimeInput};
 use crate::supervision::SupervisionTree;
 use aion_store::InMemoryStore;
@@ -556,6 +558,165 @@ async fn startup_sweep_retires_non_timeout_terminal_deadlines_but_skips_timed_ou
         crate::time::outstanding_deadline_timer(&timed_out_history, &timed_out_run).is_some(),
         "the sweep leaves a TimedOut deadline live for its owning teardown: {timed_out_history:#?}"
     );
+    runtime.shutdown()?;
+    Ok(())
+}
+
+/// Finding 2: shard adoption must run the terminal-deadline repair. A dead
+/// owner's completed run with an uncancelled FUTURE-dated deadline (the case
+/// `rearm_future_from_active_histories` / due-only recovery would miss) is
+/// retired on the surviving adopter through `recover_adopted_shards`.
+#[tokio::test]
+async fn adoption_repairs_orphaned_future_dated_terminal_deadline() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let workflow_id = WorkflowId::new_v4();
+    let run_id = RunId::new_v4();
+    let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+    let future = Utc::now()
+        .checked_add_signed(chrono::Duration::hours(1))
+        .unwrap_or_else(Utc::now);
+    let mut seed = crate::durability::Recorder::new(workflow_id.clone(), Arc::clone(&store));
+    seed.record_workflow_started(
+        Utc::now(),
+        crate::durability::WorkflowStartRecord {
+            workflow_type: "checkout".to_owned(),
+            input: Payload::from_json(&json!({}))?,
+            run_id: run_id.clone(),
+            parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        },
+    )
+    .await?;
+    seed.record_timer_started(Utc::now(), deadline_id.clone(), future)
+        .await?;
+    seed.record_workflow_completed(Utc::now(), Payload::from_json(&json!("done"))?)
+        .await?;
+    store
+        .schedule_timer(&workflow_id, &deadline_id, future)
+        .await?;
+
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let context = recovery_context(
+        Arc::clone(&store),
+        Arc::clone(&runtime),
+        Arc::new(WorkflowCatalog::new()),
+    );
+    super::recover_adopted_shards(context).await?;
+
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&history, &run_id),
+        None,
+        "adoption retires the future-dated terminal deadline: {history:#?}"
+    );
+    runtime.shutdown()?;
+    Ok(())
+}
+
+/// Finding 3: a stranded continue-as-new predecessor's uncancelled deadline is
+/// retired WITHOUT staling the live successor's recorder — the sweep appends
+/// through the registered successor recorder, so a subsequent successor append
+/// still succeeds (no `SequenceConflict`).
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_retires_predecessor_deadline_through_the_successor_recorder() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let workflow_id = WorkflowId::new_v4();
+    let predecessor = RunId::new_v4();
+    let successor = RunId::new_v4();
+    let deadline_id = crate::time::deadline_timer_id(&predecessor)?;
+    // A completed continue-as-new transition whose predecessor deadline was never
+    // cancelled, with the successor already started.
+    let mut seed = crate::durability::Recorder::new(workflow_id.clone(), Arc::clone(&store));
+    seed.record_workflow_started(
+        Utc::now(),
+        crate::durability::WorkflowStartRecord {
+            workflow_type: "checkout".to_owned(),
+            input: Payload::from_json(&json!({}))?,
+            run_id: predecessor.clone(),
+            parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        },
+    )
+    .await?;
+    seed.record_timer_started(Utc::now(), deadline_id.clone(), Utc::now())
+        .await?;
+    seed.record_workflow_continued_as_new(
+        Utc::now(),
+        Payload::from_json(&json!({}))?,
+        None,
+        predecessor.clone(),
+    )
+    .await?;
+    seed.record_workflow_started(
+        Utc::now(),
+        crate::durability::WorkflowStartRecord {
+            workflow_type: "checkout".to_owned(),
+            input: Payload::from_json(&json!({}))?,
+            run_id: successor.clone(),
+            parent_run_id: Some(predecessor.clone()),
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        },
+    )
+    .await?;
+    store
+        .schedule_timer(&workflow_id, &deadline_id, Utc::now())
+        .await?;
+    let head = store
+        .read_history(&workflow_id)
+        .await?
+        .iter()
+        .map(Event::seq)
+        .max()
+        .unwrap_or_default();
+
+    // The live successor holds a registered recorder at the current head.
+    let registry = Arc::new(Registry::default());
+    let successor_recorder =
+        crate::durability::Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), head);
+    let handle = WorkflowHandle::new(WorkflowHandleParts {
+        workflow_id: workflow_id.clone(),
+        run_id: successor.clone(),
+        pid: 1,
+        workflow_type: "checkout".to_owned(),
+        namespace: String::from("default"),
+        loaded_version: aion_package::ContentHash::from_bytes([9; 32]),
+        cached_status: WorkflowStatus::Running,
+        residency: HandleResidency::Resident,
+        recorder: successor_recorder,
+        completion: CompletionNotifier::new(),
+    });
+    registry.insert((workflow_id.clone(), successor.clone()), handle.clone())?;
+
+    let context = StartupRecoveryContext {
+        store: Arc::clone(&store),
+        visibility_store: Arc::new(InMemoryStore::default()),
+        runtime: Arc::clone(&runtime),
+        catalog: Arc::new(WorkflowCatalog::new()),
+        registry: Arc::clone(&registry),
+        supervision: Arc::new(SupervisionTree::new()),
+        recovery: None,
+        search_attribute_schema: Arc::new(SearchAttributeSchema::new()),
+        bootstrap_schedule_coordinator: false,
+    };
+
+    sweep_uncancelled_terminal_deadlines(&context).await?;
+
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&history, &predecessor),
+        None,
+        "the predecessor deadline is retired: {history:#?}"
+    );
+    // The successor recorder is NOT staled: its next durable append still lands.
+    {
+        let recorder = handle.recorder();
+        let mut recorder = recorder.lock().await;
+        recorder
+            .record_workflow_completed(Utc::now(), Payload::from_json(&json!("succeeded"))?)
+            .await
+            .map_err(|error| format!("the successor recorder was staled by the sweep: {error}"))?;
+    }
     runtime.shutdown()?;
     Ok(())
 }
