@@ -350,6 +350,41 @@ fn targeted_heap_ops_declare_accurate_live() -> TestResult {
     Ok(())
 }
 
+/// Targeted (BC-5 review blocker 4): a value prepared in `x0` before a
+/// `TestHeap` and handed back by the following `Return` must be counted `Live`.
+/// The decoded slice `move nil -> x0; TestHeap Live=n; Return` reads `x0` at the
+/// `Return` (its ABI result), so the live-`X` root high-water across the heap op
+/// is 1: `Live=1` is accurate and `Live=0` — which would let a GC at the heap
+/// check clear the term `Return` consumes — is rejected. This pins that the
+/// shared read classifier models `Return`'s implicit `x0` read; without it the
+/// backward liveness computes an empty set at the heap op and wrongly accepts
+/// `Live=0`.
+#[test]
+fn return_keeps_x0_live_across_a_preceding_heap_op() -> TestResult {
+    let prepared = |live: u64| {
+        vec![
+            Instruction::Move {
+                source: Operand::Atom(None),
+                destination: Operand::X(0),
+            },
+            Instruction::TestHeap {
+                heap_need: Operand::Unsigned(2),
+                live: Operand::Unsigned(live),
+            },
+            Instruction::Return,
+        ]
+    };
+    // Live=1 counts the x0 that `Return` consumes: accurate.
+    assert_live_accuracy("return_live::accurate", &prepared(1))?;
+    // Live=0 would let GC clear the returned value: rejected.
+    assert!(
+        assert_live_accuracy("return_live::cleared", &prepared(0)).is_err(),
+        "Live=0 on a heap op before `Return` did not go red — the read classifier \
+         does not model `Return`'s implicit x0 read"
+    );
+    Ok(())
+}
+
 /// The oracle-mutation test (BC-5 review blocker 8): a deliberately wrong `Live`
 /// makes the R8 accuracy assertion go RED. Take a real decoded heap op, bump its
 /// declared `Live` by one, and prove `assert_live_accuracy` now errs — the

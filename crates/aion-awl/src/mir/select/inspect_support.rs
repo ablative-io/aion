@@ -385,10 +385,16 @@ fn push_x(operand: &Operand, into: &mut Vec<u32>) {
 
 /// The `X` registers an instruction reads (a call reads its argument registers,
 /// `call_fun` also the fun in `x(arity)`; a heap/put/test op reads its element
-/// or subject registers; a `Move` reads its source).
+/// or subject registers; a `Move` reads its source; a `Return` reads `x0`, the
+/// value it hands back by ABI — BC-5 review blocker 4).
 fn x_reads(instruction: &Instruction) -> Vec<u32> {
     let mut reads = Vec::new();
     match instruction {
+        // A `Return` consumes the ABI result register `x0`. Modeling this
+        // implicit read keeps the backward-liveness `Live` and the forward
+        // must-define analyses from accepting a `Return` of a cleared/undefined
+        // `x0` (BC-5 review blocker 4).
+        Instruction::Return => reads.push(0),
         Instruction::Move { source, .. } => push_x(source, &mut reads),
         Instruction::Call { arity, .. }
         | Instruction::CallOnly { arity, .. }
