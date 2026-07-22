@@ -22,9 +22,13 @@
 //!   parse of the same source lexeme.
 //! - Writer contract: canonical chunk order, `AtU8`+`Code` always present, and
 //!   every optional chunk present IFF its decoded table is non-empty (the
-//!   header-count/nonempty contract), with no foreign chunk. beamr's decoder
-//!   stops at end-of-bytes and models no `int_code_end`, so the "no terminator"
-//!   contract is inherent in a total decode rather than a byte-hunt.
+//!   header-count/nonempty contract), with no foreign chunk. The "no
+//!   `int_code_end` terminator" row is NOT witnessed by a successful decode:
+//!   beamr's decoder reads opcodes until it SEES opcode `3`, then breaks and
+//!   returns `Ok`, silently dropping that terminator and anything after it. It is
+//!   proven writer-independently by `assert_code_stream_fully_consumed` — the
+//!   declared `Code` stream's last byte must be load-bearing (removing it must
+//!   change the decoded instructions), which a trailing terminator never is.
 //!
 //! Rows pinned inside `aion-awl` are referenced, not duplicated: IR-5/6/7/8
 //! (Option/Result/record/enum reps) execute under
@@ -33,7 +37,7 @@
 //! `src/mir/select/assemble.rs`.
 
 use beamr::atom::AtomTable;
-use beamr::loader::decode::{Instruction, Literal};
+use beamr::loader::decode::{Instruction, Literal, decode_instructions};
 use beamr::loader::encode::encode_module;
 use beamr::loader::load::ParsedModule;
 use beamr::loader::{load_beam_chunks, parse_beam_chunks};
@@ -311,11 +315,18 @@ async fn int_code_end_terminator_is_rejected() -> TestResult {
          otherwise the mutation would be caught trivially, not by the row's check"
     );
 
-    // ...and the writer contract MUST reject it.
+    // ...and the consumption oracle MUST reject it REGARDLESS of how it was
+    // produced. `inject_int_code_end` writes exactly the bytes a regressed writer
+    // would emit — append opcode 3, bump the declared Code length by one, consume
+    // a padding byte — and the oracle reads only the decoder and the declared
+    // length, never `encode_module`. So it cannot distinguish, and rejects alike,
+    // an externally injected terminator and a writer-originated one. This single
+    // case therefore covers both provenances.
     assert!(
         assert_code_stream_fully_consumed(&mutated).is_err(),
         "int_code_end terminator was NOT rejected — the no-terminator row is vacuous"
     );
+    // The writer contract calls that oracle, so it rejects the terminator too.
     assert!(
         assert_writer_contract(&mutated).is_err(),
         "the writer contract must reject an int_code_end terminator"
@@ -461,37 +472,112 @@ fn assert_writer_contract(bytes: &[u8]) -> TestResult {
         label_count, max_label,
         "Code label_count must equal the highest Label in the stream (derived, never hand-set)"
     );
-    // No `int_code_end` terminator (writer-contract row). A successful decode
-    // does NOT prove this: beamr's decoder reads opcodes until it SEES opcode 3,
-    // then breaks and returns Ok, silently discarding anything after. So instead
-    // prove the ENTIRE Code instruction stream is accounted for.
+    // Round-trip fidelity (a real property, NOT the no-terminator evidence):
+    // decode -> encode -> the Code body reproduces byte-for-byte, so for this
+    // module the writer is an exact inverse of the decoder.
+    assert_code_roundtrip_fidelity(bytes)?;
+    // No `int_code_end` terminator (writer-contract row, `AWL-BC-IR.md`). Proven
+    // WITHOUT the writer: a successful decode cannot witness the terminator's
+    // absence (the decoder breaks at opcode 3 and drops it), so require instead
+    // the declared Code stream's last byte to be load-bearing.
     assert_code_stream_fully_consumed(bytes)?;
     Ok(())
 }
 
-/// Proves the Code chunk carries NO trailing bytes for an `int_code_end`
-/// terminator (or any other opcode) to hide in: the decoded instruction stream,
-/// re-encoded by beamr's own encoder, must reproduce the Code chunk body
-/// BYTE-FOR-BYTE. Appending `int_code_end` (opcode 3) makes the original Code
-/// body one byte longer, but the decoder stops at opcode 3 and drops it, so the
-/// re-encode is shorter and this returns `Err`.
+/// Proves — WITHOUT the module writer — that the declared `Code` instruction
+/// stream ends in a genuine, load-bearing instruction byte: it carries no
+/// trailing `int_code_end` terminator (opcode `3`) nor any other inert tail byte
+/// for a forbidden opcode to hide in.
 ///
-/// Kills the mutation: "append `int_code_end` to the Code instruction stream"
-/// (proven executable by `int_code_end_terminator_is_rejected`).
+/// # Why a successful decode is not enough
+///
+/// `int_code_end` is opcode `3`. beamr's Code decoder (`decode/code.rs`) reads
+/// opcodes until it SEES opcode `3`, then breaks and returns `Ok`, NEVER
+/// materialising the terminator as an `Instruction` and silently discarding
+/// whatever follows. So `load_beam_chunks` succeeding says nothing about a
+/// terminator's presence.
+///
+/// # Why this oracle cannot be fooled by a self-consistent writer regression
+///
+/// It never calls `encode_module` (the writer under test). Its only inputs are
+/// beamr's DECODER and the `Code` chunk's own declared length.
+/// `parse_beam_chunks` returns each chunk body at its DECLARED length, not the
+/// 4-byte-padded container length (`parser.rs`), so `body[20..]` is exactly the
+/// declared instruction stream with no padding riding along — the
+/// declared-vs-padded distinction the `inject_int_code_end` helper exploits.
+///
+/// The witness is whether the stream's LAST byte is load-bearing. We decode the
+/// declared stream, then decode it again with its final byte removed:
+///
+/// * A trailing terminator (or any byte the decoder drops) is not turned into an
+///   instruction, so removing it leaves the decoded sequence UNCHANGED — the byte
+///   was inert, so reject.
+/// * With no terminator, the final byte belongs to the last real instruction, so
+///   removing it truncates that instruction's operand read (a decode error) or
+///   deletes a zero-operand final opcode; either way the sequence CHANGES — the
+///   declared stream is fully consumed by instructions, so accept.
+///
+/// This defeats the padding-exploiting mutation that a naive "the decoder's read
+/// cursor reached the declared end" position probe cannot: that mutation parks
+/// the terminator as the very LAST declared byte, so the decoder still advances
+/// its cursor to the end (reading, then dropping, the terminator) and a position
+/// probe reports full consumption. This oracle asks whether the last byte MEANT
+/// anything, not merely whether it was read — and a terminator never does.
+///
+/// Kills two mutations: an externally injected terminator AND a writer-originated
+/// one. `inject_int_code_end` produces bytes byte-identical to what a regressed
+/// writer would emit, so rejecting them rejects the writer-originated case too —
+/// the oracle cannot tell, or care, how the terminator got there.
 ///
 /// # Errors
 ///
-/// Returns an error when the re-encoded Code body differs from the original.
+/// Returns an error when the declared stream's last byte is inert (a trailing
+/// terminator or opcode), i.e. when the stream is not fully consumed.
 fn assert_code_stream_fully_consumed(bytes: &[u8]) -> TestResult {
+    let (_table, parsed) = decode(bytes)?;
+    let code = code_chunk_body(bytes)?;
+    // `body[20..]` is the declared instruction stream, past the 20-byte Code
+    // sub-header (five `u32` fields at offsets 0..20; the `sub_size` field's value
+    // of 16 counts the four fields that follow it).
+    let stream = code
+        .get(20..)
+        .ok_or("Code chunk shorter than its 20-byte sub-header")?;
+    let last = stream
+        .len()
+        .checked_sub(1)
+        .ok_or("empty Code instruction stream")?;
+    let (full, _) = decode_instructions(stream, &parsed.atoms, &parsed.literals)?;
+    match decode_instructions(&stream[..last], &parsed.atoms, &parsed.literals) {
+        Ok((truncated, _)) if truncated == full => Err(
+            "the declared Code instruction stream ends in an inert byte (an \
+             int_code_end terminator or trailing opcode): dropping its last byte \
+             left the decoded instruction sequence unchanged, so no real \
+             instruction owns that byte"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Round-trip fidelity check (a real property, NOT the no-terminator evidence):
+/// the decoded module, re-encoded by beamr's own `encode_module`, must reproduce
+/// the `Code` chunk body BYTE-FOR-BYTE — so for this module the writer is an
+/// exact inverse of the decoder. The no-terminator row is proven separately and
+/// writer-independently by `assert_code_stream_fully_consumed`; this assertion
+/// must NOT be read as evidence for it, since a writer that emitted a terminator
+/// would reproduce it here, self-consistently.
+///
+/// # Errors
+///
+/// Returns an error when the re-encoded `Code` body differs from the original.
+fn assert_code_roundtrip_fidelity(bytes: &[u8]) -> TestResult {
     let (table, parsed) = decode(bytes)?;
     let reencoded = encode_module(&parsed, &table)?;
     let original_code = code_chunk_body(bytes)?;
     let reencoded_code = code_chunk_body(&reencoded)?;
     if original_code != reencoded_code {
         return Err(format!(
-            "the Code chunk instruction stream is not fully consumed by the decoded \
-             instructions (original {} bytes vs re-encoded {} bytes) — a trailing \
-             terminator or opcode is hiding after the stream",
+            "the re-encoded Code body differs from the original ({} vs {} bytes)",
             original_code.len(),
             reencoded_code.len()
         )
