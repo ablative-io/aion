@@ -10,7 +10,7 @@ use std::{
 use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    BeamSet, Manifest, ManifestVersion, PackageError, content_hash, content_hash_with_timeout,
+    BeamSet, Manifest, ManifestVersion, PackageError, content_hash, content_hash_with_timeouts,
 };
 
 /// Deterministic writer for the `.aion` ZIP container format.
@@ -109,11 +109,19 @@ impl PackageBuilder {
         }
 
         let hash = if self.explicit_timeout_identity {
-            let timeout = self
-                .manifest
-                .timeout
-                .ok_or(PackageError::ExplicitTimeoutWithoutValue)?;
-            content_hash_with_timeout(&self.beams, timeout)
+            // At least one entry (the primary or an additional workflow) must
+            // declare a timeout for the explicit-timeout identity to mean
+            // anything; an all-absent opt-in is a caller mistake.
+            let any_declared = self.manifest.timeout.is_some()
+                || self
+                    .manifest
+                    .additional_workflows
+                    .iter()
+                    .any(|entry| entry.timeout.is_some());
+            if !any_declared {
+                return Err(PackageError::ExplicitTimeoutWithoutValue);
+            }
+            content_hash_with_timeouts(&self.beams, &self.manifest)
         } else {
             content_hash(&self.beams)
         };

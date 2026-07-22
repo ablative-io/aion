@@ -127,7 +127,15 @@ pub fn assemble_awl(
     };
 
     let mut builder = PackageBuilder::new(manifest, beams);
-    if opts.timeout.is_some() {
+    // Opt into the per-entry timeout-bearing identity when ANY entry — the
+    // primary document or a synthesized additional workflow — declares a
+    // timeout, so every declared value is authenticated into the version hash.
+    let any_declared = opts.timeout.is_some()
+        || compiled
+            .synthesized_workflows
+            .iter()
+            .any(|entry| entry.timeout.is_some());
+    if any_declared {
         builder = builder.with_explicit_timeout_identity();
     }
     Ok(builder.write_to_bytes()?)

@@ -114,12 +114,13 @@ impl<'a> StagedLoad<'a> {
     pub(crate) fn new(package: &'a Package) -> Result<Self, EngineError> {
         let manifest = package.manifest();
         let version = package.content_hash().clone();
-        // Declaredness is a tamper-evident, package-level property of the
-        // content-hash identity: when the package does not commit to a declared
-        // timeout, EVERY entry's timeout is held non-arming (`None`), so a
-        // legacy or defaulted manifest arms nothing regardless of what value its
-        // `timeout` field happens to carry.
-        let declared = package.has_declared_timeout();
+        // Declaredness is a tamper-evident, authenticated PER-ENTRY property of
+        // the content-hash identity: the timeout-bearing identity binds every
+        // entry's timeout, so `declared_entry_timeout` returns an entry's authored
+        // value only when the identity commits to it. A legacy or defaulted
+        // manifest — or one whose additional entries were not bound — reads as
+        // wholly undeclared, so each entry's timeout is held non-arming (`None`)
+        // regardless of what value its `timeout` field happens to carry.
         let mut seen = HashSet::new();
         let mut workflows = Vec::with_capacity(1 + manifest.additional_workflows.len());
         let entries = std::iter::once((
@@ -151,7 +152,7 @@ impl<'a> StagedLoad<'a> {
                 workflow_type: workflow_type.to_owned(),
                 deployed_entry_module: aion_package::deployed_name(entry_module, &version),
                 entry_function: entry_function.to_owned(),
-                declared_timeout: if declared { entry_timeout } else { None },
+                declared_timeout: package.declared_entry_timeout(entry_timeout),
             });
         }
         let modules = package

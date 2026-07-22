@@ -147,8 +147,27 @@ impl Package {
     /// legacy or defaulted manifest yields no deadline.
     #[must_use]
     pub fn declared_timeout(&self) -> Option<std::time::Duration> {
+        self.declared_entry_timeout(self.manifest.timeout)
+    }
+
+    /// The authenticated authored timeout for an entry carrying `entry_timeout`.
+    ///
+    /// This is the per-entry declaredness authority: the timeout-bearing
+    /// identity binds EVERY entry's timeout (primary and additional), so when
+    /// [`Self::has_declared_timeout`] is true each entry's manifest `timeout` is
+    /// authenticated and returned verbatim. When the identity is legacy
+    /// (beams-only) — or does not verify against the full per-entry timeout
+    /// vector — every entry reads as undeclared and arms nothing, regardless of
+    /// what `timeout` value a manifest entry happens to carry. Callers pass the
+    /// primary entry's `manifest.timeout` or an additional
+    /// [`crate::WorkflowEntry::timeout`]; the gate is identical for both.
+    #[must_use]
+    pub fn declared_entry_timeout(
+        &self,
+        entry_timeout: Option<std::time::Duration>,
+    ) -> Option<std::time::Duration> {
         if self.has_declared_timeout() {
-            self.manifest.timeout
+            entry_timeout
         } else {
             None
         }

@@ -10,6 +10,7 @@ use crate::{BeamSet, Manifest, PackageError};
 const DIGEST_LEN: usize = 32;
 const TEXT_LEN: usize = DIGEST_LEN * 2;
 const WORKFLOW_TIMEOUT_DOMAIN: &[u8] = b"aion.package.version.workflow-timeout.v1";
+const WORKFLOW_TIMEOUTS_DOMAIN: &[u8] = b"aion.package.version.workflow-timeouts.v2";
 
 /// A SHA-256 package version identity.
 ///
@@ -77,6 +78,10 @@ pub fn content_hash(beams: &BeamSet) -> ContentHash {
 /// then the framed ASCII domain `aion.package.version.workflow-timeout.v1`,
 /// then exactly 12 timeout bytes: seconds as `u64` big-endian followed by
 /// subsecond nanoseconds as `u32` big-endian.
+///
+/// This single-entry form is retained for external callers; the per-entry
+/// [`content_hash_with_timeouts`] is the authority the loader trusts, because it
+/// binds every workflow entry's timeout — not only the primary — into identity.
 #[must_use]
 pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentHash {
     let mut digest = Sha256::new();
@@ -87,25 +92,53 @@ pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentH
     ContentHash(digest.finalize().into())
 }
 
-/// Whether this package's version identity commits to an explicitly authored
-/// workflow timeout.
+/// Computes the per-entry timeout-bearing package version over the canonical
+/// BEAM set, then the framed ASCII domain
+/// `aion.package.version.workflow-timeouts.v2`, then a canonical encoding of
+/// EVERY entry's authored timeout: the primary entry's timeout, the additional
+/// entry count as `u64` big-endian, then for each additional entry (in manifest
+/// order) its framed `workflow_type` bytes and its authored timeout.
 ///
-/// True only when the stored content hash is the domain-separated
-/// timeout-bearing identity over exactly `manifest.timeout` — never the
-/// beams-only legacy identity. A manifest that merely carries a defaulted
-/// `timeout` value under a legacy (beams-only) hash therefore reads as NOT
-/// declared, so a legacy archive can never arm a deadline. The check is
-/// tamper-evident: the timeout value returned by [`crate::Package`] is provably
-/// the one baked into the version hash, so a hand-edited timeout that was not
-/// part of the identity cannot fake declaredness.
+/// Each authored timeout is encoded presence-first (a single `1`/`0` byte),
+/// followed — only when present — by seconds as `u64` big-endian and subsecond
+/// nanoseconds as `u32` big-endian. Binding presence AND value AND the entry's
+/// own routing identity means no additional entry's timeout can be swapped,
+/// added, or removed without changing the version hash: declaredness is an
+/// authenticated per-entry property, not a package-wide inference from the
+/// primary alone.
+#[must_use]
+pub fn content_hash_with_timeouts(beams: &BeamSet, manifest: &Manifest) -> ContentHash {
+    let mut digest = Sha256::new();
+    update_beams(&mut digest, beams);
+    update_framed(&mut digest, WORKFLOW_TIMEOUTS_DOMAIN);
+    update_timeout_field(&mut digest, manifest.timeout);
+    let additional = &manifest.additional_workflows;
+    digest.update((additional.len() as u64).to_be_bytes());
+    for entry in additional {
+        update_framed(&mut digest, entry.workflow_type.as_bytes());
+        update_timeout_field(&mut digest, entry.timeout);
+    }
+    ContentHash(digest.finalize().into())
+}
+
+/// Whether this package's version identity commits to explicitly authored
+/// per-entry workflow timeouts.
+///
+/// True only when the stored content hash is the domain-separated per-entry
+/// timeout-bearing identity ([`content_hash_with_timeouts`]) — never the
+/// beams-only legacy identity. A legacy (beams-only) archive, or one whose
+/// primary timeout was bound but whose additional entries were not, therefore
+/// reads as wholly NOT declared: no entry can arm a deadline. The check is
+/// tamper-evident: the timeout value returned by [`crate::Package`] for any
+/// entry is provably the one baked into the version hash, so a hand-edited or
+/// injected per-entry timeout that was not part of the identity cannot fake
+/// declaredness.
 pub(crate) fn has_explicit_timeout_identity(
     beams: &BeamSet,
     manifest: &Manifest,
     hash: &ContentHash,
 ) -> bool {
-    manifest.timeout.is_some_and(|timeout| {
-        hash != &content_hash(beams) && hash == &content_hash_with_timeout(beams, timeout)
-    })
+    hash != &content_hash(beams) && hash == &content_hash_with_timeouts(beams, manifest)
 }
 
 pub(crate) fn verified_content_hash(
@@ -117,16 +150,29 @@ pub(crate) fn verified_content_hash(
     if stored == legacy_hash.to_string() {
         return Ok(legacy_hash);
     }
-    if let Some(timeout) = manifest.timeout {
-        let timeout_hash = content_hash_with_timeout(beams, timeout);
-        if stored == timeout_hash.to_string() {
-            return Ok(timeout_hash);
-        }
+    let timeouts_hash = content_hash_with_timeouts(beams, manifest);
+    if stored == timeouts_hash.to_string() {
+        return Ok(timeouts_hash);
     }
     Err(PackageError::IntegrityMismatch {
         expected: stored.to_owned(),
         computed: legacy_hash.to_string(),
     })
+}
+
+/// Frames one entry's optional authored timeout into the digest: a presence
+/// byte, then seconds (`u64` big-endian) and subsecond nanoseconds (`u32`
+/// big-endian) only when a timeout is present. An absent timeout contributes
+/// exactly the `0` presence byte, so presence and value are both bound.
+fn update_timeout_field(digest: &mut Sha256, timeout: Option<Duration>) {
+    match timeout {
+        Some(timeout) => {
+            digest.update([1_u8]);
+            digest.update(timeout.as_secs().to_be_bytes());
+            digest.update(timeout.subsec_nanos().to_be_bytes());
+        }
+        None => digest.update([0_u8]),
+    }
 }
 
 fn update_beams(digest: &mut Sha256, beams: &BeamSet) {
@@ -219,8 +265,42 @@ impl de::Visitor<'_> for ContentHashVisitor {
 mod tests {
     use std::time::Duration;
 
-    use super::{ContentHash, content_hash, content_hash_with_timeout};
-    use crate::{BeamModule, BeamSet, PackageError};
+    use serde_json::json;
+
+    use super::{
+        ContentHash, content_hash, content_hash_with_timeout, content_hash_with_timeouts,
+        has_explicit_timeout_identity,
+    };
+    use crate::{
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, Manifest, ManifestVersion, PackageError,
+        WorkflowEntry,
+    };
+
+    fn manifest_with(primary: Option<Duration>, additional: Vec<WorkflowEntry>) -> Manifest {
+        Manifest {
+            entry_module: "workflow/a".to_owned(),
+            entry_function: "run".to_owned(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            timeout: primary,
+            activities: Vec::new(),
+            version: ManifestVersion::new("unstamped"),
+            format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: additional,
+        }
+    }
+
+    fn additional_entry(workflow_type: &str, timeout: Option<Duration>) -> WorkflowEntry {
+        WorkflowEntry {
+            workflow_type: workflow_type.to_owned(),
+            entry_module: "workflow/a".to_owned(),
+            entry_function: format!("{workflow_type}_run"),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            timeout,
+            internal: true,
+        }
+    }
 
     #[test]
     fn content_hash_is_independent_of_insertion_order() -> Result<(), PackageError> {
@@ -266,6 +346,81 @@ mod tests {
             content_hash_with_timeout(&beams, Duration::new(7_200, 500_000_000))
         );
         assert_ne!(two_hours, content_hash(&beams));
+        Ok(())
+    }
+
+    #[test]
+    fn per_entry_identity_binds_every_additional_entry_timeout() -> Result<(), PackageError> {
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let base = manifest_with(
+            Some(Duration::from_secs(60)),
+            vec![additional_entry("child", Some(Duration::from_secs(30)))],
+        );
+
+        // Changing an additional entry's timeout value changes the identity.
+        let changed_value = manifest_with(
+            Some(Duration::from_secs(60)),
+            vec![additional_entry("child", Some(Duration::from_secs(31)))],
+        );
+        assert_ne!(
+            content_hash_with_timeouts(&beams, &base),
+            content_hash_with_timeouts(&beams, &changed_value),
+        );
+
+        // Adding an unbound additional timeout (the mixed-archive attack) changes
+        // the identity: it cannot ride the primary's declaredness.
+        let injected = manifest_with(
+            Some(Duration::from_secs(60)),
+            vec![additional_entry("child", Some(Duration::from_secs(3_600)))],
+        );
+        assert_ne!(
+            content_hash_with_timeouts(&beams, &base),
+            content_hash_with_timeouts(&beams, &injected),
+        );
+
+        // Presence alone (Some vs None) changes the identity.
+        let absent = manifest_with(
+            Some(Duration::from_secs(60)),
+            vec![additional_entry("child", None)],
+        );
+        assert_ne!(
+            content_hash_with_timeouts(&beams, &base),
+            content_hash_with_timeouts(&beams, &absent),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_archive_with_injected_additional_timeout_reads_as_undeclared()
+    -> Result<(), PackageError> {
+        // A package whose stored hash bound ONLY the primary timeout (the old
+        // single-entry identity) but which carries an additional entry with an
+        // unauthenticated `Some(1h)` must read as wholly undeclared under the
+        // per-entry identity: the stored hash matches neither the legacy nor the
+        // per-entry timeout-bearing hash.
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let manifest = manifest_with(
+            Some(Duration::from_secs(60)),
+            vec![additional_entry("child", Some(Duration::from_secs(3_600)))],
+        );
+        // The attacker stamps the primary-only identity as the version.
+        let primary_only = content_hash_with_timeout(&beams, Duration::from_secs(60));
+        assert!(
+            !has_explicit_timeout_identity(&beams, &manifest, &primary_only),
+            "an injected additional timeout cannot ride the primary-only identity"
+        );
+        // The beams-only legacy identity is likewise undeclared.
+        assert!(!has_explicit_timeout_identity(
+            &beams,
+            &manifest,
+            &content_hash(&beams)
+        ));
+        // Only the full per-entry identity authenticates every entry.
+        assert!(has_explicit_timeout_identity(
+            &beams,
+            &manifest,
+            &content_hash_with_timeouts(&beams, &manifest)
+        ));
         Ok(())
     }
 
