@@ -110,14 +110,28 @@ pub(super) async fn recover_adopted_shards(
     .await?;
     // Repair a dead owner's orphaned non-timeout terminal deadline on the
     // surviving adopter BEFORE repopulating/spawning the acquired shards'
-    // recovered processes — under the established shard fence. At this point the
-    // adopter holds NO local handle for any acquired-shard workflow (they were the
-    // dead owner's), so the independent recorder is the sole writer, exactly like
-    // cold boot. `SweepScope::Adoption` skips an already-owned resident workflow
-    // (which legitimately holds a live handle) rather than writing around it, so
-    // an already-owned workflow's live recorder is never staled. Covers both due
-    // and future deadline rows, which `rearm_future_from_active_histories`
-    // (list_active only) would miss.
+    // recovered processes — under the established shard fence. Ordering removes
+    // every RECOVERY-path writer from this sweep's window (nothing on the acquired
+    // shards is repopulated or spawned yet), but it does NOT exclude public
+    // post-fence actors: adoption has already published shard ownership, so
+    // `reopen_workflow` (and other public writers) can append for an acquired
+    // workflow concurrently. The sweep is therefore an OPTIMISTIC writer arbitrated
+    // at the store's per-workflow sequence check by the complete repair predicate
+    // (see `startup_sweeps::sweep_uncancelled_terminal_deadlines`). `SweepScope::Adoption`
+    // skips an already-owned resident workflow (which legitimately holds a live
+    // handle) rather than writing around it. Covers both due and future deadline
+    // rows, which `rearm_future_from_active_histories` (list_active only) would miss.
+    //
+    // Known pre-existing race (NOT introduced here, and NOT widened by this sweep):
+    // `repopulate_active_workflows` below can observe a durable `WorkflowReopened`
+    // while production reopen has appended but not yet registered its handle, and
+    // its single `live_pid` check-then-spawn is unarbitrated while `Registry::insert`
+    // silently replaces — so adoption and reopen can both publish a resident for one
+    // `(workflow, run)`. This is reachable on any reopen-versus-adoption overlap with
+    // no sweep candidate at all; it is BOARDED as a separate follow-up lane (atomic
+    // resident-publication arbitration: `insert_if_absent`/pre-spawn reservation,
+    // loser cancels its spawn, full-path barrier test). The deadline sweep neither
+    // creates nor widens that window.
     sweep_uncancelled_terminal_deadlines(&context, SweepScope::Adoption).await?;
     let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
