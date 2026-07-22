@@ -27,14 +27,14 @@ use super::inspect_analysis::{
     assert_live_accuracy, check_framed, check_frameless, check_function, expected_framed,
     flow_named, flow_returns, function_arity, is_known, local_target_arities,
 };
-use super::inspect_cfg::{reachable_from_entry, x_safety_violations};
+use super::inspect_cfg::{reachable_from_entry, reachable_without_tail, x_safety_violations};
 use super::inspect_expect::check_marshaling;
 use super::inspect_support::{
     decode, decode_bytes, destinations, functions, heap_live, instruction_operands, is_call,
     lowered_fixtures, make_fun_num_free, manifest_dir, name_of, operand_has_y,
     with_explicit_make_fun_reads,
 };
-use super::ir::Body;
+use super::ir::{Body, TailKind};
 use crate::mir::covered::COVERED;
 use crate::mir::{
     AtomRef, Block, FlowFn, FnOrigin, FnRef, MirFn, MirModule, RuntimeFn, Span, Stmt, Tail, TyDesc,
@@ -827,6 +827,125 @@ fn local_tail_targets(code: &[Instruction], local_arities: &BTreeMap<u32, u32>) 
         .collect()
 }
 
+/// The index of a framed function's shared exit `Deallocate` (the one
+/// immediately followed by `Return`).
+fn shared_exit_dealloc(code: &[Instruction]) -> Option<usize> {
+    code.windows(2).position(|pair| {
+        matches!(pair[0], Instruction::Deallocate { .. }) && matches!(pair[1], Instruction::Return)
+    })
+}
+
+/// The selected body whose function-name atom resolves to `name`.
+fn body_named<'b>(bodies: &'b [Body], emit_atoms: &AtomTable, name: &str) -> Option<&'b Body> {
+    bodies
+        .iter()
+        .find(|body| name_of(emit_atoms, body.name) == name)
+}
+
+/// Whether a selected tail reaches a `Return` on any branch arm.
+fn tail_returns(tail: &TailKind) -> bool {
+    match tail {
+        TailKind::Return(_) => true,
+        TailKind::If {
+            then_block,
+            else_block,
+            ..
+        } => tail_returns(&then_block.tail) || tail_returns(&else_block.tail),
+        TailKind::SelectEnum { arms, .. } => {
+            arms.iter().any(|(_, block)| tail_returns(&block.tail))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a selected tail reaches a LOCAL tail call on any branch arm.
+fn tail_has_local_tail(tail: &TailKind) -> bool {
+    match tail {
+        TailKind::TailLocal { .. } => true,
+        TailKind::If {
+            then_block,
+            else_block,
+            ..
+        } => tail_has_local_tail(&then_block.tail) || tail_has_local_tail(&else_block.tail),
+        TailKind::SelectEnum { arms, .. } => arms
+            .iter()
+            .any(|(_, block)| tail_has_local_tail(&block.tail)),
+        _ => false,
+    }
+}
+
+/// Whether a selected tail reaches ANY tail call (local or external) on any arm.
+fn tail_has_any_tail_call(tail: &TailKind) -> bool {
+    match tail {
+        TailKind::TailLocal { .. } | TailKind::TailImport { .. } => true,
+        TailKind::If {
+            then_block,
+            else_block,
+            ..
+        } => tail_has_any_tail_call(&then_block.tail) || tail_has_any_tail_call(&else_block.tail),
+        TailKind::SelectEnum { arms, .. } => arms
+            .iter()
+            .any(|(_, block)| tail_has_any_tail_call(&block.tail)),
+        TailKind::Return(_) => false,
+    }
+}
+
+/// Proves a decoded function's Return-route arm(s) genuinely RETURN (BC-5 review
+/// blocker 7): no external tail transfer (`call_ext_last`/`call_ext_only`)
+/// anywhere; no local tail (`call_last`/`call_only`) either unless
+/// `allow_local_tail` (the one legitimate route-to-step tail, e.g. `route push`);
+/// and the shared `Deallocate; Return` exit is reachable from entry by a path
+/// carrying NO tail transfer at all. A Return arm regressed to a local or external
+/// tail removes the only edge to the exit and/or introduces a forbidden tail, so
+/// the check goes red.
+fn return_route_reaches_exit(code: &[Instruction], allow_local_tail: bool) -> TestResult {
+    if code.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::CallExtLast { .. } | Instruction::CallExtOnly { .. }
+        )
+    }) {
+        return Err("a Return-route function carries an external tail transfer".into());
+    }
+    if !allow_local_tail
+        && code.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::CallLast { .. } | Instruction::CallOnly { .. }
+            )
+        })
+    {
+        return Err("a pure-return function carries a local tail transfer".into());
+    }
+    let exit = shared_exit_dealloc(code).ok_or("no shared `Deallocate; Return` exit")?;
+    if !reachable_without_tail(code).contains(&exit) {
+        return Err(
+            "the shared `Deallocate; Return` exit is not reachable by a no-tail path — the \
+             Return route was replaced by a tail transfer"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Replaces the first `jump exit` (a Return arm's transfer to the shared exit)
+/// with an external tail call — the mutation the Return-route oracle must reject.
+fn replace_exit_jump_with_external_tail(
+    code: &[Instruction],
+    exit: u32,
+) -> Option<Vec<Instruction>> {
+    let at = code.iter().position(
+        |instruction| matches!(instruction, Instruction::Jump { target: Operand::Label(t) } if *t == exit),
+    )?;
+    let mut out = code.to_vec();
+    out[at] = Instruction::CallExtLast {
+        arity: Operand::Unsigned(0),
+        import: Operand::Unsigned(0),
+        deallocate: Operand::Unsigned(0),
+    };
+    Some(out)
+}
+
 /// Targeted route-to-step tail call (BC-5 review blocker 7): the SPECIFIC caller →
 /// target edge in `sequence_region_loopback`. The `confirm` step has two outcomes
 /// — `retry` (`route push`) and `move_on` (`route settle`). `route push` re-enters
@@ -842,9 +961,8 @@ fn local_tail_targets(code: &[Instruction], local_arities: &BTreeMap<u32, u32>) 
 /// existential search that any unrelated chain fall-through satisfied.
 #[test]
 fn targeted_route_to_step_is_a_local_tail_call() -> TestResult {
-    let (parsed, table) = decode(&fixture_module(
-        "flow-shape/valid/sequence_region_loopback",
-    )?)?;
+    let module = fixture_module("flow-shape/valid/sequence_region_loopback")?;
+    let (parsed, table) = decode(&module)?;
     let local_arities = local_target_arities(&parsed);
     let decoded = functions(&parsed, &table);
     let find = |name: &str| decoded.iter().find(|function| function.name == name);
@@ -894,35 +1012,86 @@ fn targeted_route_to_step_is_a_local_tail_call() -> TestResult {
         )
         .into());
     }
+
+    // The settle arm (`route settle` = the region collect exit) genuinely RETURNS,
+    // not merely "is not a LOCAL tail": no external tail transfer anywhere, and the
+    // shared `Deallocate; Return` exit is reachable by a no-tail path. Independently
+    // anchored on the selected body, whose `confirm` tail carries both a Return arm
+    // (settle) and a `TailLocal` arm (push).
+    let (bodies, emit_atoms) = lower_bodies(&module)?;
+    let confirm_body = body_named(&bodies, &emit_atoms, "awl_r0_ordered_step_confirm")
+        .ok_or("no selected body for step_confirm")?;
+    if !tail_returns(&confirm_body.tail) || !tail_has_local_tail(&confirm_body.tail) {
+        return Err(
+            "the selected step_confirm tail lacks the expected Return (settle) + TailLocal (push) \
+             arms"
+                .into(),
+        );
+    }
+    return_route_reaches_exit(confirm.code, true)?;
+
+    // Mutation: turn the settle Return arm's transfer-to-exit into an external tail
+    // — the exact regression the review named. It must be rejected.
+    let exit = exit_label(confirm.code).ok_or("no shared exit label for step_confirm")?;
+    let mutated = replace_exit_jump_with_external_tail(confirm.code, exit)
+        .ok_or("no exit jump in step_confirm to mutate")?;
+    if return_route_reaches_exit(&mutated, true).is_ok() {
+        return Err(
+            "a settle arm regressed to an external tail was accepted — the Return route is not \
+             pinned"
+                .into(),
+        );
+    }
     Ok(())
 }
 
 /// DIVERGENCE surfaced, not papered over (BC-5 review blocker 7): a
 /// SUCCESS-OUTCOME route (`awl_hello`'s `route shouted`) does NOT lower to a tail
 /// call — `route_tail` (`lower/route.rs:60-71`) builds `Ok(Shouted(payload))` and
-/// RETURNS it (`Tail::Return`). The old targeted test asserted "`awl_hello` emits
-/// a `call_ext_last` for its route", which any unrelated shell/decoder tail
-/// satisfied — the exact weakness the review flagged, resting on a false premise.
-/// The
+/// RETURNS it (`Tail::Return`). Rather than the old `.any()` over every decoded
+/// function (which countless unrelated codec/helper `Deallocate; Return` pairs
+/// satisfy), this selects `step_greet_and_shout` — the function carrying the
+/// `route shouted` arm — and proves THAT arm returns: independently anchored on its
+/// selected tail (a `Return` route with no tail-call arm), it carries no tail
+/// transfer and reaches its shared `Deallocate; Return` exit by a no-tail path.
+/// A mutation turning the shouted arm into an external tail is rejected. The
 /// tail-call claim for routes is proven where it holds (route-to-STEP in
 /// `targeted_route_to_step_is_a_local_tail_call`; loop recursion in
-/// `targeted_loop_recursion_is_a_self_tail_call`). Here the outcome-route shape is
-/// pinned as it truly is: a framed function returns the `{ok, {shouted, …}}`
-/// term through a `Deallocate; Return` exit — not a route tail call.
+/// `targeted_loop_recursion_is_a_self_tail_call`).
 #[test]
 fn awl_hello_outcome_route_returns_not_tail_calls() -> TestResult {
-    let (parsed, table) = decode(&fixture_module("flagship/valid/awl_hello")?)?;
-    let outcome_return = functions(&parsed, &table).iter().any(|function| {
-        function.code.windows(2).any(|pair| {
-            matches!(pair[0], Instruction::Deallocate { .. })
-                && matches!(pair[1], Instruction::Return)
-        })
-    });
-    assert!(
-        outcome_return,
-        "awl_hello has no framed `Deallocate; Return` — its success-outcome route must Return, \
-         not tail-call a `success` runtime function"
-    );
+    let module = fixture_module("flagship/valid/awl_hello")?;
+    let (parsed, table) = decode(&module)?;
+    let step = functions(&parsed, &table)
+        .into_iter()
+        .find(|function| function.name == "step_greet_and_shout")
+        .ok_or("no step_greet_and_shout function decoded")?;
+
+    // Independent anchor: the selected `step_greet_and_shout` tail is a `Return`
+    // route (route shouted), with no tail-call arm — the success-outcome divergence.
+    let (bodies, emit_atoms) = lower_bodies(&module)?;
+    let body = body_named(&bodies, &emit_atoms, "step_greet_and_shout")
+        .ok_or("no selected body for step_greet_and_shout")?;
+    if !tail_returns(&body.tail) || tail_has_any_tail_call(&body.tail) {
+        return Err("the selected step_greet_and_shout tail is not a pure Return route".into());
+    }
+
+    // Decoded: the shouted arm reaches the shared `Deallocate; Return` exit with NO
+    // tail transfer (local or external).
+    return_route_reaches_exit(step.code, false)?;
+
+    // Mutation: turn the shouted Return arm's transfer-to-exit into an external tail
+    // — must be rejected.
+    let exit = exit_label(step.code).ok_or("no shared exit label for step_greet_and_shout")?;
+    let mutated = replace_exit_jump_with_external_tail(step.code, exit)
+        .ok_or("no exit jump in step_greet_and_shout to mutate")?;
+    if return_route_reaches_exit(&mutated, false).is_ok() {
+        return Err(
+            "a shouted route arm regressed to an external tail was accepted — the Return route is \
+             not pinned"
+                .into(),
+        );
+    }
     Ok(())
 }
 

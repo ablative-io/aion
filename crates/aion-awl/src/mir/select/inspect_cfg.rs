@@ -286,6 +286,39 @@ pub(super) fn reachable_from_entry(func: &[Instruction]) -> BTreeSet<usize> {
     seen
 }
 
+/// The instruction indices reachable from entry WITHOUT traversing any tail
+/// transfer: a `call_last`/`call_only`/`call_ext_last`/`call_ext_only` leaves the
+/// function (or loops back), so its out-edges are NOT followed. If the shared
+/// `Deallocate; Return` exit is in this set, some path reaches it carrying no tail
+/// transfer at all — the property a Return-route arm must hold. A regression that
+/// turned that arm into a local or external tail call removes the edge to the
+/// exit, so the exit drops out of the set (BC-5 review blocker 7).
+pub(super) fn reachable_without_tail(func: &[Instruction]) -> BTreeSet<usize> {
+    let succ = successors(func);
+    let mut seen = BTreeSet::new();
+    let mut stack = if func.is_empty() { Vec::new() } else { vec![0] };
+    while let Some(index) = stack.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        if matches!(
+            func.get(index),
+            Some(
+                Instruction::CallLast { .. }
+                    | Instruction::CallOnly { .. }
+                    | Instruction::CallExtLast { .. }
+                    | Instruction::CallExtOnly { .. }
+            )
+        ) {
+            continue;
+        }
+        if let Some(targets) = succ.get(index) {
+            stack.extend(targets.iter().copied());
+        }
+    }
+    seen
+}
+
 /// Whether `register` is guaranteed defined on EVERY path reaching the
 /// instruction at `index` — the forward must-define fixed point (intersection at
 /// joins), the same one [`x_safety_violations`] rests on. Used to prove the ABI

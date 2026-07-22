@@ -1435,7 +1435,18 @@ compiler lowers) plus targeted per-shape fixtures.
   `Ok(Ctor(payload))` and RETURNS it (`lower/route.rs`), exiting through the
   shared `Deallocate; Return` — recorded so the "routes are tail calls" wording
   is not overread (`awl_hello`'s `route shouted` is a `Return`, not a
-  `call_ext_last`).
+  `call_ext_last`). The specific Return-route arms are pinned in the decoded CFG
+  (`return_route_reaches_exit`): a Return-route arm carries no tail transfer and
+  reaches its shared `Deallocate; Return` by a no-tail path, mutation-checked by
+  rewriting the arm into an external tail and requiring rejection.
+
+**Accepted codegen invariant (branch physical layout order).** The marshaling
+oracle (`inspect_expect`) matches decoded calls to the selected-IR call
+expectations 1:1 in emission order, which relies on the emitter's physical branch
+layout being fixed — `then_block` before `else_block`, and enum arms in vector
+order — as a required codegen invariant; if branch-layout freedom is ever wanted,
+the matcher upgrades to block-scoped (per-arm) matching rather than a single flat
+sequence.
 
 **DIVERGENCE stopped and recorded (not weakened to green):** §11.2's X-discipline
 paragraph states "Y slots are touched **only by `move`** … every other
