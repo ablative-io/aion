@@ -73,6 +73,45 @@ pub(super) fn assemble(module: &MirModule) -> Result<Vec<u8>, SelectError> {
     Ok(bytes)
 }
 
+/// Lowers every MIR function (flow or shell) to its selected [`Body`] and returns
+/// them alongside the emit-side atom table — the SAME lowering `assemble` runs,
+/// stopped before emission. The BC-5 marshaling oracle carries these selected
+/// call/argument expectations INDEPENDENTLY into the decoded check (BC-5 review
+/// blocker 6); the atom table resolves an expected `Src::Atom` argument to its
+/// name for comparison against the decode-side table.
+///
+/// # Errors
+///
+/// Propagates a lowering refusal or an arity overflow.
+#[cfg(test)]
+pub(super) fn lower_bodies(
+    module: &MirModule,
+) -> Result<(Vec<super::ir::Body>, AtomTable), SelectError> {
+    let mut builder = Builder::new(module);
+    let execute = find_execute(module)?;
+    let mut bodies = Vec::with_capacity(module.functions.len());
+    for (index, function) in module.functions.iter().enumerate() {
+        let reference = FnRef(u32::try_from(index).unwrap_or(u32::MAX));
+        let body = match function {
+            MirFn::Templated {
+                name,
+                template,
+                sig,
+                ..
+            } => {
+                let arity =
+                    u8::try_from(sig.params.len()).map_err(|_| SelectError::OutOfRange {
+                        what: format!("`{name}` arity exceeds 255"),
+                    })?;
+                lower_shell(&mut builder, name, arity, template, reference, execute)?
+            }
+            MirFn::Flow(flow) => lower_flow(&mut builder, flow, reference)?,
+        };
+        bodies.push(body);
+    }
+    Ok((bodies, builder.into_parts().atom_table))
+}
+
 /// The `ExpT` chunk: exactly the module's declared exports (`run/1`,
 /// `definition/0`, `execute/1` — decision 12), each at its body label.
 fn build_exports(

@@ -98,6 +98,20 @@ impl FramePlan {
     }
 }
 
+/// The `Var → Y-slot` frame-home map the emitter assigns for `body` — the
+/// deterministic frame layout (params first, then defined vars in step order).
+/// Exposed so the BC-5 marshaling oracle can translate each selected-IR argument
+/// `Src::Var` to the exact `Y` home its reload must source from, independently of
+/// the emitted move (BC-5 review blocker 6).
+///
+/// # Errors
+///
+/// Propagates a frame-planning failure (an over-cap frame).
+#[cfg(test)]
+pub(super) fn frame_homes(body: &Body) -> Result<HashMap<Var, u32>, SelectError> {
+    Ok(FramePlan::new(body)?.homes)
+}
+
 fn assign_var(var: Var, homes: &mut HashMap<Var, u32>, slot: &mut u32) {
     homes.entry(var).or_insert_with(|| {
         let here = *slot;

@@ -21,15 +21,20 @@ use beamr::atom::AtomTable;
 use beamr::loader::decode::{Instruction, Operand};
 use beamr::loader::load::ParsedModule;
 
+use super::assemble::lower_bodies;
+use super::emit::frame_homes;
 use super::inspect_analysis::{
     assert_live_accuracy, check_framed, check_frameless, check_function, expected_framed,
     flow_named, flow_returns, function_arity, is_known, local_target_arities,
 };
 use super::inspect_cfg::{reachable_from_entry, x_safety_violations};
+use super::inspect_expect::check_marshaling;
 use super::inspect_support::{
     decode, decode_bytes, destinations, functions, heap_live, instruction_operands, is_call,
-    lowered_fixtures, make_fun_num_free, manifest_dir, operand_has_y, with_explicit_make_fun_reads,
+    lowered_fixtures, make_fun_num_free, manifest_dir, name_of, operand_has_y,
+    with_explicit_make_fun_reads,
 };
+use super::ir::Body;
 use crate::mir::covered::COVERED;
 use crate::mir::{
     AtomRef, Block, FlowFn, FnOrigin, FnRef, MirFn, MirModule, RuntimeFn, Span, Stmt, Tail, TyDesc,
@@ -59,6 +64,14 @@ fn covered_ratchet_upholds_ir14_and_section_11() -> TestResult {
         let (parsed, table) = decode(&module)?;
         module_invariants(&label, &parsed)?;
 
+        // The selected bodies carry the marshaling expectations (arg sources,
+        // arities, result stores) INDEPENDENTLY into the decoded check (blocker 6).
+        let (bodies, emit_atoms) = lower_bodies(&module)?;
+        let expected: BTreeMap<String, &Body> = bodies
+            .iter()
+            .map(|body| (name_of(&emit_atoms, body.name), body))
+            .collect();
+
         let local_arities = local_target_arities(&parsed);
         for function in functions(&parsed, &table) {
             check_function(
@@ -68,6 +81,22 @@ fn covered_ratchet_upholds_ir14_and_section_11() -> TestResult {
                 &parsed,
                 &table,
                 &local_arities,
+            )?;
+            let body = expected.get(function.name.as_str()).ok_or_else(|| {
+                format!(
+                    "{label}::{}: no selected body matches the decoded name",
+                    function.name
+                )
+            })?;
+            let homes = frame_homes(body)?;
+            check_marshaling(
+                &format!("{label}::{}", function.name),
+                function.code,
+                body,
+                &homes,
+                &parsed,
+                &table,
+                &emit_atoms,
             )?;
             // R8 scope: count the heap ops actually examined, and cross-check the
             // MIR framing expectation for the flow functions we can name.
@@ -385,6 +414,107 @@ fn marshal_reload_of(code: &[Instruction], make_fun: usize, register: u32) -> Op
         }
     }
     None
+}
+
+/// The nearest `move <src> -> x(register)` marshal reaching the call at `call`.
+fn marshal_move(code: &[Instruction], call: usize, register: u32) -> Option<usize> {
+    (0..call).rev().find(|&index| {
+        matches!(code.get(index), Some(Instruction::Move { destination: Operand::X(r), .. }) if *r == register)
+    })
+}
+
+/// The `source` operand of a `move` at `index`.
+fn move_source(code: &[Instruction], index: usize) -> Option<Operand> {
+    match code.get(index) {
+        Some(Instruction::Move { source, .. }) => Some(source.clone()),
+        _ => None,
+    }
+}
+
+/// Targeted marshaling oracle (BC-5 review blocker 6): the marshaling check must
+/// reject a SWAPPED argument, a DROPPED result store, and a WRONG arity — not just
+/// "some write happened". `execute(a, b) { let r = a <> b; return r }` marshals
+/// `move y0 -> x0; move y1 -> x1; call_ext append/2; move x0 -> y2`. Each mutation
+/// of the real decoded bytes must go red while the unmutated stream passes.
+#[test]
+fn marshaling_rejects_swapped_args_dropped_store_and_wrong_arity() -> TestResult {
+    let concat = flow(
+        "execute",
+        FnOrigin::Execute,
+        &[0, 1],
+        vec![Stmt::Concat {
+            dst: Var(2),
+            lhs: Value::Var(Var(0)),
+            rhs: Value::Var(Var(1)),
+            span: Span { line: 0, column: 0 },
+        }],
+        Tail::Return(Value::Var(Var(2))),
+    );
+    let built = module("concat2", &[], vec![concat]);
+    let (bodies, emit_atoms) = lower_bodies(&built)?;
+    let body = bodies
+        .iter()
+        .find(|body| name_of(&emit_atoms, body.name) == "execute")
+        .ok_or("no execute body")?;
+    let homes = frame_homes(body)?;
+    let (parsed, table) = decoded_module(&built)?;
+    let function = functions(&parsed, &table)
+        .into_iter()
+        .find(|function| function.name == "execute")
+        .ok_or("no execute function")?;
+    let where_ = "concat2::execute";
+    let run = |code: &[Instruction]| {
+        check_marshaling(where_, code, body, &homes, &parsed, &table, &emit_atoms)
+    };
+    // Baseline: the real bytes marshal a into x0, b into x1, and store the result.
+    run(function.code)?;
+
+    let call = function
+        .code
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::CallExt { .. }))
+        .ok_or("no call_ext append")?;
+    let x0 = marshal_move(function.code, call, 0).ok_or("no x0 marshal")?;
+    let x1 = marshal_move(function.code, call, 1).ok_or("no x1 marshal")?;
+    let s0 = move_source(function.code, x0).ok_or("x0 marshal is not a move")?;
+    let s1 = move_source(function.code, x1).ok_or("x1 marshal is not a move")?;
+
+    // (1) Swap the two argument sources: x0 now carries b, x1 carries a.
+    let mut swapped = function.code.to_vec();
+    swapped[x0] = Instruction::Move {
+        source: s1,
+        destination: Operand::X(0),
+    };
+    swapped[x1] = Instruction::Move {
+        source: s0,
+        destination: Operand::X(1),
+    };
+    assert!(
+        run(&swapped).is_err(),
+        "a swapped argument marshal (y1 -> x0 / y0 -> x1) was accepted — source identity unchecked"
+    );
+
+    // (2) Drop the result store immediately after the call.
+    let mut no_store = function.code.to_vec();
+    no_store.remove(call + 1);
+    assert!(
+        run(&no_store).is_err(),
+        "a dropped result store was accepted — the store is not required unconditionally"
+    );
+
+    // (3) Declare the wrong call arity.
+    let mut wrong_arity = function.code.to_vec();
+    if let Instruction::CallExt { import, .. } = &function.code[call] {
+        wrong_arity[call] = Instruction::CallExt {
+            arity: Operand::Unsigned(1),
+            import: import.clone(),
+        };
+    }
+    assert!(
+        run(&wrong_arity).is_err(),
+        "a wrong declared arity was accepted — arity is not compared to the selected step"
+    );
+    Ok(())
 }
 
 /// The shared-exit label of a framed function: the `Label` immediately preceding

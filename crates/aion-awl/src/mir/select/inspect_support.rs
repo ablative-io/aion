@@ -214,7 +214,7 @@ pub(super) fn import_target(
 }
 
 /// The import-table (or literal-pool) index an operand names, when it is one.
-fn operand_index(operand: &Operand) -> Option<usize> {
+pub(super) fn operand_index(operand: &Operand) -> Option<usize> {
     match operand {
         Operand::Unsigned(value) => usize::try_from(*value).ok(),
         Operand::Literal(value) => Some(*value),

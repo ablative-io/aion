@@ -26,6 +26,8 @@ mod inspect_analysis;
 #[cfg(test)]
 mod inspect_cfg;
 #[cfg(test)]
+mod inspect_expect;
+#[cfg(test)]
 mod inspect_support;
 #[cfg(test)]
 mod inspect_tests;
