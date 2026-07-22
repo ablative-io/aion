@@ -86,9 +86,12 @@ fn assembling_twice_yields_byte_identical_archives() -> TestResult {
 /// timestamp, environment read, or ordering instability anywhere in the
 /// assembly path changes these bytes and fails this test. A deliberate SDK
 /// closure regeneration updates this pin in the same commit, exactly like
-/// `BUNDLE_CHECKSUM`.
+/// `BUNDLE_CHECKSUM`. Updated when the manifest timeout became
+/// `Option<Duration>`: the fixed input declares no timeout, so `manifest.json`
+/// now omits the `timeout` key entirely (rather than a defaulted 1h value),
+/// which deterministically changes these bytes.
 const FIXED_INPUT_ARCHIVE_SHA256: &str =
-    "115c3072c626ec19fef77368e307f367393e7277eec22d45a0cbfd3c64e7b0bb";
+    "7f1229b338a81d34e5b06bf40c30781071c4beac4c78018144c1aadba5a6762e";
 
 /// Proof 1b — cross-process determinism: a fully fixed input assembles to
 /// pinned archive bytes.
