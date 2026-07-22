@@ -322,9 +322,19 @@ async fn int_code_end_terminator_is_rejected() -> TestResult {
     // length, never `encode_module`. So it cannot distinguish, and rejects alike,
     // an externally injected terminator and a writer-originated one. This single
     // case therefore covers both provenances.
+    let refusal = assert_code_stream_fully_consumed(&mutated)
+        .err()
+        .ok_or("int_code_end terminator was NOT rejected — the no-terminator row is vacuous")?;
+    // Pin the rejection to the truncation witness ITSELF (its distinctive
+    // `inert byte` error). Under the CURRENT writer, a reverted circular
+    // re-encode oracle also rejects this injection (the re-encode omits the
+    // terminator, so the bytes differ) — while silently missing a
+    // writer-originated terminator. Only the error identity separates the two
+    // implementations, so a revert to the circular oracle fails HERE.
     assert!(
-        assert_code_stream_fully_consumed(&mutated).is_err(),
-        "int_code_end terminator was NOT rejected — the no-terminator row is vacuous"
+        refusal.to_string().contains("inert byte"),
+        "the rejection must come from the writer-independent truncation witness \
+         (its `inert byte` error), not the round-trip fidelity check: {refusal}"
     );
     // The writer contract calls that oracle, so it rejects the terminator too.
     assert!(
