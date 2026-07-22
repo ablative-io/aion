@@ -105,7 +105,7 @@ fn write_package_archive(dir: &std::path::Path, beam: &[u8]) -> Result<PathBuf, 
         entry_function: "single_activity".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "integer" }),
-        timeout: Duration::from_secs(60),
+        timeout: Some(Duration::from_secs(60)),
         activities: vec![DeclaredActivity {
             activity_type: ACTIVITY_TYPE.to_owned(),
         }],

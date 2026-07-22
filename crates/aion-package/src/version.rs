@@ -55,7 +55,7 @@ mod tests {
                     "status": { "type": "string" }
                 }
             }),
-            timeout: Duration::from_secs(30),
+            timeout: Some(Duration::from_secs(30)),
             activities: vec![
                 DeclaredActivity {
                     activity_type: "charge_card".to_owned(),

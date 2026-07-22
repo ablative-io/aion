@@ -1230,7 +1230,7 @@ mod lsub_prod_xnode_e2e {
             entry_function: "collect_four".to_owned(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({}),
-            timeout: Duration::from_secs(30),
+            timeout: Some(Duration::from_secs(30)),
             activities: vec![DeclaredActivity {
                 activity_type: "fixture_activity".to_owned(),
             }],

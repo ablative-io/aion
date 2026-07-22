@@ -19,7 +19,7 @@ fn package(timeout: Duration, explicit: bool) -> Result<Package, aion_package::P
         entry_function: "run".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
-        timeout,
+        timeout: Some(timeout),
         activities: Vec::new(),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,

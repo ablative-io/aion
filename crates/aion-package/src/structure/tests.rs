@@ -59,7 +59,7 @@ fn package_with(
         entry_function: entry_function.to_owned(),
         input_schema: serde_json::json!({ "type": "string" }),
         output_schema: serde_json::json!({ "type": "string" }),
-        timeout: std::time::Duration::from_secs(60),
+        timeout: Some(std::time::Duration::from_secs(60)),
         activities: activities
             .iter()
             .map(|name| DeclaredActivity {
@@ -407,7 +407,7 @@ fn missing_entry_source_is_a_loud_error() -> TestResult {
         entry_function: "run".to_owned(),
         input_schema: serde_json::json!({}),
         output_schema: serde_json::json!({}),
-        timeout: std::time::Duration::from_secs(1),
+        timeout: Some(std::time::Duration::from_secs(1)),
         activities: vec![],
         version: ManifestVersion::new(hash.to_string()),
         format_version: CURRENT_FORMAT_VERSION,
@@ -433,7 +433,7 @@ fn non_utf8_entry_source_is_a_loud_error() -> TestResult {
         entry_function: "run".to_owned(),
         input_schema: serde_json::json!({}),
         output_schema: serde_json::json!({}),
-        timeout: std::time::Duration::from_secs(1),
+        timeout: Some(std::time::Duration::from_secs(1)),
         activities: vec![],
         version: ManifestVersion::new(hash.to_string()),
         format_version: CURRENT_FORMAT_VERSION,

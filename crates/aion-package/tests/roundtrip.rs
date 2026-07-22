@@ -42,7 +42,7 @@ fn conformance_manifest() -> Manifest {
                 "total_cents": { "type": "integer" }
             }
         }),
-        timeout: Duration::from_secs(45),
+        timeout: Some(Duration::from_secs(45)),
         activities: vec![
             DeclaredActivity {
                 activity_type: "reserve_inventory".to_owned(),

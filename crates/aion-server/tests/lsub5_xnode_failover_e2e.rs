@@ -181,7 +181,7 @@ fn fixture_package() -> Result<Package, TestError> {
         entry_function: "collect_four".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({}),
-        timeout: Duration::from_secs(60),
+        timeout: Some(Duration::from_secs(60)),
         activities: vec![DeclaredActivity {
             activity_type: "fixture_activity".to_owned(),
         }],

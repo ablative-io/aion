@@ -19,7 +19,7 @@ fn multi_entry_package() -> Result<Package, PackageError> {
         entry_function: "complete".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: Vec::new(),
         version: ManifestVersion::new("placeholder"),
         format_version: CURRENT_FORMAT_VERSION,
@@ -29,7 +29,7 @@ fn multi_entry_package() -> Result<Package, PackageError> {
             entry_function: "child_complete".to_owned(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "string" }),
-            timeout: Duration::from_secs(10),
+            timeout: Some(Duration::from_secs(10)),
             internal: true,
         }],
     };

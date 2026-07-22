@@ -67,7 +67,7 @@ fn reload_package(
         entry_function: entry_function.to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "integer" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,

@@ -147,7 +147,7 @@ fn direct_builder_archive(root: &Path) -> Result<Vec<u8>, Box<dyn std::error::Er
         entry_function: "run".to_owned(),
         input_schema: input_schema(),
         output_schema: output_schema(),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![DeclaredActivity {
             activity_type: "greet".to_owned(),
         }],

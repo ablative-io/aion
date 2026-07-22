@@ -543,7 +543,10 @@ async fn awl_direct_deploy_carries_document_timeout_into_manifest() -> Result<()
         .find(|record| record.workflow_type == "studio_timeout")
         .ok_or("timeout package was not persisted")?;
     let package = Package::load_from_bytes(record.archive, ExtractionLimits::unbounded())?;
-    assert_eq!(package.manifest().timeout, Duration::from_secs(21_600));
+    assert_eq!(
+        package.manifest().timeout,
+        Some(Duration::from_secs(21_600))
+    );
     Ok(())
 }
 
