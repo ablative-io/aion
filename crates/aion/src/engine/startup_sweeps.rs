@@ -239,16 +239,32 @@ pub(super) async fn sweep_continued_as_new_replacements(
 /// teardown, and `recover_due` re-fires it to drive `ResumeTeardown`. A run with
 /// no terminal yet keeps its live deadline. Idempotent.
 ///
-/// Single-writer discipline: this sweep NEVER appends around a live workflow
-/// recorder. It runs where no local recorder exists for its candidates — on cold
-/// boot BEFORE repopulation and continue-as-new successor start, and on adoption
-/// BEFORE the acquired shards' workflows are repopulated — so every retirement
-/// goes through an independent recorder, guarded by a `SequenceConflict` re-read.
+/// Writer discipline (honest bound). Ordering removes every RECOVERY-path writer
+/// from this sweep's window: on cold boot it runs BEFORE repopulation and
+/// continue-as-new successor start, and on adoption BEFORE the acquired shards'
+/// workflows are repopulated — so no recovery-created recorder exists for a
+/// candidate. It is NOT, however, exclusive against public post-fence actors:
+/// adoption publishes shard ownership before recovery, so `Engine::reopen_workflow`
+/// (and other public writers) can create a recorder for an acquired workflow
+/// concurrently with this sweep. The sweep is therefore an OPTIMISTIC writer whose
+/// serialization point is the store's per-workflow sequence check; a lost append
+/// is arbitrated by the COMPLETE repair predicate (see
+/// [`retire_orphaned_terminal_deadline_independent`]), which recognizes a
+/// concurrent `WorkflowReopened` as making the repair inapplicable rather than an
+/// error.
+///
 /// [`SweepScope`] selects what a live registered handle at candidate time means:
 /// on cold boot it is an ordering-invariant breach (typed error); on adoption it
 /// is an already-owned resident workflow that is out of scope (skipped — its
 /// deadline lifecycle is this engine's normal-operation concern, and the acquired
 /// workflows it is here to repair have no local handle yet).
+///
+/// Future note (out of scope for this lane): the adoption sweep enumerates the
+/// full owned timer scope before repopulating the acquired workflows, which
+/// lengthens the already-published/pre-recovery window in proportion to all owned
+/// timer rows. A workflow-scoped writer-generation gate shared with reopen/start
+/// would tighten this, but the optimistic arbitration above is the intended shape
+/// here.
 pub(super) async fn sweep_uncancelled_terminal_deadlines(
     context: &StartupRecoveryContext,
     scope: SweepScope,
@@ -279,16 +295,17 @@ pub(super) enum SweepScope {
     Adoption,
 }
 
-/// Repair one candidate's uncancelled non-timeout-terminal deadline, upholding
-/// the single-writer invariant.
+/// Repair one candidate's uncancelled non-timeout-terminal deadline.
 ///
 /// A live registered handle means a live local recorder exists for the workflow.
 /// On cold boot that is an ordering-invariant breach (the sweep must precede
 /// repopulation), surfaced as a typed [`EngineError`] rather than an append
 /// around the live recorder or a silent skip. On adoption it is an out-of-scope
-/// already-owned workflow, skipped. Otherwise no local recorder exists, so the
-/// retirement uses an independent recorder as the sole writer, with
-/// `SequenceConflict` reconciliation guarding against any cross-actor writer.
+/// already-owned workflow, skipped. Otherwise no recovery-path recorder exists, so
+/// the retirement uses an independent recorder as an OPTIMISTIC writer, with
+/// `SequenceConflict` reconciliation (see
+/// [`retire_orphaned_terminal_deadline_independent`]) arbitrating against a
+/// concurrent public writer such as `reopen`.
 async fn repair_orphaned_terminal_deadline(
     context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,
@@ -322,10 +339,12 @@ fn is_orphaned_terminal_deadline(history: &[Event], run_id: &RunId) -> bool {
     )
 }
 
-/// Retire the deadline through an independent recorder (no live handle exists for
-/// the workflow), tolerant of a concurrent writer: on `SequenceConflict`, re-read
-/// and treat an already-retired deadline as done; otherwise surface the typed
-/// error — never swallow it.
+/// Retire the deadline through an independent recorder as an OPTIMISTIC writer:
+/// the store's per-workflow sequence check is the serialization point. On a
+/// `SequenceConflict` (a cross-actor writer won the head), re-read and re-evaluate
+/// the COMPLETE repair predicate; if the run is no longer an orphaned terminal
+/// deadline the repair became inapplicable — success, nothing to do — otherwise
+/// surface the typed error, never swallow it.
 async fn retire_orphaned_terminal_deadline_independent(
     context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,
@@ -355,8 +374,27 @@ async fn retire_orphaned_terminal_deadline_independent(
                     aion_store::StoreError::SequenceConflict { .. }
                 )
             ) {
+                // A cross-actor writer advanced the head between our snapshot and
+                // our append. Re-read and re-evaluate the COMPLETE repair
+                // predicate: if the run is no longer an orphaned terminal deadline,
+                // the repair became inapplicable and there is nothing to do —
+                // success, not error. This covers a competing terminal writer that
+                // retired the deadline AND a concurrent public `WorkflowReopened`
+                // (a valid post-fence actor during adoption): reopen clears the
+                // terminal predicate while deliberately keeping the failed run's
+                // deadline live, so the run ceased to be a crash-window orphan and
+                // must NOT be retired here and must NOT abort adoption.
+                //
+                // The sweep-WINS direction needs no code here: a normally-failed
+                // run has its deadline retired by the terminal writer BEFORE any
+                // reopen can occur, so the sweep retiring the crash-window orphan
+                // first makes the crash case converge to the normal case. A
+                // concurrent reopen that instead loses this append fails with a
+                // retryable `SequenceConflict`, and its own retry then reads the
+                // repaired history — a benign transient of a rare coincidence
+                // (reopen-during-adoption of a crash-window run).
                 let history = context.store.as_ref().read_history(workflow_id).await?;
-                if crate::time::outstanding_deadline_timer(&history, run_id).is_none() {
+                if !is_orphaned_terminal_deadline(&history, run_id) {
                     return Ok(());
                 }
             }
@@ -411,3 +449,7 @@ fn continued_run_workflow_type(
             ),
         })
 }
+
+#[cfg(test)]
+#[path = "startup_sweeps_tests.rs"]
+mod tests;
