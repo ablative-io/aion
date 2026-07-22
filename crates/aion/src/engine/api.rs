@@ -540,12 +540,18 @@ impl Engine {
             }
         };
         for timer_id in live_timers_in_active_segment(&history) {
+            // A reserved workflow-deadline timer is retired PERMANENTLY
+            // (`WorkflowIntent`): reopen must never resurrect it (a
+            // `CancelTeardown` deadline would be re-armed at its original
+            // `fire_at` by `rearmable_timers`). Every other in-flight timer is
+            // ordinary cancel-teardown bookkeeping that reopen re-arms.
+            let cause = if crate::time::is_deadline_timer(&timer_id) {
+                TimerCancelCause::WorkflowIntent
+            } else {
+                TimerCancelCause::CancelTeardown
+            };
             if let Err(error) = timer_service
-                .cancel(
-                    id.clone(),
-                    timer_id.clone(),
-                    TimerCancelCause::CancelTeardown,
-                )
+                .cancel(id.clone(), timer_id.clone(), cause)
                 .await
             {
                 tracing::warn!(

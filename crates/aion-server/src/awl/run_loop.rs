@@ -31,7 +31,9 @@ pub struct EmittedWorkflowEntry {
     pub entry_function: String,
     pub input_schema: serde_json::Value,
     pub output_schema: serde_json::Value,
-    pub timeout_seconds: u64,
+    /// Authored workflow timeout in whole seconds, or `None` when the document
+    /// declared none for this synthesized child.
+    pub timeout_seconds: Option<u64>,
     pub internal: bool,
 }
 
@@ -138,7 +140,7 @@ pub fn emit(
             entry_function: entry.entry_function,
             input_schema: entry.input_schema,
             output_schema: entry.output_schema,
-            timeout_seconds: entry.timeout_seconds,
+            timeout_seconds: entry.timeout.map(|timeout| timeout.as_secs()),
             internal: entry.internal,
         })
         .collect();

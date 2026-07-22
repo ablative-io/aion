@@ -24,7 +24,10 @@ use super::api_schedule::{
     schedule_coordinator_package_version, schedule_coordinator_run_id,
     schedule_coordinator_workflow_id, schedule_coordinator_workflow_type,
 };
-use super::startup_sweeps::{sweep_continued_as_new_replacements, sweep_recorded_children};
+use super::startup_sweeps::{
+    SweepScope, sweep_continued_as_new_replacements, sweep_recorded_children,
+    sweep_uncancelled_terminal_deadlines,
+};
 
 pub(super) async fn recover_timers_on_startup(
     nif_state: &crate::runtime::EngineNifState,
@@ -69,6 +72,11 @@ pub(super) async fn recover_active_workflows_on_startup(
         Arc::clone(&context.visibility_store),
     )
     .await?;
+    // Repair orphaned non-timeout terminal deadlines BEFORE repopulating active
+    // workflows and BEFORE starting continue-as-new successors: at this point no
+    // local workflow recorder exists, so the sweep's independent recorder is the
+    // sole writer and cannot stale a recovered or successor recorder's head.
+    sweep_uncancelled_terminal_deadlines(&context, SweepScope::ColdBoot).await?;
     let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
             &context.runtime,
@@ -100,6 +108,31 @@ pub(super) async fn recover_adopted_shards(
         Arc::clone(&context.visibility_store),
     )
     .await?;
+    // Repair a dead owner's orphaned non-timeout terminal deadline on the
+    // surviving adopter BEFORE repopulating/spawning the acquired shards'
+    // recovered processes — under the established shard fence. Ordering removes
+    // every RECOVERY-path writer from this sweep's window (nothing on the acquired
+    // shards is repopulated or spawned yet), but it does NOT exclude public
+    // post-fence actors: adoption has already published shard ownership, so
+    // `reopen_workflow` (and other public writers) can append for an acquired
+    // workflow concurrently. The sweep is therefore an OPTIMISTIC writer arbitrated
+    // at the store's per-workflow sequence check by the complete repair predicate
+    // (see `startup_sweeps::sweep_uncancelled_terminal_deadlines`). `SweepScope::Adoption`
+    // skips an already-owned resident workflow (which legitimately holds a live
+    // handle) rather than writing around it. Covers both due and future deadline
+    // rows, which `rearm_future_from_active_histories` (list_active only) would miss.
+    //
+    // Known pre-existing race (NOT introduced here, and NOT widened by this sweep):
+    // `repopulate_active_workflows` below can observe a durable `WorkflowReopened`
+    // while production reopen has appended but not yet registered its handle, and
+    // its single `live_pid` check-then-spawn is unarbitrated while `Registry::insert`
+    // silently replaces — so adoption and reopen can both publish a resident for one
+    // `(workflow, run)`. This is reachable on any reopen-versus-adoption overlap with
+    // no sweep candidate at all; it is BOARDED as a separate follow-up lane (atomic
+    // resident-publication arbitration: `insert_if_absent`/pre-spawn reservation,
+    // loser cancels its spawn, full-path barrier test). The deadline sweep neither
+    // creates nor widens that window.
+    sweep_uncancelled_terminal_deadlines(&context, SweepScope::Adoption).await?;
     let recovery = context.recovery.clone().unwrap_or_else(|| {
         Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
             &context.runtime,

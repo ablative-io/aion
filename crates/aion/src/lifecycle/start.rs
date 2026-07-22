@@ -18,6 +18,7 @@ use crate::loader::WorkflowCatalog;
 use crate::registry::{
     CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
 };
+use crate::runtime::monitor::UnmonitoredProcessAbortError;
 use crate::runtime::{RuntimeHandle, RuntimeInput};
 use crate::supervision::{SupervisionTree, spawn_workflow_with_policy};
 use crate::{
@@ -136,6 +137,10 @@ pub async fn start_workflow_with_options(
     } else {
         0
     };
+    // Single deterministic clock read: `WorkflowStarted.recorded_at` AND the
+    // deadline's `fire_at` both derive from it, so a replay/adoption re-arm
+    // computes the identical fire time (never a second live-clock read).
+    let started_at = Utc::now();
     let mut recorder = Recorder::resume_at(
         workflow_id.clone(),
         Arc::clone(&context.store),
@@ -144,7 +149,7 @@ pub async fn start_workflow_with_options(
     .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
     recorder
         .record_workflow_started_with_attributes(
-            Utc::now(),
+            started_at,
             crate::durability::WorkflowStartRecord {
                 workflow_type: workflow_type.to_owned(),
                 input: input.clone(),
@@ -156,6 +161,13 @@ pub async fn start_workflow_with_options(
             &context.search_attribute_schema,
         )
         .await?;
+    let armed_deadline = record_declared_deadline(
+        &mut recorder,
+        &run_id,
+        loaded.declared_timeout(),
+        started_at,
+    )
+    .await?;
     upsert_workflow_visibility(
         Arc::clone(&context.store),
         Arc::clone(&context.visibility_store),
@@ -195,13 +207,264 @@ pub async fn start_workflow_with_options(
         completion,
     });
 
-    register_started_handle(&context, &handle)?;
+    publish_started_handle(&context, &handle)?;
+
+    arm_declared_deadline_or_fail_start(&context, &workflow_id, &handle, armed_deadline).await?;
+
+    install_started_monitor(&context, &handle)?;
     deliver_deferred_signals(&context, &handle);
 
     Ok(handle)
 }
 
-fn register_started_handle(
+/// Establish the declared deadline LIVE before acknowledging the start, failing
+/// the start honestly if it cannot be armed.
+///
+/// The durable timer row and the live wheel are armed here (after registration,
+/// so the workflow is resident and the wheel actually arms), while the recorded
+/// `TimerStarted` is the recovery anchor. A declared deadline MUST arm — a run
+/// that proceeded with a silently-inert deadline would run forever if this single
+/// attempt failed and the engine stayed alive — so a persistence or arming
+/// failure retracts the registry publication and aborts the still-unmonitored
+/// process, returning the typed error with no half-started run. A run with no
+/// declared deadline (`armed_deadline == None`) is a no-op.
+///
+/// # Errors
+///
+/// Returns the typed [`EngineError`] from [`arm_declared_deadline`] after
+/// retracting the partial start.
+async fn arm_declared_deadline_or_fail_start(
+    context: &StartWorkflowContext,
+    workflow_id: &WorkflowId,
+    handle: &WorkflowHandle,
+    armed_deadline: Option<(aion_core::TimerId, chrono::DateTime<Utc>)>,
+) -> Result<(), EngineError> {
+    let Some((deadline_id, fire_at)) = armed_deadline else {
+        return Ok(());
+    };
+    if let Err(error) = arm_declared_deadline(context, workflow_id, deadline_id, fire_at).await {
+        return Err(fail_started_run(context, handle, error));
+    }
+    Ok(())
+}
+
+/// Fails a partially-started run without orphaning its still-unmonitored process.
+///
+/// Ordering is the invariant: the registry publication (ownership) is retracted
+/// ONLY after the process has been terminated and that termination synchronously
+/// observed by [`RuntimeHandle::abort_unmonitored_process`]. If termination
+/// cannot be guaranteed — the bounded cleanup queue is
+/// `Unavailable`/`Exhausted`/`Poisoned` — the publication is RETAINED so the live
+/// process stays owned rather than becoming an unowned, unmonitored orphan, and a
+/// completion monitor is installed so its eventual exit is reconciled and cleanup
+/// stays retryable. The original `cause` is surfaced either way (a retain-path
+/// abort failure is logged at error level).
+fn fail_started_run(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+    cause: EngineError,
+) -> EngineError {
+    let pid = handle.pid();
+    match context.runtime.abort_unmonitored_process(pid) {
+        Ok(()) => {
+            // Terminated and synchronously observed; retracting cannot orphan.
+            retract_registry_publication(context, handle);
+        }
+        Err(UnmonitoredProcessAbortError::CleanupFailed { reason, .. }) => {
+            // The abort DID terminate the process — `terminate_process` runs
+            // before the ancillary cleanup that failed — so the retained
+            // publication is now stale: retract it. The ancillary cleanup failure
+            // is the runtime's own to retry; surface it loudly.
+            tracing::error!(
+                workflow_pid = pid,
+                %reason,
+                cause = %cause,
+                "failed-start abort terminated the process but ancillary cleanup failed; retracting stale ownership"
+            );
+            retract_registry_publication(context, handle);
+        }
+        Err(UnmonitoredProcessAbortError::TimedOut { .. }) => {
+            // The abort job is still in flight and WILL terminate the process.
+            // Defer retraction to the job's completion finalizer rather than
+            // racing a monitor install the in-flight job would reject.
+            defer_retraction_to_abort_job(context, handle, pid);
+        }
+        Err(
+            error @ (UnmonitoredProcessAbortError::ExecutorUnavailable { .. }
+            | UnmonitoredProcessAbortError::ExecutorExhausted { .. }
+            | UnmonitoredProcessAbortError::ExecutorPoisoned { .. }),
+        ) => {
+            // No abort job was submitted (the reservation was released) and the
+            // process is still live and unmonitored: retain ownership and install
+            // a completion monitor so its eventual exit is reconciled.
+            tracing::error!(
+                workflow_pid = pid,
+                %error,
+                cause = %cause,
+                "failed-start abort could not be submitted; retaining ownership and installing a completion monitor"
+            );
+            retain_ownership_with_monitor(context, handle);
+        }
+        Err(error) => {
+            // Poisoned/degraded abort state: termination cannot be proven, so
+            // retain ownership rather than orphan. The typed cause already reaches
+            // the caller.
+            tracing::error!(
+                workflow_pid = pid,
+                %error,
+                cause = %cause,
+                "failed-start abort returned a degraded state; retaining ownership as the safe cleanup backstop"
+            );
+        }
+    }
+    cause
+}
+
+/// Defer failed-start registry retraction to the in-flight abort job's
+/// completion: when the job proves termination it runs the retraction finalizer.
+/// If no job is found the abort completed between the wait timeout and here, so
+/// the process is already terminated and retraction runs now. A poisoned attach
+/// retains ownership (the safe backstop).
+fn defer_retraction_to_abort_job(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+    pid: crate::Pid,
+) {
+    let registry = Arc::clone(&context.registry);
+    let workflow_id = handle.workflow_id().clone();
+    let run_id = handle.run_id().clone();
+    let finalizer = move || {
+        if let Err(error) = registry.remove(&workflow_id, &run_id) {
+            tracing::warn!(
+                workflow_pid = pid,
+                %error,
+                "failed to retract failed-start ownership after its abort job terminated the process"
+            );
+        }
+    };
+    match context
+        .runtime
+        .attach_unmonitored_abort_finalizer(pid, finalizer)
+    {
+        Ok(true) => tracing::warn!(
+            workflow_pid = pid,
+            "failed-start abort timed out; registry retraction deferred to the abort job's termination"
+        ),
+        Ok(false) => retract_registry_publication(context, handle),
+        Err(error) => tracing::error!(
+            workflow_pid = pid,
+            %error,
+            "could not attach failed-start retraction to the abort job; retaining ownership"
+        ),
+    }
+}
+
+/// Keeps a failed-start run owned when its process could not be aborted:
+/// installs a completion monitor so the eventual exit is reconciled. A failed
+/// installation is logged — the retained registry publication remains the
+/// cleanup backstop, so ownership is never dropped on the floor.
+fn retain_ownership_with_monitor(context: &StartWorkflowContext, handle: &WorkflowHandle) {
+    if let Err(error) = install_completion_monitor(context, handle.pid(), handle) {
+        tracing::error!(
+            workflow_pid = handle.pid(),
+            error = %error,
+            "failed to install a completion monitor for a retained failed-start run; registry ownership remains the cleanup backstop"
+        );
+    }
+}
+
+/// Record the run's declared-timeout deadline `TimerStarted`, if one is declared.
+///
+/// LAW 1: a `None` `declared_timeout` records nothing — no `TimerStarted`, no
+/// durable row, no deadline object of any kind — and returns `None`. When a
+/// timeout is declared, this records the durable anchor (`timer_is_live` and
+/// `outstanding_future_timers` recover the deadline from it after
+/// failover/adoption) and returns the id and `fire_at` for the caller to arm the
+/// live wheel after registration.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] when the fire time is out of range, the deadline id
+/// cannot be minted, or the `TimerStarted` append fails.
+async fn record_declared_deadline(
+    recorder: &mut Recorder,
+    run_id: &RunId,
+    declared_timeout: Option<std::time::Duration>,
+    started_at: chrono::DateTime<Utc>,
+) -> Result<Option<(aion_core::TimerId, chrono::DateTime<Utc>)>, EngineError> {
+    let Some(timeout) = declared_timeout else {
+        return Ok(None);
+    };
+    let fire_at = deadline_fire_at(started_at, timeout)?;
+    let deadline_id =
+        crate::time::deadline_timer_id(run_id).map_err(|error| EngineError::Runtime {
+            reason: format!("failed to mint deadline timer id: {error}"),
+        })?;
+    recorder
+        .record_timer_started(started_at, deadline_id.clone(), fire_at)
+        .await?;
+    Ok(Some((deadline_id, fire_at)))
+}
+
+/// The deadline fire time for a run started at `started_at` with `timeout`.
+///
+/// Deterministic: derived from the same `started_at` recorded on
+/// `WorkflowStarted`, never a second clock read.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Runtime`] when `timeout` is out of `chrono` range or
+/// the addition overflows the representable timestamp range.
+fn deadline_fire_at(
+    started_at: chrono::DateTime<Utc>,
+    timeout: std::time::Duration,
+) -> Result<chrono::DateTime<Utc>, EngineError> {
+    let delta = chrono::Duration::from_std(timeout).map_err(|error| EngineError::Runtime {
+        reason: format!("declared workflow timeout is out of range: {error}"),
+    })?;
+    started_at
+        .checked_add_signed(delta)
+        .ok_or_else(|| EngineError::Runtime {
+            reason: String::from("declared workflow timeout overflowed the deadline fire time"),
+        })
+}
+
+/// Persist the durable deadline row and arm the live wheel for a resident run.
+///
+/// The durable timer row and the live-wheel task are both established here,
+/// before the start is acknowledged. Failure is returned to the caller — the
+/// start path fails the start rather than proceeding with an inert deadline; the
+/// recorded `TimerStarted` remains the recovery anchor for a re-drive.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] when the timer bridge is unavailable or the durable
+/// row/wheel could not be armed.
+async fn arm_declared_deadline(
+    context: &StartWorkflowContext,
+    workflow_id: &WorkflowId,
+    deadline_id: aion_core::TimerId,
+    fire_at: chrono::DateTime<Utc>,
+) -> Result<(), EngineError> {
+    let timer_service =
+        crate::runtime::nif_timer_bridge::installed_timer_service(context.runtime.nif_state())
+            .map_err(|error| EngineError::Runtime {
+                reason: format!(
+                    "timer service unavailable while arming workflow deadline: {error}"
+                ),
+            })?;
+    timer_service
+        .schedule(workflow_id.clone(), deadline_id.clone(), fire_at)
+        .await
+        .map_err(|error| EngineError::Runtime {
+            reason: format!("failed to arm workflow deadline {deadline_id}: {error}"),
+        })
+}
+
+/// Publishes the started handle into the active registry (with the test-only
+/// start-publication pause), retracting a partial publication if the insert
+/// fails.
+fn publish_started_handle(
     context: &StartWorkflowContext,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
@@ -214,26 +477,42 @@ fn register_started_handle(
         )
         .map(|_| ())
     {
-        if let Err(remove_error) = context
-            .registry
-            .remove(handle.workflow_id(), handle.run_id())
-        {
-            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract partial workflow registry publication after insert failed");
-        }
+        retract_registry_publication(context, handle);
         return Err(abort_unmonitored_start(&context.runtime, pid, error));
     }
     #[cfg(test)]
     context.runtime.pause_at_start_publication_for_test(pid)?;
-    if let Err(error) = install_completion_monitor(context, pid, handle) {
-        if let Err(remove_error) = context
-            .registry
-            .remove(handle.workflow_id(), handle.run_id())
-        {
-            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract workflow registry publication after monitor installation failed");
-        }
-        return Err(error);
+    Ok(())
+}
+
+/// Installs the completion monitor for an already-published handle, retracting
+/// the registry publication if installation fails.
+fn install_started_monitor(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
+    if let Err(error) = install_completion_monitor(context, handle.pid(), handle) {
+        // The handle is already published; do not retract ownership until the
+        // process is confirmed terminated. `fail_started_run` aborts first and
+        // retracts only on success, retaining ownership otherwise.
+        return Err(fail_started_run(context, handle, error));
     }
     Ok(())
+}
+
+/// Best-effort retraction of a handle's registry publication during a failed
+/// start; a failure to remove is logged (the entry is superseded on re-drive).
+fn retract_registry_publication(context: &StartWorkflowContext, handle: &WorkflowHandle) {
+    if let Err(error) = context
+        .registry
+        .remove(handle.workflow_id(), handle.run_id())
+    {
+        tracing::warn!(
+            workflow_pid = handle.pid(),
+            error = %error,
+            "failed to retract workflow registry publication during failed start"
+        );
+    }
 }
 
 fn abort_unmonitored_start(
@@ -396,7 +675,7 @@ impl EngineHandle for StartResumeEngineHandle<'_> {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
         let _ = (workflow_id, event);
         Err(EngineSeamError::Recorder {
             reason: "start resume handoff cannot record workflow events".to_owned(),

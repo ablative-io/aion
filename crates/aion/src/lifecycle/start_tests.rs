@@ -438,6 +438,65 @@ async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_start_with_unabortable_process_retains_ownership_not_orphan() -> TestResult {
+    // Double failure: the completion monitor install fails (reaching the
+    // fail-the-start path) AND the bounded cleanup queue is shut down, so the
+    // unmonitored process abort submission is Unavailable. Termination cannot be
+    // guaranteed, so ownership MUST be retained rather than retracted — otherwise
+    // the still-live process becomes an unowned, unmonitored orphan.
+    let store = Arc::new(InMemoryStore::default());
+    let catalog = load_without_runtime_registration("retain-on-abort-failure");
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    runtime.register_waiting_test_module("retain-on-abort-failure__deployed", "run");
+    let supervision = Arc::new(SupervisionTree::new());
+    let registry = Arc::new(Registry::default());
+    runtime.force_next_monitor_installation_failure_for_test();
+    runtime.shutdown_cleanup_executor_for_test()?;
+
+    let result = start_workflow(
+        context(
+            store.clone(),
+            store.clone(),
+            Arc::clone(&catalog),
+            Arc::clone(&runtime),
+            Arc::clone(&supervision),
+            Arc::clone(&registry),
+        ),
+        "retain-on-abort-failure",
+        payload("input")?,
+    )
+    .await;
+
+    let error = result
+        .err()
+        .ok_or("forced monitor failure returned a handle")?;
+    // The start fails with a typed runtime error (the monitor install failure,
+    // or the executor-unavailable abort its rollback then hit — both legitimate).
+    assert!(
+        matches!(error, EngineError::Runtime { .. }),
+        "expected a typed runtime failure, got {error:?}"
+    );
+    // Ownership is retained: the run is NOT retracted while its process cannot be
+    // confirmed terminated.
+    let retained = registry.list()?;
+    assert_eq!(
+        retained.len(),
+        1,
+        "a failed start whose process could not be aborted retains registry ownership"
+    );
+    let pid = retained[0].pid();
+    // The process was never orphaned: it is still live AND still owned, and its
+    // cleanup never started (abort submission was refused).
+    assert!(
+        runtime.is_live(pid),
+        "the un-abortable process stays live under retained ownership"
+    );
+    assert!(!runtime.process_cleanup_started_for_test(pid));
+    runtime.shutdown()?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn start_with_existing_workflow_id_resumes_history_sequence()
 -> Result<(), Box<dyn std::error::Error>> {

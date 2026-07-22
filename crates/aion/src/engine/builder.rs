@@ -749,6 +749,36 @@ struct ChildBridgeAssembly<'a> {
     watch_backoff: SignalDeliveryConfig,
 }
 
+/// Register the `WorkflowDeadlineHandler` on the timer bridge.
+///
+/// The handler holds the runtime weakly so the runtime → nif-state → bridge →
+/// handler chain never cycles back into the runtime (the documented
+/// cycle-avoidance the timer bridge observes with its `Weak<EngineNifState>`).
+///
+/// # Errors
+///
+/// Returns [`EngineError::Runtime`] when no timer bridge is installed.
+fn register_workflow_deadline_handler(
+    nif_state: &crate::runtime::EngineNifState,
+    runtime: &Arc<RuntimeHandle>,
+    store: &Arc<dyn EventStore>,
+    visibility_store: &Arc<dyn VisibilityStore>,
+    registry: &Arc<Registry>,
+) -> Result<(), EngineError> {
+    crate::runtime::nif_timer_bridge::register_deadline_handler(
+        nif_state,
+        Arc::new(crate::lifecycle::deadline::WorkflowDeadlineHandler::new(
+            Arc::downgrade(runtime),
+            Arc::clone(store),
+            Arc::clone(visibility_store),
+            Arc::clone(registry),
+        )),
+    )
+    .map_err(|error| EngineError::Runtime {
+        reason: format!("failed to register workflow deadline handler: {error}"),
+    })
+}
+
 fn install_configured_child_nif_bridge(
     assembly: &ChildBridgeAssembly<'_>,
 ) -> Result<(), EngineError> {
@@ -767,7 +797,17 @@ fn install_configured_child_nif_bridge(
             watch_backoff: assembly.watch_backoff,
         })?),
     );
-    Ok(())
+    // Register the workflow-deadline handler here too: it needs the same
+    // teardown deps this assembly carries, and this runs before startup timer
+    // recovery, so an already-due `deadline:{run_id}` swept at boot routes to
+    // the engine rather than failing as an unhandled reserved fire.
+    register_workflow_deadline_handler(
+        assembly.nif_state,
+        assembly.runtime,
+        assembly.store,
+        assembly.visibility_store,
+        assembly.registry,
+    )
 }
 
 pub(super) fn package_from_source(source: WorkflowPackageSource) -> Result<Package, EngineError> {
@@ -851,7 +891,7 @@ mod tests {
             entry_function: "version".to_owned(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "integer" }),
-            timeout: Duration::from_secs(30),
+            timeout: Some(Duration::from_secs(30)),
             activities: vec![DeclaredActivity {
                 activity_type: "activity/test".to_owned(),
             }],

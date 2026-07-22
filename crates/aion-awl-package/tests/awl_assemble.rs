@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 
 use aion_awl::{ActionRequirement, CompiledWorkflow};
 use aion_awl_package::{
-    AssembleError, AwlAssembleOptions, DEFAULT_WORKFLOW_TIMEOUT, assemble_awl, sdk_closure_modules,
-    sdk_closure_version,
+    AssembleError, AwlAssembleOptions, assemble_awl, sdk_closure_modules, sdk_closure_version,
 };
 use aion_package::{ExtractionLimits, Package};
 use beamr::atom::AtomTable;
@@ -87,9 +86,12 @@ fn assembling_twice_yields_byte_identical_archives() -> TestResult {
 /// timestamp, environment read, or ordering instability anywhere in the
 /// assembly path changes these bytes and fails this test. A deliberate SDK
 /// closure regeneration updates this pin in the same commit, exactly like
-/// `BUNDLE_CHECKSUM`.
+/// `BUNDLE_CHECKSUM`. Updated when the manifest timeout became
+/// `Option<Duration>`: the fixed input declares no timeout, so `manifest.json`
+/// now omits the `timeout` key entirely (rather than a defaulted 1h value),
+/// which deterministically changes these bytes.
 const FIXED_INPUT_ARCHIVE_SHA256: &str =
-    "115c3072c626ec19fef77368e307f367393e7277eec22d45a0cbfd3c64e7b0bb";
+    "7f1229b338a81d34e5b06bf40c30781071c4beac4c78018144c1aadba5a6762e";
 
 /// Proof 1b — cross-process determinism: a fully fixed input assembles to
 /// pinned archive bytes.
@@ -123,7 +125,10 @@ fn format_v1_loader_admits_the_archive_with_derived_manifest() -> TestResult {
     let manifest = package.manifest();
     assert_eq!(manifest.entry_module, "awl_hello");
     assert_eq!(manifest.entry_function, "run");
-    assert_eq!(manifest.timeout, DEFAULT_WORKFLOW_TIMEOUT);
+    // `awl_hello` declares no timeout, so the manifest carries none — no buried
+    // default — and the package cannot arm a deadline.
+    assert_eq!(manifest.timeout, None);
+    assert!(!package.has_declared_timeout());
     assert_eq!(manifest.input_schema, compiled.input_schema);
     assert_eq!(manifest.output_schema, compiled.output_schema);
 
@@ -161,7 +166,7 @@ fn format_v1_loader_admits_the_archive_with_derived_manifest() -> TestResult {
 }
 
 #[test]
-fn document_timeout_reaches_the_manifest_and_absence_keeps_the_default() -> TestResult {
+fn document_timeout_reaches_the_manifest_and_absence_arms_nothing() -> TestResult {
     let path = workspace_root()
         .join("crates/aion-awl/tests/fixtures/rev2/dag-fork/valid/after_single.awl");
     let source = fs::read_to_string(&path)?;
@@ -175,7 +180,10 @@ fn document_timeout_reaches_the_manifest_and_absence_keeps_the_default() -> Test
         },
     )?;
     let plain_package = Package::load_from_bytes(plain_bytes, ExtractionLimits::unbounded())?;
-    assert_eq!(plain_package.manifest().timeout, DEFAULT_WORKFLOW_TIMEOUT);
+    // No authored timeout: absent in the manifest and not declared by identity.
+    assert_eq!(plain_package.manifest().timeout, None);
+    assert!(!plain_package.has_declared_timeout());
+    assert_eq!(plain_package.declared_timeout(), None);
 
     let declared_source = source.replacen(
         "workflow after_single\n",
@@ -201,7 +209,12 @@ fn document_timeout_reaches_the_manifest_and_absence_keeps_the_default() -> Test
     let rebuilt_package = Package::load_from_bytes(rebuilt_bytes, ExtractionLimits::unbounded())?;
     assert_eq!(
         declared_package.manifest().timeout,
-        std::time::Duration::from_secs(21_600)
+        Some(std::time::Duration::from_secs(21_600))
+    );
+    assert!(declared_package.has_declared_timeout());
+    assert_eq!(
+        declared_package.declared_timeout(),
+        Some(std::time::Duration::from_secs(21_600))
     );
     assert_ne!(
         plain_package.content_hash(),

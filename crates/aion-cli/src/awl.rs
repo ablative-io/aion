@@ -265,7 +265,7 @@ fn beam_sidecar(compiled: &CompiledWorkflow) -> serde_json::Value {
                 "workflow_type": entry.workflow_type,
                 "entry_module": entry.entry_module,
                 "entry_function": entry.entry_function,
-                "timeout_seconds": entry.timeout_seconds,
+                "timeout_seconds": entry.timeout.map(|timeout| timeout.as_secs()),
                 "input_schema": entry.input_schema,
                 "output_schema": entry.output_schema,
                 "internal": entry.internal,

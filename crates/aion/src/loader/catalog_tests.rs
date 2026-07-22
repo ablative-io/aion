@@ -22,7 +22,7 @@ fn manifest(entry_module: &str) -> Manifest {
         entry_function: "run".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![DeclaredActivity {
             activity_type: "activity/send".to_owned(),
         }],

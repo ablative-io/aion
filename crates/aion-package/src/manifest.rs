@@ -93,8 +93,14 @@ pub struct WorkflowEntry {
     pub input_schema: serde_json::Value,
     /// JSON Schema for the entry's result payload.
     pub output_schema: serde_json::Value,
-    /// Workflow execution timeout.
-    pub timeout: Duration,
+    /// Explicitly authored workflow execution timeout, or `None` when the entry
+    /// declared none. Serialised only when present, so a manifest written for an
+    /// entry with no authored timeout carries no `timeout` key at all; a legacy
+    /// manifest that still carries a defaulted value decodes to `Some(_)` but is
+    /// held non-arming by the package's content-hash identity (see
+    /// [`crate::Package`]). Never a buried default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Duration>,
     /// Whether this entry is package-internal rather than operator-authored.
     #[serde(default)]
     pub internal: bool,
@@ -119,9 +125,17 @@ pub struct Manifest {
     /// Stable `output_schema` key containing a JSON-Schema document for result payloads.
     #[serde(rename = "output_schema")]
     pub output_schema: serde_json::Value,
-    /// Stable `timeout` key containing the workflow timeout as a serde-encoded duration.
-    #[serde(rename = "timeout")]
-    pub timeout: Duration,
+    /// Stable `timeout` key: the explicitly authored workflow timeout, or absent.
+    ///
+    /// `None` is serialised as an omitted key — a manifest written for a workflow
+    /// with no authored timeout carries no `timeout` at all, so nothing is armed.
+    /// A legacy manifest that carries a defaulted duration decodes to `Some(_)`,
+    /// but arming is authorised by the package's content-hash identity, not by
+    /// this field's presence: a legacy (beams-only) identity reads as not
+    /// declared regardless (see [`crate::Package::has_declared_timeout`]). This
+    /// key therefore never encodes a buried default.
+    #[serde(rename = "timeout", default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Duration>,
     /// Stable `activities` key listing activity types declared by the workflow.
     #[serde(rename = "activities")]
     pub activities: Vec<DeclaredActivity>,
@@ -211,7 +225,7 @@ mod tests {
                     "total": { "type": "number" }
                 }
             }),
-            timeout: Duration::new(30, 250_000_000),
+            timeout: Some(Duration::new(30, 250_000_000)),
             activities: vec![
                 DeclaredActivity {
                     activity_type: "charge_card".to_owned(),
@@ -260,7 +274,7 @@ mod tests {
             entry_function: "awl_distribute_items_0_run".to_owned(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "string" }),
-            timeout: Duration::from_secs(30),
+            timeout: Some(Duration::from_secs(30)),
             internal: true,
         });
         let encoded = serde_json::to_string(&manifest)?;

@@ -517,3 +517,89 @@ fn completed_process_lifecycle_state_returns_to_baseline_under_churn() -> TestRe
     runtime.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn abort_job_finalizer_runs_on_completion_and_when_already_complete() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let job = Arc::new(super::UnmonitoredProcessAbortJob::new(7_654, None));
+    let ran = Arc::new(AtomicUsize::new(0));
+
+    // Attached while the job is Running (the abort-wait timeout window): it does
+    // NOT run until the job proves termination.
+    {
+        let ran = Arc::clone(&ran);
+        job.attach_finalizer(Box::new(move || {
+            ran.fetch_add(1, Ordering::SeqCst);
+        }))?;
+    }
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "a finalizer does not run before the abort job completes"
+    );
+
+    // Completion (Succeeded: the process was terminated) runs the finalizer —
+    // the timeout-then-late-completion path.
+    job.complete_cleanup(&runtime, None, Ok(()))?;
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "completion runs the attached retraction finalizer"
+    );
+
+    // Attaching AFTER completion (the caller lost the timeout-vs-complete race)
+    // runs the finalizer immediately.
+    {
+        let ran = Arc::clone(&ran);
+        job.attach_finalizer(Box::new(move || {
+            ran.fetch_add(1, Ordering::SeqCst);
+        }))?;
+    }
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        2,
+        "attaching to an already-complete job runs the finalizer immediately"
+    );
+
+    // A CleanupFailed terminal still runs the finalizer: the process was
+    // terminated before the ancillary cleanup failed, so ownership must retract.
+    let cleanup_failed = Arc::new(super::UnmonitoredProcessAbortJob::new(7_655, None));
+    let ran_after_cleanup_fail = Arc::new(AtomicUsize::new(0));
+    {
+        let ran = Arc::clone(&ran_after_cleanup_fail);
+        cleanup_failed.attach_finalizer(Box::new(move || {
+            ran.fetch_add(1, Ordering::SeqCst);
+        }))?;
+    }
+    cleanup_failed.complete_cleanup(
+        &runtime,
+        None,
+        Err(crate::EngineError::Runtime {
+            reason: "ancillary cleanup failure".to_owned(),
+        }),
+    )?;
+    assert_eq!(
+        ran_after_cleanup_fail.load(Ordering::SeqCst),
+        1,
+        "a CleanupFailed terminal still runs the finalizer (the process is dead)"
+    );
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn attach_abort_finalizer_reports_no_job_so_the_caller_retracts_now() -> TestResult {
+    // When no in-flight abort job exists for the pid (it completed and removed
+    // itself, or never existed), the runtime reports `false` so a failed start
+    // retracts ownership immediately instead of deferring.
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let attached = runtime.attach_unmonitored_abort_finalizer(4_242, || {})?;
+    assert!(
+        !attached,
+        "no in-flight abort job yields Ok(false); the caller retracts now"
+    );
+    runtime.shutdown()?;
+    Ok(())
+}

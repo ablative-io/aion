@@ -31,6 +31,7 @@ impl WorkflowCatalog {
             deployed_entry_module.into(),
             entry_function.into(),
             version,
+            None,
         );
         let Ok(snapshot) = self.current() else {
             return record;

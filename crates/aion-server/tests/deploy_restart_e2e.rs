@@ -84,7 +84,7 @@ fn archive_bytes(beam: &[u8]) -> Result<Vec<u8>, TestError> {
         entry_function: "gated".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "integer" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,

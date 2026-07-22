@@ -5,24 +5,25 @@
 //! timer wheel (armed tokio sleep tasks keyed per process and timer id).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use aion_core::{Event, TimerCancelCause, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry};
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
 use crate::engine_seam::{
     ChildWorkflowSpawnRequest, ChildWorkflowSpawnResult, EngineHandle, EngineSeamError,
-    TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle, WorkflowResidency,
+    RecordOutcome, TimerWheelEntry, WorkflowMailboxMessage, WorkflowProcessHandle,
+    WorkflowResidency,
 };
 use crate::registry::Registry;
 use crate::runtime::nif_state::EngineNifState;
 use crate::runtime::nif_timer::NifTimerError;
-use crate::time::TimerService;
+use crate::time::{DeadlineHandler, TimerService};
 
 pub(super) struct TimerNifBridge {
     pub(super) registry: Arc<Registry>,
@@ -34,6 +35,20 @@ pub(super) struct TimerNifBridge {
     next_timer_generation: AtomicU64,
     // Weak: the engine state owns this bridge through its timer slot.
     nif_state: Weak<EngineNifState>,
+    /// Engine-registered handler for reserved `deadline:{run_id}` fires,
+    /// installed by [`register_deadline_handler`] after engine seams are wired
+    /// and before startup timer recovery runs. Every [`Self::service`] hands it
+    /// to the `TimerService` it constructs, so both the live wheel and
+    /// `recover_due` route a deadline fire to the engine instead of recording a
+    /// generic `TimerFired`.
+    deadline_handler: Mutex<Option<Arc<dyn DeadlineHandler>>>,
+    /// The single per-timer first-recorded-wins coordinator shared by every
+    /// [`TimerService`] this bridge constructs, so a cancel obtained from one
+    /// service instance and a fire obtained from another mutually exclude per
+    /// timer. Owning it here (not per service) is what makes the guard real
+    /// across the separately-obtained services the live wheel and `Engine::cancel`
+    /// use.
+    terminal_updates: Arc<DashSet<(WorkflowId, TimerId)>>,
 }
 
 struct PendingTimerTask {
@@ -102,7 +117,20 @@ impl TimerNifBridge {
     pub(super) fn service(self: &Arc<Self>) -> TimerService {
         let engine: Arc<dyn EngineHandle> = self.clone();
         let store: Arc<dyn ReadableEventStore> = self.store.clone();
-        TimerService::new(engine, store)
+        let service = TimerService::new(engine, store)
+            .with_terminal_updates(Arc::clone(&self.terminal_updates));
+        match self.deadline_handler() {
+            Some(handler) => service.with_deadline_handler(handler),
+            None => service,
+        }
+    }
+
+    /// The engine-registered deadline handler, if one has been installed.
+    fn deadline_handler(&self) -> Option<Arc<dyn DeadlineHandler>> {
+        match self.deadline_handler.lock() {
+            Ok(handler) => handler.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Abort every armed live-wheel timer task this engine owns.
@@ -269,21 +297,11 @@ impl EngineHandle for TimerNifBridge {
         let nif_state = Weak::clone(&self.nif_state);
         let handle = self.tokio_handle.spawn(async move {
             tokio::time::sleep(delay).await;
-            let bridge = nif_state
+            fire_wheel_timer(&nif_state, &workflow_id, &timer_id, fire_at).await;
+            if let Some(bridge) = nif_state
                 .upgrade()
-                .ok_or_else(|| "engine NIF state has been dropped".to_owned())
-                .and_then(|state| timer_bridge(&state).map_err(|error| error.to_string()));
-            let service = match &bridge {
-                Ok(bridge) => bridge.service(),
-                Err(error) => {
-                    tracing::warn!(error = %error, "timer wheel could not resolve timer service");
-                    return;
-                }
-            };
-            if let Err(error) = service.fire_timer(workflow_id, timer_id, fire_at).await {
-                tracing::warn!(error = %error, "timer wheel fire callback failed");
-            }
-            if let Ok(bridge) = bridge {
+                .and_then(|state| timer_bridge(&state).ok())
+            {
                 if bridge
                     .pending_timers
                     .get(&task_key)
@@ -313,7 +331,7 @@ impl EngineHandle for TimerNifBridge {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<RecordOutcome, EngineSeamError> {
         let recorded_at = *event.recorded_at();
         let outcome = match event {
             Event::TimerFired { timer_id, .. } => TimerOutcome::Fired(timer_id),
@@ -338,23 +356,56 @@ impl EngineHandle for TimerNifBridge {
                 workflow_id: workflow_id.clone(),
             })?;
         let recorder = handle.recorder();
-        run_blocking(&self.tokio_handle, async {
+        let store = Arc::clone(&self.store);
+        let workflow_id = workflow_id.clone();
+        run_blocking(&self.tokio_handle, async move {
             let mut recorder = recorder.lock().await;
+            // Late-append refusal under the SAME recorder lock that records the
+            // timer event: if the active run already recorded a terminal, refuse
+            // ALL late timer appends (fire OR cancel) cleanly — no post-terminal
+            // `TimerFired`, no wake. A parked sleep that elapses in the
+            // post-terminal window is thereby refused rather than mutating a
+            // terminal history, closing the whole late-timer class, not only the
+            // deadline case.
+            let history = store.read_history(&workflow_id).await?;
+            if active_run_has_terminal(&history) {
+                // Late fire/cancel after the run terminated: append nothing and
+                // report the refusal so the caller withholds the mailbox wake.
+                return Ok(RecordOutcome::RefusedTerminal);
+            }
             match outcome {
                 TimerOutcome::Fired(timer_id) => {
-                    recorder.record_timer_fired(recorded_at, timer_id).await
+                    recorder.record_timer_fired(recorded_at, timer_id).await?;
                 }
                 TimerOutcome::Cancelled(timer_id, cause) => {
                     recorder
                         .record_timer_cancelled(recorded_at, timer_id, cause)
-                        .await
+                        .await?;
                 }
             }
+            Ok(RecordOutcome::Recorded)
         })
-        .map_err(|error| EngineSeamError::Recorder {
-            reason: error.to_string(),
+        .map_err(|error: Box<dyn std::error::Error + Send + Sync>| {
+            EngineSeamError::Recorder {
+                reason: error.to_string(),
+            }
         })
     }
+}
+
+/// Whether the workflow's active run segment has already recorded a terminal.
+///
+/// The active run is the one opened by the latest `WorkflowStarted`; a timer
+/// event that arrives after that run terminated is a late fire/cancel the bridge
+/// refuses to append.
+fn active_run_has_terminal(history: &[Event]) -> bool {
+    let Some(run_id) = history.iter().rev().find_map(|event| match event {
+        Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
+        _ => None,
+    }) else {
+        return false;
+    };
+    crate::lifecycle::completion::terminal_outcome_from_history(history, &run_id).is_some()
 }
 
 /// Install the engine-scoped timer bridge used by raw NIF function pointers.
@@ -374,11 +425,34 @@ pub(crate) fn install_timer_nif_bridge(
         pending_timers: DashMap::new(),
         next_timer_generation: AtomicU64::new(0),
         nif_state: Arc::downgrade(state),
+        deadline_handler: Mutex::new(None),
+        terminal_updates: Arc::new(DashSet::new()),
     });
     match state.timer_bridge.lock() {
         Ok(mut installed) => *installed = Some(bridge),
         Err(poisoned) => *poisoned.into_inner() = Some(bridge),
     }
+}
+
+/// Register the engine-side deadline handler on the installed timer bridge.
+///
+/// Must run after [`install_timer_nif_bridge`] and before startup timer recovery
+/// (`recover_timers_on_startup`), so an already-due deadline recovered at boot
+/// routes to the engine rather than failing as an unhandled reserved fire.
+///
+/// # Errors
+///
+/// Returns the bridge-resolution error string when no timer bridge is installed.
+pub(crate) fn register_deadline_handler(
+    state: &EngineNifState,
+    handler: Arc<dyn DeadlineHandler>,
+) -> Result<(), String> {
+    let bridge = timer_bridge(state).map_err(|error| error.to_string())?;
+    match bridge.deadline_handler.lock() {
+        Ok(mut slot) => *slot = Some(handler),
+        Err(poisoned) => *poisoned.into_inner() = Some(handler),
+    }
+    Ok(())
 }
 
 pub(crate) fn installed_timer_service(state: &EngineNifState) -> Result<Arc<TimerService>, String> {
@@ -420,6 +494,93 @@ where
     )
 }
 
+/// Fire a due wheel timer, retrying a DEADLINE fire with bounded backoff while
+/// its history timer remains live.
+///
+/// The live wheel is one-shot and production runs no periodic recovery tick, so
+/// without this a transient timeout-teardown/fire failure would be dropped and
+/// never re-driven in the same engine epoch. Only a reserved `deadline:{run}`
+/// timer that is STILL live in durable history is retried; an ordinary timer's
+/// fire failure — or a deadline already retired/superseded — is logged and
+/// dropped exactly as before. The backoff interval grows and is capped (never a
+/// hot loop), attempts are bounded, and the durable deadline row stays live so
+/// restart recovery remains the final backstop.
+async fn fire_wheel_timer(
+    nif_state: &Weak<EngineNifState>,
+    workflow_id: &WorkflowId,
+    timer_id: &TimerId,
+    fire_at: DateTime<Utc>,
+) {
+    const MAX_ATTEMPTS: u32 = 6;
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(200);
+    const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+    let mut backoff = INITIAL_BACKOFF;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let Some(bridge) = nif_state
+            .upgrade()
+            .and_then(|state| timer_bridge(&state).ok())
+        else {
+            return;
+        };
+        let result = bridge
+            .service()
+            .fire_timer(workflow_id.clone(), timer_id.clone(), fire_at)
+            .await;
+        let Err(error) = result else {
+            return;
+        };
+        if !crate::time::is_deadline_timer(timer_id) {
+            tracing::warn!(error = %error, "timer wheel fire callback failed");
+            return;
+        }
+        // A deadline fire failed. It stays eligible for a bounded retry unless we
+        // can POSITIVELY confirm it is no longer live. A liveness-read error —
+        // e.g. the same store outage that failed the fire — is UNCERTAIN, not a
+        // reason to abandon the same-epoch drive: fall through to the backoff and
+        // the next attempt, whose `fire_timer` performs its own fresh liveness
+        // read and safely no-ops if another actor has since retired the deadline.
+        match deadline_remains_live(&bridge, workflow_id, timer_id).await {
+            Ok(false) => return,
+            Ok(true) => tracing::warn!(
+                error = %error,
+                attempt,
+                "workflow deadline fire failed while its timer is still live; retrying with backoff"
+            ),
+            Err(read_error) => tracing::warn!(
+                error = %error,
+                %read_error,
+                attempt,
+                "workflow deadline fire failed and its liveness could not be read (store outage?); treating as still-eligible and retrying with backoff"
+            ),
+        }
+        if attempt == MAX_ATTEMPTS {
+            break;
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+    }
+    tracing::error!(
+        %workflow_id,
+        %timer_id,
+        "workflow deadline fire exhausted same-epoch retries; the durable timer stays live for restart recovery"
+    );
+}
+
+/// Whether the reserved deadline timer `timer_id` is still live in durable
+/// history (its run has not retired it), so a failed fire is worth retrying.
+async fn deadline_remains_live(
+    bridge: &TimerNifBridge,
+    workflow_id: &WorkflowId,
+    timer_id: &TimerId,
+) -> Result<bool, StoreError> {
+    let Some(run_id) = crate::time::deadline_run_id(timer_id) else {
+        return Ok(false);
+    };
+    let history = bridge.store.read_history(workflow_id).await?;
+    Ok(crate::time::outstanding_deadline_timer(&history, &run_id).is_some())
+}
+
 fn event_kind(event: &Event) -> &'static str {
     match event {
         Event::TimerFired { .. } => "TimerFired",
@@ -428,3 +589,7 @@ fn event_kind(event: &Event) -> &'static str {
         _ => "non-timer",
     }
 }
+
+#[cfg(test)]
+#[path = "nif_timer_bridge_tests.rs"]
+mod tests;

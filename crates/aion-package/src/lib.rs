@@ -52,7 +52,7 @@ pub use codegen::{
 };
 pub use error::PackageError;
 pub use extraction::ExtractionLimits;
-pub use hash::{ContentHash, content_hash, content_hash_with_timeout};
+pub use hash::{ContentHash, content_hash, content_hash_with_timeout, content_hash_with_timeouts};
 pub use manifest::{
     CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestDigest, ManifestVersion,
     WorkflowEntry,

@@ -182,7 +182,10 @@ fn build_workflow_package(
         entry_function: workflow.entry_function.clone(),
         input_schema: workflow.input_schema.clone(),
         output_schema: workflow.output_schema.clone(),
-        timeout: workflow.timeout,
+        // Gleam `workflow.toml` requires a primary timeout, so it is always an
+        // authored value; the Gleam path does not opt into explicit-timeout
+        // package identity, so the engine still reads it as non-arming.
+        timeout: Some(workflow.timeout),
         activities: workflow
             .activities
             .iter()
@@ -279,7 +282,7 @@ activities = []
         let manifest = packaged.package.manifest();
         assert_eq!(manifest.entry_module, "demo");
         assert_eq!(manifest.entry_function, "run");
-        assert_eq!(manifest.timeout, Duration::from_secs(30));
+        assert_eq!(manifest.timeout, Some(Duration::from_secs(30)));
         assert_eq!(manifest.input_schema, json!({ "type": "object" }));
         assert_eq!(manifest.output_schema, json!(true));
         assert_eq!(manifest.activities.len(), 1);

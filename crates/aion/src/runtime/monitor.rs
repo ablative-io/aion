@@ -129,6 +129,13 @@ enum AbortJobPhase {
 struct AbortJobState {
     phase: AbortJobPhase,
     installation: Option<Arc<MonitorInstallation>>,
+    /// Callbacks to run once this job reaches [`AbortJobPhase::Complete`] — i.e.
+    /// once the process has been terminated (both terminals run
+    /// `terminate_process` first). A failed start whose synchronous abort `wait`
+    /// timed out attaches its registry retraction here instead of racing a
+    /// monitor install the in-flight job would reject, so ownership is retracted
+    /// only after the job proves termination.
+    finalizers: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 /// One runtime-owned abort identity for a `pid` generation.
@@ -145,9 +152,32 @@ impl UnmonitoredProcessAbortJob {
             state: Mutex::new(AbortJobState {
                 phase: AbortJobPhase::Running,
                 installation,
+                finalizers: Vec::new(),
             }),
             ready: Condvar::new(),
         }
+    }
+
+    /// Attach a callback to run when this job completes (the process is
+    /// terminated). Runs it immediately if the job has already completed, so a
+    /// caller that lost the timeout-vs-completion race still gets its finalizer.
+    fn attach_finalizer(
+        &self,
+        finalizer: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), UnmonitoredProcessAbortError> {
+        let run_now = {
+            let mut state = self.lock_state()?;
+            if matches!(state.phase, AbortJobPhase::Complete(_)) {
+                Some(finalizer)
+            } else {
+                state.finalizers.push(finalizer);
+                None
+            }
+        };
+        if let Some(finalizer) = run_now {
+            finalizer();
+        }
+        Ok(())
     }
 
     fn attach_installation(
@@ -191,16 +221,23 @@ impl UnmonitoredProcessAbortJob {
         if let Some(record) = record {
             runtime.process_exits.retire(self.pid, record);
         }
-        let mut state = self.lock_state()?;
-        state.phase = AbortJobPhase::Complete(terminal);
+        let finalizers = {
+            let mut state = self.lock_state()?;
+            state.phase = AbortJobPhase::Complete(terminal);
+            std::mem::take(&mut state.finalizers)
+        };
         if let Entry::Occupied(entry) = runtime.abort_jobs.entry(self.pid) {
             if Arc::ptr_eq(entry.get(), self) {
                 entry.remove();
             }
         }
         self.ready.notify_all();
-        drop(state);
         drop(ownership);
+        // Run attached finalizers OUTSIDE the state lock (they retract engine
+        // registry ownership now that the process is terminated).
+        for finalizer in finalizers {
+            finalizer();
+        }
         Ok(())
     }
 
@@ -377,6 +414,37 @@ impl RuntimeHandle {
         pid: Pid,
     ) -> Result<(), UnmonitoredProcessAbortError> {
         self.abort_unmonitored_process_with_installation(pid, None)
+    }
+
+    /// Attach a completion finalizer to the in-flight abort job for `pid`, if one
+    /// is still running.
+    ///
+    /// Returns `Ok(true)` when the finalizer was attached (or run inline because
+    /// the job had just completed), and `Ok(false)` when no abort job exists —
+    /// which, on a path that just observed a `TimedOut` abort for this `pid`,
+    /// means the job completed and removed itself between the timeout and this
+    /// call, so the process is already terminated and the caller may proceed with
+    /// its own cleanup. This is how a failed start whose synchronous abort timed
+    /// out defers registry retraction to the abort job's own termination instead
+    /// of racing a mutually-exclusive monitor install.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed runtime error when the abort job's state lock is poisoned.
+    pub(crate) fn attach_unmonitored_abort_finalizer<F>(
+        &self,
+        pid: Pid,
+        finalizer: F,
+    ) -> Result<bool, EngineError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let Some(job) = self.abort_jobs.get(&pid).map(|job| Arc::clone(job.value())) else {
+            return Ok(false);
+        };
+        job.attach_finalizer(Box::new(finalizer))
+            .map_err(UnmonitoredProcessAbortError::into_engine_error)?;
+        Ok(true)
     }
 
     fn abort_unmonitored_process_with_installation(

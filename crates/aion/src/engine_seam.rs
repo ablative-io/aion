@@ -211,6 +211,23 @@ pub enum EngineSeamError {
     },
 }
 
+/// Whether a recorder seam durably appended a timer event, or refused it because
+/// the workflow's active run already reached a terminal.
+///
+/// A refusal is a benign, expected outcome — a late timer fire or cancel that
+/// lands after the run terminated — not an error. It exists as an explicit value
+/// so the timer service can distinguish "appended" from "refused" and deliver a
+/// mailbox wake ONLY for a genuine append: a refused post-terminal fire must
+/// never wake (and thereby reschedule) a workflow that has already terminated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordOutcome {
+    /// The event was durably appended through the target run's Recorder.
+    Recorded,
+    /// The append was refused because the active run already recorded a terminal;
+    /// no history was mutated and no wake must follow.
+    RefusedTerminal,
+}
+
 /// Engine-facing capabilities consumed by AT services and implemented by AE.
 ///
 /// This trait deliberately does not expose operations that start, supervise, tear down, or load
@@ -294,6 +311,13 @@ pub trait EngineHandle: Send + Sync {
 
     /// Records an event through the target workflow's single AD Recorder.
     ///
+    /// Returns [`RecordOutcome::Recorded`] when the event was durably appended, or
+    /// [`RecordOutcome::RefusedTerminal`] when the append was declined because the
+    /// active run already recorded a terminal (a benign late arrival). Callers
+    /// that follow a recorded fire with a mailbox wake MUST gate the wake on
+    /// `Recorded` — a `RefusedTerminal` fire must not reschedule a terminated
+    /// workflow.
+    ///
     /// # Errors
     ///
     /// Returns [`EngineSeamError`] when the target workflow's Recorder cannot append the event.
@@ -301,7 +325,7 @@ pub trait EngineHandle: Send + Sync {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError>;
+    ) -> Result<RecordOutcome, EngineSeamError>;
 }
 
 #[cfg(test)]
@@ -374,6 +398,10 @@ pub(crate) mod test_support {
         operations: Vec<FakeEngineOperation>,
         recorder_store: Option<Arc<dyn WritableEventStore>>,
         record_responses: VecDeque<Result<(), EngineSeamError>>,
+        /// When true, the next `record_workflow_event` refuses as a terminal
+        /// late-arrival (returns [`RecordOutcome::RefusedTerminal`] without
+        /// appending), letting a test drive the deliver-only-on-`Recorded` gate.
+        refuse_next_record_as_terminal: bool,
     }
 
     /// Cloneable projection of delivered mailbox messages for seam tests.
@@ -519,6 +547,17 @@ pub(crate) mod test_support {
             response: Result<(), EngineSeamError>,
         ) -> Result<(), EngineSeamError> {
             self.state()?.record_responses.push_back(response);
+            Ok(())
+        }
+
+        /// Arms the next `record_workflow_event` to refuse as a terminal late
+        /// arrival: it appends nothing and returns [`RecordOutcome::RefusedTerminal`].
+        ///
+        /// # Errors
+        ///
+        /// Returns [`EngineSeamError::EngineOffline`] if the fake's state lock is poisoned.
+        pub fn refuse_next_record_as_terminal(&self) -> Result<(), EngineSeamError> {
+            self.state()?.refuse_next_record_as_terminal = true;
             Ok(())
         }
 
@@ -693,10 +732,15 @@ pub(crate) mod test_support {
             &self,
             workflow_id: &WorkflowId,
             event: Event,
-        ) -> Result<(), EngineSeamError> {
+        ) -> Result<RecordOutcome, EngineSeamError> {
             let mut state = self.state()?;
             if let Some(response) = state.record_responses.pop_front() {
                 response?;
+            }
+            if std::mem::take(&mut state.refuse_next_record_as_terminal) {
+                // Simulate the production bridge refusing a late fire/cancel under
+                // the recorder lock: nothing is appended and no wake must follow.
+                return Ok(RecordOutcome::RefusedTerminal);
             }
             state
                 .recorded_events
@@ -720,7 +764,7 @@ pub(crate) mod test_support {
                     reason: error.to_string(),
                 })?;
             }
-            Ok(())
+            Ok(RecordOutcome::Recorded)
         }
     }
 }

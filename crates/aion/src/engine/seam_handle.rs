@@ -106,7 +106,7 @@ impl EngineHandle for Engine {
         &self,
         workflow_id: &WorkflowId,
         event: Event,
-    ) -> Result<(), EngineSeamError> {
+    ) -> Result<crate::engine_seam::RecordOutcome, EngineSeamError> {
         let _ = (workflow_id, event);
         Err(EngineSeamError::Recorder {
             reason: "engine handle event recording is not wired here".to_owned(),

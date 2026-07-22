@@ -84,7 +84,7 @@ fn direct_builder_archive(root: &Path) -> Result<Vec<u8>, Box<dyn std::error::Er
         entry_function: "run".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "string" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![DeclaredActivity {
             activity_type: "greet".to_owned(),
         }],

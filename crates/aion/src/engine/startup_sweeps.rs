@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use aion_core::{Event, RunId, WorkflowFilter, WorkflowStatus};
+use chrono::Utc;
 
 use crate::{
     EngineError,
@@ -219,6 +220,189 @@ pub(super) async fn sweep_continued_as_new_replacements(
     Ok(())
 }
 
+/// Retire every declared-timeout deadline left uncancelled behind a NON-timeout
+/// terminal — the crash-window repair for the two-write terminal transition.
+///
+/// A terminal writer records its terminal and then, as a SEPARATE durable write,
+/// cancels the run's recorded deadline. A crash (or a transient store failure)
+/// between the two leaves a run that is durably `Completed`/`Failed`/`Cancelled`
+/// or continued-as-new while its `deadline:{run}` timer is still live —
+/// permanently violating D5 and letting whole-history recovery keep re-arming it.
+/// This sweep drives that condition to closure at startup and at shard adoption,
+/// in addition to the process-exit re-entry (`handle_process_exit`) and the
+/// deadline-fire repair (`WorkflowDeadlineHandler`), so no history can hold a
+/// terminal + an uncancelled recorded deadline across a restart or a failover.
+///
+/// The candidate set is the durable timer rows (bounded by armed timers, not all
+/// workflows), filtered to deadline ids. A `WorkflowTimedOut` terminal is
+/// deliberately SKIPPED: its deadline is owned by `WorkflowDeadlineHandler`
+/// teardown, and `recover_due` re-fires it to drive `ResumeTeardown`. A run with
+/// no terminal yet keeps its live deadline. Idempotent.
+///
+/// Writer discipline (honest bound). Ordering removes every RECOVERY-path writer
+/// from this sweep's window: on cold boot it runs BEFORE repopulation and
+/// continue-as-new successor start, and on adoption BEFORE the acquired shards'
+/// workflows are repopulated — so no recovery-created recorder exists for a
+/// candidate. It is NOT, however, exclusive against public post-fence actors:
+/// adoption publishes shard ownership before recovery, so `Engine::reopen_workflow`
+/// (and other public writers) can create a recorder for an acquired workflow
+/// concurrently with this sweep. The sweep is therefore an OPTIMISTIC writer whose
+/// serialization point is the store's per-workflow sequence check; a lost append
+/// is arbitrated by the COMPLETE repair predicate (see
+/// [`retire_orphaned_terminal_deadline_independent`]), which recognizes a
+/// concurrent `WorkflowReopened` as making the repair inapplicable rather than an
+/// error.
+///
+/// [`SweepScope`] selects what a live registered handle at candidate time means:
+/// on cold boot it is an ordering-invariant breach (typed error); on adoption it
+/// is an already-owned resident workflow that is out of scope (skipped — its
+/// deadline lifecycle is this engine's normal-operation concern, and the acquired
+/// workflows it is here to repair have no local handle yet).
+///
+/// Future note (out of scope for this lane): the adoption sweep enumerates the
+/// full owned timer scope before repopulating the acquired workflows, which
+/// lengthens the already-published/pre-recovery window in proportion to all owned
+/// timer rows. A workflow-scoped writer-generation gate shared with reopen/start
+/// would tighten this, but the optimistic arbitration above is the intended shape
+/// here.
+pub(super) async fn sweep_uncancelled_terminal_deadlines(
+    context: &StartupRecoveryContext,
+    scope: SweepScope,
+) -> Result<(), EngineError> {
+    let horizon = Utc::now()
+        .checked_add_signed(chrono::Duration::days(3_652_500))
+        .unwrap_or_else(Utc::now);
+    let rows = context.store.as_ref().expired_timers(horizon).await?;
+    for entry in rows {
+        let Some(run_id) = crate::time::deadline_run_id(&entry.timer_id) else {
+            continue;
+        };
+        repair_orphaned_terminal_deadline(context, &entry.workflow_id, &run_id, scope).await?;
+    }
+    Ok(())
+}
+
+/// Whether this sweep runs at cold boot (full scope, no local recorders exist
+/// yet) or at live shard adoption (scoped implicitly to the not-yet-repopulated
+/// acquired workflows — those without a live registered handle).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SweepScope {
+    /// Cold boot before repopulation: NO candidate may have a live handle.
+    ColdBoot,
+    /// Live adoption before repopulating the acquired shards' workflows: an
+    /// already-owned resident workflow legitimately has a live handle and is out
+    /// of scope.
+    Adoption,
+}
+
+/// Repair one candidate's uncancelled non-timeout-terminal deadline.
+///
+/// A live registered handle means a live local recorder exists for the workflow.
+/// On cold boot that is an ordering-invariant breach (the sweep must precede
+/// repopulation), surfaced as a typed [`EngineError`] rather than an append
+/// around the live recorder or a silent skip. On adoption it is an out-of-scope
+/// already-owned workflow, skipped. Otherwise no recovery-path recorder exists, so
+/// the retirement uses an independent recorder as an OPTIMISTIC writer, with
+/// `SequenceConflict` reconciliation (see
+/// [`retire_orphaned_terminal_deadline_independent`]) arbitrating against a
+/// concurrent public writer such as `reopen`.
+async fn repair_orphaned_terminal_deadline(
+    context: &StartupRecoveryContext,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+    scope: SweepScope,
+) -> Result<(), EngineError> {
+    // Resolve the workflow's live run through the live index (never `list().find`,
+    // which can select a superseded run's stale handle).
+    if context.registry.live_run_pid(workflow_id)?.is_some() {
+        return match scope {
+            SweepScope::ColdBoot => Err(EngineError::Runtime {
+                reason: format!(
+                    "terminal-deadline sweep found a live registered handle for workflow {workflow_id} on cold boot, which must run before repopulation: the sweep ordering invariant is broken"
+                ),
+            }),
+            SweepScope::Adoption => Ok(()),
+        };
+    }
+    retire_orphaned_terminal_deadline_independent(context, workflow_id, run_id).await
+}
+
+/// Whether `run_id`'s history shows a NON-timeout terminal with a still-outstanding
+/// deadline — the crash-window condition this sweep repairs.
+fn is_orphaned_terminal_deadline(history: &[Event], run_id: &RunId) -> bool {
+    if crate::time::outstanding_deadline_timer(history, run_id).is_none() {
+        return false;
+    }
+    matches!(
+        crate::lifecycle::completion::terminal_outcome_from_history(history, run_id),
+        Some(terminal) if !matches!(terminal, crate::registry::TerminalOutcome::TimedOut(_))
+    )
+}
+
+/// Retire the deadline through an independent recorder as an OPTIMISTIC writer:
+/// the store's per-workflow sequence check is the serialization point. On a
+/// `SequenceConflict` (a cross-actor writer won the head), re-read and re-evaluate
+/// the COMPLETE repair predicate; if the run is no longer an orphaned terminal
+/// deadline the repair became inapplicable — success, nothing to do — otherwise
+/// surface the typed error, never swallow it.
+async fn retire_orphaned_terminal_deadline_independent(
+    context: &StartupRecoveryContext,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
+) -> Result<(), EngineError> {
+    let history = context.store.as_ref().read_history(workflow_id).await?;
+    if !is_orphaned_terminal_deadline(&history, run_id) {
+        return Ok(());
+    }
+    let head = history.iter().map(Event::seq).max().unwrap_or_default();
+    let mut recorder = crate::durability::Recorder::resume_at(
+        workflow_id.clone(),
+        Arc::clone(&context.store),
+        head,
+    );
+    tracing::info!(
+        %workflow_id,
+        %run_id,
+        "retiring an orphaned non-timeout terminal deadline via an independent recorder (startup repair)"
+    );
+    match crate::time::retire_run_deadline(&mut recorder, &history, run_id).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if matches!(
+                error,
+                crate::durability::DurabilityError::Store(
+                    aion_store::StoreError::SequenceConflict { .. }
+                )
+            ) {
+                // A cross-actor writer advanced the head between our snapshot and
+                // our append. Re-read and re-evaluate the COMPLETE repair
+                // predicate: if the run is no longer an orphaned terminal deadline,
+                // the repair became inapplicable and there is nothing to do —
+                // success, not error. This covers a competing terminal writer that
+                // retired the deadline AND a concurrent public `WorkflowReopened`
+                // (a valid post-fence actor during adoption): reopen clears the
+                // terminal predicate while deliberately keeping the failed run's
+                // deadline live, so the run ceased to be a crash-window orphan and
+                // must NOT be retired here and must NOT abort adoption.
+                //
+                // The sweep-WINS direction needs no code here: a normally-failed
+                // run has its deadline retired by the terminal writer BEFORE any
+                // reopen can occur, so the sweep retiring the crash-window orphan
+                // first makes the crash case converge to the normal case. A
+                // concurrent reopen that instead loses this append fails with a
+                // retryable `SequenceConflict`, and its own retry then reads the
+                // repaired history — a benign transient of a rare coincidence
+                // (reopen-during-adoption of a crash-window run).
+                let history = context.store.as_ref().read_history(workflow_id).await?;
+                if !is_orphaned_terminal_deadline(&history, run_id) {
+                    return Ok(());
+                }
+            }
+            Err(error.into())
+        }
+    }
+}
+
 /// Whether a successor `WorkflowStarted` continuing `continued_run_id` is
 /// durable for `workflow_id`.
 async fn successor_started(
@@ -265,3 +449,7 @@ fn continued_run_workflow_type(
             ),
         })
 }
+
+#[cfg(test)]
+#[path = "startup_sweeps_tests.rs"]
+mod tests;

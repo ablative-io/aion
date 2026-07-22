@@ -215,6 +215,40 @@ mod tests {
         Ok(())
     }
 
+    fn timed_out(seq: u64) -> Event {
+        Event::WorkflowTimedOut {
+            envelope: envelope(seq),
+            timeout: "workflow".to_owned(),
+        }
+    }
+
+    #[test]
+    fn status_selector_projects_workflow_timed_out_to_timed_out()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The ops-console stream selector must surface a `WorkflowTimedOut`
+        // terminal as `TimedOut`: a `TimedOut` subscription admits it, a
+        // `Running` subscription rejects it (it is terminal), and a `Failed`
+        // subscription does not confuse it for a failure.
+        let timed_out_only = SubscriptionSelector {
+            workflow_type: None,
+            status: Some(WorkflowStatus::TimedOut),
+        };
+        let running = SubscriptionSelector {
+            workflow_type: None,
+            status: Some(WorkflowStatus::Running),
+        };
+        let failed_only = SubscriptionSelector {
+            workflow_type: None,
+            status: Some(WorkflowStatus::Failed),
+        };
+
+        assert!(timed_out_only.matches(&timed_out(4), Some("checkout")));
+        assert!(!timed_out_only.matches(&completed(3)?, Some("checkout")));
+        assert!(!running.matches(&timed_out(4), Some("checkout")));
+        assert!(!failed_only.matches(&timed_out(4), Some("checkout")));
+        Ok(())
+    }
+
     #[test]
     fn combined_selectors_and_together() -> Result<(), Box<dyn std::error::Error>> {
         let selector = SubscriptionSelector {

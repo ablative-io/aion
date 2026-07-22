@@ -235,7 +235,7 @@ pub(crate) fn package_with_options(
         return Ok(package);
     };
     let mut manifest = package.manifest().clone();
-    manifest.timeout = timeout;
+    manifest.timeout = Some(timeout);
     let source = package
         .source()
         .iter()

@@ -4,6 +4,8 @@
 pub mod completion;
 /// Continue-as-new lifecycle transition support.
 pub mod continue_as_new;
+/// Engine-side workflow-deadline timeout handler.
+pub mod deadline;
 /// Durable operator pause/resume (#204): hold new activity dispatch while paused.
 pub mod pause;
 /// Reopen a terminal-Failed or terminal-Cancelled workflow and re-drive it.

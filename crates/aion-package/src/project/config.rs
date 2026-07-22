@@ -73,7 +73,11 @@ struct GeneratedWorkflowEntry {
     workflow_type: String,
     entry_module: String,
     entry_function: String,
-    timeout_seconds: u64,
+    /// Authored workflow timeout in whole seconds, or absent/`null` when the
+    /// generating document declared none. Absent decodes to `None` (no buried
+    /// default): the synthesized child arms no deadline.
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
     input_schema: serde_json::Value,
     output_schema: serde_json::Value,
     internal: bool,
@@ -119,7 +123,10 @@ pub(crate) struct AdditionalWorkflowConfig {
     pub(crate) workflow_type: String,
     pub(crate) entry_module: String,
     pub(crate) entry_function: String,
-    pub(crate) timeout: Duration,
+    /// Explicitly authored workflow timeout, or `None` when the entry declared
+    /// none. Hand-authored `workflow.toml` additional entries always require a
+    /// timeout; generated (`.awl.json`) entries may carry none.
+    pub(crate) timeout: Option<Duration>,
     pub(crate) input_schema: serde_json::Value,
     pub(crate) output_schema: serde_json::Value,
     pub(crate) internal: bool,
@@ -376,7 +383,9 @@ fn resolve_additional(
                 workflow_type: entry.workflow_type.clone(),
                 entry_module: entry.entry_module.clone(),
                 entry_function: entry.entry_function.clone(),
-                timeout: Duration::from_secs(entry.timeout_seconds),
+                // Hand-authored additional entries require a timeout (validated
+                // non-zero above), so this is always an authored value.
+                timeout: Some(Duration::from_secs(entry.timeout_seconds)),
                 input_schema: load_schema(&input_path)?,
                 output_schema: load_schema(&output_path)?,
                 internal: entry.internal,
@@ -428,23 +437,27 @@ fn load_generated_entries(
         .into_iter()
         .enumerate()
         .map(|(index, entry)| {
+            // A generated entry may declare no timeout (absent/`null`), which is
+            // the honest "no authored timeout"; but a present timeout of zero is
+            // still rejected as malformed.
             if entry.workflow_type.is_empty()
                 || entry.entry_function.is_empty()
-                || entry.timeout_seconds == 0
+                || entry.timeout_seconds.is_some_and(|seconds| seconds == 0)
                 || !is_safe_logical_name(&entry.workflow_type)
                 || !is_safe_logical_name(&entry.entry_module)
             {
                 return Err(PackagingError::ConfigInvalid {
                     field: format!("{}:synthesized_workflows[{index}]", path.display()),
-                    reason: "workflow type/module/function must be valid and timeout at least 1"
-                        .to_owned(),
+                    reason:
+                        "workflow type/module/function must be valid and any timeout at least 1"
+                            .to_owned(),
                 });
             }
             Ok(AdditionalWorkflowConfig {
                 workflow_type: entry.workflow_type,
                 entry_module: entry.entry_module,
                 entry_function: entry.entry_function,
-                timeout: Duration::from_secs(entry.timeout_seconds),
+                timeout: entry.timeout_seconds.map(Duration::from_secs),
                 input_schema: entry.input_schema,
                 output_schema: entry.output_schema,
                 internal: entry.internal,

@@ -64,19 +64,13 @@ pub(crate) fn synthesized_entries(
             };
             fields.push((name.clone(), ty));
         }
-        let timeout_seconds = emitter
-            .document
-            .timeout
-            .as_ref()
-            .and_then(|timeout| timeout.duration.checked_duration())
-            .map_or(60 * 60, |timeout| timeout.as_secs());
         entries.push(super::artifact::SynthesizedWorkflowEntry {
             workflow_type: region.child_name.clone(),
             entry_module: emitter.document.name.clone(),
             entry_function: entry_fn(region),
             input_schema: super::artifact::schema_for_fields(&emitter.env, &fields),
             output_schema: super::artifact::schema_for_type(&emitter.env, item_ty),
-            timeout_seconds,
+            timeout: document_timeout(emitter),
             internal: true,
         });
     }
@@ -98,6 +92,18 @@ pub(super) fn is_required(emitter: &Emitter<'_>, region: &RegionShape) -> bool {
 /// Exported engine entry function for a region's synthesized workflow type.
 pub(crate) fn entry_fn(region: &RegionShape) -> String {
     format!("{}_run", snake(&region.child_name))
+}
+
+/// The parent document's declared workflow timeout, or `None` when the document
+/// authored no `timeout`. A synthesized child inherits exactly this: when the
+/// document declares no timeout there is no buried default — the child carries
+/// `None` and the engine arms no deadline for it.
+fn document_timeout(emitter: &Emitter<'_>) -> Option<std::time::Duration> {
+    emitter
+        .document
+        .timeout
+        .as_ref()
+        .and_then(|timeout| timeout.duration.checked_duration())
 }
 
 /// Emit the input record, codec, typed body, and raw engine adapter for one
@@ -127,12 +133,7 @@ pub(super) fn emit_adapter(
         fields.push((name.clone(), ty));
     }
 
-    let timeout_seconds = emitter
-        .document
-        .timeout
-        .as_ref()
-        .and_then(|timeout| timeout.duration.checked_duration())
-        .map_or(60 * 60, |timeout| timeout.as_secs());
+    let child_timeout = document_timeout(emitter);
     emitter
         .synthesized_workflows
         .push(super::artifact::SynthesizedWorkflowEntry {
@@ -141,7 +142,7 @@ pub(super) fn emit_adapter(
             entry_function: entry_fn(region),
             input_schema: super::artifact::schema_for_fields(&emitter.env, &fields),
             output_schema: super::artifact::schema_for_type(&emitter.env, item_ty),
-            timeout_seconds,
+            timeout: child_timeout,
             internal: true,
         });
 

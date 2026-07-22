@@ -83,6 +83,13 @@ pub enum PackageError {
         /// The caller-configured inflate ceiling in bytes.
         limit: u64,
     },
+
+    /// Explicit-timeout package identity was requested for a manifest that
+    /// declares no workflow timeout, so there is no value to bind into the hash.
+    #[error(
+        "explicit-timeout package identity requires an authored workflow timeout, but the manifest declares none"
+    )]
+    ExplicitTimeoutWithoutValue,
 }
 
 #[cfg(test)]
