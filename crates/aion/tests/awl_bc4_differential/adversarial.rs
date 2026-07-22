@@ -10,14 +10,14 @@
 //! - `child_spawn_combo`      — an awaited child plus a detached `spawn`.
 //! - `max_arity_record`       — a high-arity record (wide tuple).
 //!
-//! Two are out-of-intersection and refuse (recorded, never failed):
+//! Two are out-of-intersection and refuse (recorded, never failed), pinned to
+//! their EXACT `LowerError` variant, message, and span:
 //! - `nested_handlers`   — the reference emits its `on failure` region, but the
-//!   direct path does not yet lower `on failure` (pinned in
-//!   `aion-awl/src/mir/deferred_tests.rs`).
+//!   direct path does not yet lower it (`Unsupported { shape: "on failure" }`).
 //! - `zero_step_workflow` — below BOTH backends' floor (no steps to execute);
-//!   it lives outside any `valid/` sweep dir for that reason.
+//!   `Message("the workflow has no start region")`.
 
-use aion_awl::mir::lower;
+use aion_awl::mir::{LowerError, lower};
 
 use crate::driver::run_differential;
 use crate::fixtures;
@@ -34,16 +34,14 @@ const LOWERING: &[&str] = &[
     "header-types/valid/max_arity_record",
 ];
 
-/// The two out-of-intersection adversarial fixtures and the substring each
-/// direct-path refusal must contain.
-const REFUSING: &[(&str, &str)] = &[
-    ("loop-outcomes/valid/nested_handlers", "on failure"),
-    ("header-types/zero_step_workflow", "no start region"),
+/// The two out-of-intersection adversarial fixtures (recorded refusals).
+const REFUSING: &[&str] = &[
+    "loop-outcomes/valid/nested_handlers",
+    "header-types/zero_step_workflow",
 ];
 
-/// Classification pin: the six lower, the two refuse with their expected
-/// refusal text. A drift in either direction (a lowering fixture starting to
-/// refuse, or a refusing one starting to lower) fails here.
+/// Classification pin: the six lower; the two refuse with their EXACT
+/// `LowerError` variant, message/shape, and span (not a substring).
 #[test]
 fn adversarial_fixtures_classify_as_expected() -> TestResult {
     for name in LOWERING {
@@ -51,36 +49,56 @@ fn adversarial_fixtures_classify_as_expected() -> TestResult {
         lower(&loaded.document, Some(loaded.dir.as_path()))
             .map_err(|error| format!("{name} must lower but refused: {error}"))?;
     }
-    for (name, expected) in REFUSING {
-        let loaded = fixtures::load(name)?;
-        match lower(&loaded.document, Some(loaded.dir.as_path())) {
-            Err(error) => {
-                let text = error.to_string();
-                assert!(
-                    text.contains(expected),
-                    "{name} refusal must contain `{expected}`, got `{text}`"
-                );
-            }
-            Ok(_) => return Err(format!("{name} must refuse (`{expected}`) but lowered").into()),
+
+    // `nested_handlers`: the reference class `Unsupported { shape: "on failure" }`
+    // anchored to the guarding step `fulfil` (line 13).
+    let nested = fixtures::load("loop-outcomes/valid/nested_handlers")?;
+    match lower(&nested.document, Some(nested.dir.as_path())) {
+        Err(LowerError::Unsupported { shape, span }) => {
+            assert_eq!(shape, "on failure");
+            assert_eq!(span.line, 13);
+        }
+        other => {
+            return Err(format!("nested_handlers must refuse at `on failure`: {other:?}").into());
+        }
+    }
+
+    // `zero_step_workflow`: `Message` (span-carrying) at the workflow header.
+    let zero = fixtures::load("header-types/zero_step_workflow")?;
+    match lower(&zero.document, Some(zero.dir.as_path())) {
+        Err(LowerError::Message { message, span }) => {
+            assert_eq!(message, "the workflow has no start region");
+            assert_eq!(span.line, 1);
+        }
+        other => {
+            return Err(
+                format!("zero_step_workflow must refuse (no start region): {other:?}").into(),
+            );
         }
     }
     Ok(())
 }
 
 /// The differential over all eight adversarial fixtures: the six lowering ones
-/// produce byte-identical normalized trails across both backends; the two
-/// refusals are recorded out-of-intersection (exactly the pinned set), never a
-/// divergence.
+/// produce byte-identical normalized trails across both backends (each a
+/// completed/failed/parked comparison, never an infra failure); the two
+/// refusals are recorded out-of-intersection (exactly the pinned set).
 #[tokio::test(flavor = "multi_thread")]
 async fn adversarial_differential_is_byte_identical() -> TestResult {
     let mut names: Vec<String> = LOWERING.iter().map(|entry| (*entry).to_owned()).collect();
-    names.extend(REFUSING.iter().map(|(name, _)| (*name).to_owned()));
+    names.extend(REFUSING.iter().map(|name| (*name).to_owned()));
     let report = run_differential(&names, "adversarial").await?;
+    println!("{}", report.render());
+    println!("SUCCEEDED {:?}", report.succeeded);
+    println!("FAILED {:?}", report.failed_fixtures());
+    println!(
+        "PARKED timer={:?} signal={:?}",
+        report.timer_parked_fixtures(),
+        report.signal_parked_fixtures()
+    );
 
-    let mut expected_refusals: Vec<String> = REFUSING
-        .iter()
-        .map(|(name, _)| (*name).to_owned())
-        .collect();
+    let mut expected_refusals: Vec<String> =
+        REFUSING.iter().map(|name| (*name).to_owned()).collect();
     expected_refusals.sort();
     assert_eq!(
         report.refused_fixtures(),
@@ -89,17 +107,20 @@ async fn adversarial_differential_is_byte_identical() -> TestResult {
         report.render()
     );
     assert!(
+        report.infra.is_empty(),
+        "adversarial differential hit infrastructure failures:\n{}",
+        report.render()
+    );
+    assert!(
         report.divergences.is_empty(),
         "adversarial differential found divergences:\n{}",
         report.render()
     );
-    let compared = report.identical.len() + report.unsettled.len();
     assert_eq!(
-        compared,
+        report.identical_count(),
         LOWERING.len(),
-        "every lowering adversarial fixture must produce a compared trail:\n{}",
+        "every lowering adversarial fixture must produce a byte-identical comparison:\n{}",
         report.render()
     );
-    println!("{}", report.render());
     Ok(())
 }

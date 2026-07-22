@@ -8,9 +8,11 @@
 //! test freezes the wire names against a hand-built event so that drift fails
 //! loudly here rather than in the differential.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use aion_core::{Event, EventEnvelope, PackageVersion, Payload, RunId, TimerId, WorkflowId};
+use aion_core::{
+    Event, EventEnvelope, PackageVersion, Payload, RunId, SearchAttributeValue, TimerId, WorkflowId,
+};
 use chrono::DateTime;
 use serde_json::Value;
 
@@ -116,5 +118,82 @@ fn normalizer_replaces_every_identity_field() -> TestResult {
     // First-appearance ordering assigns the run id `<run-0>` and the parent
     // run id `<run-1>`.
     assert!(flattened.contains("<run-1>"), "{flattened}");
+    Ok(())
+}
+
+/// The normalizer rewrites ONLY the six exact wire field NAMES — never a
+/// near-miss name, and never a field VALUE that merely spells one of them.
+/// Adversarially-named attributes (`recorded_at_extra`, `near_run_id`,
+/// `package_version_ish`) and magic-string VALUES (`"recorded_at"`,
+/// `"workflow_id"`) must pass through byte-for-byte, while the SAME event's
+/// structural `workflow_id` field is rewritten. This guards the normalizer
+/// against over-reaching to a "sixth field family" (decision 11).
+#[test]
+fn normalizer_leaves_adversarially_named_or_valued_fields_untouched() -> TestResult {
+    let mut attributes = HashMap::new();
+    attributes.insert(
+        String::from("recorded_at_extra"),
+        SearchAttributeValue::String(String::from("keep-1")),
+    );
+    attributes.insert(
+        String::from("near_run_id"),
+        SearchAttributeValue::String(String::from("recorded_at")),
+    );
+    attributes.insert(
+        String::from("package_version_ish"),
+        SearchAttributeValue::String(String::from("workflow_id")),
+    );
+    let event = Event::SearchAttributesUpdated {
+        envelope: envelope(2),
+        workflow_id: WorkflowId::new_v4(),
+        attributes,
+    };
+
+    let normalized = trail_norm::normalized_trail(&[event])?;
+    let data = normalized
+        .first()
+        .and_then(|value| value.get("data"))
+        .ok_or("normalized event missing data")?;
+
+    // The structural `workflow_id` field IS rewritten.
+    assert_eq!(
+        data.get("workflow_id"),
+        Some(&Value::String(String::from("<workflow-id>"))),
+        "structural workflow_id must normalize: {data}"
+    );
+    // Adversarial names and magic-string values survive untouched.
+    let flattened = serde_json::to_string(data)?;
+    for survivor in [
+        "recorded_at_extra",
+        "near_run_id",
+        "package_version_ish",
+        "keep-1",
+    ] {
+        assert!(
+            flattened.contains(survivor),
+            "normalizer clobbered `{survivor}`: {flattened}"
+        );
+    }
+    let attributes = data
+        .get("attributes")
+        .and_then(Value::as_object)
+        .ok_or("attributes missing")?;
+    // The magic-string VALUES (a value spelling `recorded_at` / `workflow_id`,
+    // carried under the `SearchAttributeValue` `data` field) are left verbatim —
+    // only KEYS matching the six exact names rewrite.
+    assert_eq!(
+        attributes
+            .get("near_run_id")
+            .and_then(|value| value.get("data")),
+        Some(&Value::String(String::from("recorded_at"))),
+        "a field VALUE spelling `recorded_at` must not be rewritten: {data}"
+    );
+    assert_eq!(
+        attributes
+            .get("package_version_ish")
+            .and_then(|value| value.get("data")),
+        Some(&Value::String(String::from("workflow_id"))),
+        "a field VALUE spelling `workflow_id` must not be rewritten: {data}"
+    );
     Ok(())
 }

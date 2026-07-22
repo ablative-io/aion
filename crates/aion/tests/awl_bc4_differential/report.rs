@@ -38,29 +38,54 @@ pub struct Refusal {
 /// The accumulated differential outcome across a fixture set.
 #[derive(Default)]
 pub struct Report {
-    /// Fixtures whose full normalized trails compared byte-identical.
-    pub identical: Vec<String>,
-    /// Fixtures blocked at a deterministic durable timer/wait in both backends
-    /// whose PARTIAL normalized trails compared byte-identical (reported, never
-    /// a divergence — both backends reached the identical quiescent point).
-    pub unsettled: Vec<String>,
+    /// Fixtures that COMPLETED in both backends with byte-identical trails.
+    pub succeeded: Vec<String>,
+    /// Fixtures that FAILED terminally (a data-driven `route failure` / error
+    /// path) in both backends with byte-identical trails.
+    pub failed: Vec<String>,
+    /// Fixtures parked at a durable TIMER boundary in both backends (a pending
+    /// `TimerStarted`), byte-identical on their quiescent partial trails.
+    pub parked_timer: Vec<String>,
+    /// Fixtures parked at a bare SIGNAL wait in both backends (quiescent with no
+    /// pending timer), byte-identical on their quiescent partial trails.
+    pub parked_signal: Vec<String>,
     /// Fixtures with at least one divergence (deduplicated, input order).
     pub diverged: Vec<String>,
     /// Every field-level divergence found (must be empty to pass).
     pub divergences: Vec<Divergence>,
     /// Every out-of-intersection refusal, in fixture order.
     pub refusals: Vec<Refusal>,
+    /// Infrastructure failures — missing package/bytes, a splice-integrity
+    /// violation, an engine build/start/read error, a `Stuck` run, a
+    /// serialization error, or a disposition the harness cannot classify. This
+    /// bucket MUST be empty to pass; nothing here is ever quiesced away.
+    pub infra: Vec<(String, String)>,
 }
 
 impl Report {
-    /// Records a fixture whose full trails compared identical.
-    pub fn record_identical(&mut self, fixture: &str) {
-        self.identical.push(fixture.to_owned());
+    /// Records a fixture that completed successfully with identical trails.
+    pub fn record_succeeded(&mut self, fixture: &str) {
+        self.succeeded.push(fixture.to_owned());
     }
 
-    /// Records a fixture that did not settle but whose partial trails matched.
-    pub fn record_unsettled(&mut self, fixture: &str, detail: &str) {
-        self.unsettled.push(format!("{fixture} ({detail})"));
+    /// Records a fixture that failed terminally with identical trails.
+    pub fn record_failed(&mut self, fixture: &str) {
+        self.failed.push(fixture.to_owned());
+    }
+
+    /// Records a fixture parked at a durable timer boundary.
+    pub fn record_parked_timer(&mut self, fixture: &str) {
+        self.parked_timer.push(fixture.to_owned());
+    }
+
+    /// Records a fixture parked at a bare signal wait.
+    pub fn record_parked_signal(&mut self, fixture: &str) {
+        self.parked_signal.push(fixture.to_owned());
+    }
+
+    /// Records an infrastructure failure (hard — the differential must fail).
+    pub fn record_infra(&mut self, fixture: &str, reason: &str) {
+        self.infra.push((fixture.to_owned(), reason.to_owned()));
     }
 
     /// Records an out-of-intersection refusal.
@@ -69,6 +94,15 @@ impl Report {
             fixture: fixture.to_owned(),
             text,
         });
+    }
+
+    /// Fixtures whose full or partial trails compared byte-identical
+    /// (completed, failed, or parked) — the successful-comparison set.
+    pub fn identical_count(&self) -> usize {
+        self.succeeded.len()
+            + self.failed.len()
+            + self.parked_timer.len()
+            + self.parked_signal.len()
     }
 
     /// Diffs two normalized trails and records every divergence found, marking
@@ -108,12 +142,19 @@ impl Report {
     /// A one-line-per-item human rendering for a test failure message.
     pub fn render(&self) -> String {
         let mut lines = vec![format!(
-            "differential report: {} identical, {} refused, {} unsettled, {} DIVERGENCES",
-            self.identical.len(),
+            "differential report: {} succeeded, {} failed-path, {} timer-parked, \
+             {} signal-parked, {} refused, {} DIVERGENCES, {} INFRA",
+            self.succeeded.len(),
+            self.failed.len(),
+            self.parked_timer.len(),
+            self.parked_signal.len(),
             self.refusals.len(),
-            self.unsettled.len(),
             self.divergences.len(),
+            self.infra.len(),
         )];
+        for (fixture, reason) in &self.infra {
+            lines.push(format!("  INFRA {fixture} :: {reason}"));
+        }
         for divergence in &self.divergences {
             lines.push(format!(
                 "  DIVERGENCE {} event[{}] {}: reference={} direct={}",
@@ -127,11 +168,33 @@ impl Report {
         for refusal in &self.refusals {
             lines.push(format!("  refused {} :: {}", refusal.fixture, refusal.text));
         }
-        for unsettled in &self.unsettled {
-            lines.push(format!("  unsettled {unsettled}"));
+        for parked in self.parked_timer.iter().chain(&self.parked_signal) {
+            lines.push(format!("  parked {parked}"));
         }
         lines.push(String::new());
         lines.join("\n")
+    }
+
+    /// The sorted set of fixtures parked at a durable timer.
+    pub fn timer_parked_fixtures(&self) -> Vec<String> {
+        let mut parked = self.parked_timer.clone();
+        parked.sort();
+        parked
+    }
+
+    /// The sorted set of fixtures parked at a bare signal wait.
+    pub fn signal_parked_fixtures(&self) -> Vec<String> {
+        let mut parked = self.parked_signal.clone();
+        parked.sort();
+        parked
+    }
+
+    /// The sorted set of fixtures that failed terminally, for the pinned
+    /// error-path assertion.
+    pub fn failed_fixtures(&self) -> Vec<String> {
+        let mut failed = self.failed.clone();
+        failed.sort();
+        failed
     }
 
     /// The sorted set of refused fixture paths, for the ratchet assertion.

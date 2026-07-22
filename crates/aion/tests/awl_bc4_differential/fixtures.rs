@@ -2,10 +2,11 @@
 //! rev-2 fixture tree, and a deterministic schema-driven input generator so
 //! every fixture starts with a payload its own generated input codec accepts.
 
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use aion_awl::Document;
+use aion_awl::{Document, TypeRef};
 use serde_json::{Map, Value, json};
 
 /// `<repo>/crates/aion-awl` — the crate whose `tests/fixtures/rev2` tree and
@@ -101,9 +102,28 @@ fn quoted_strings(text: &str) -> Vec<String> {
 /// empty; enums take their first variant. The value only needs to satisfy the
 /// generated input codec so the workflow can start and reach its body.
 pub fn example_for_schema(schema: &Value) -> Value {
+    // Record-typed properties lower to `$ref: "#/$defs/Name"`; resolve those
+    // against the top-level `$defs` so a required record input/result becomes a
+    // real object, not `null` (an accidental decode-detour otherwise).
+    let defs = schema.get("$defs");
+    example_with_defs(schema, defs)
+}
+
+/// [`example_for_schema`], threading the root `$defs` map through the recursion
+/// so nested `$ref`s resolve.
+fn example_with_defs(schema: &Value, defs: Option<&Value>) -> Value {
     let Value::Object(map) = schema else {
         return Value::Null;
     };
+    if let Some(Value::String(reference)) = map.get("$ref") {
+        return match reference
+            .strip_prefix("#/$defs/")
+            .and_then(|name| defs.and_then(|table| table.get(name)))
+        {
+            Some(resolved) => example_with_defs(resolved, defs),
+            None => Value::Null,
+        };
+    }
     if let Some(Value::Array(variants)) = map.get("enum") {
         return variants.first().cloned().unwrap_or(Value::Null);
     }
@@ -113,10 +133,12 @@ pub fn example_for_schema(schema: &Value) -> Value {
         if branches.iter().any(is_null_schema) {
             return Value::Null;
         }
-        return branches.first().map_or(Value::Null, example_for_schema);
+        return branches
+            .first()
+            .map_or(Value::Null, |branch| example_with_defs(branch, defs));
     }
     match map.get("type").and_then(Value::as_str) {
-        Some("object") => example_object(map),
+        Some("object") => example_object(map, defs),
         Some("array") => Value::Array(Vec::new()),
         Some("string") => Value::String(String::from("x")),
         Some("integer") => json!(0),
@@ -136,8 +158,55 @@ fn is_null_schema(schema: &Value) -> bool {
         .is_some_and(|ty| ty == "null")
 }
 
-/// Generates an object instance carrying only its required properties.
-fn example_object(map: &Map<String, Value>) -> Value {
+/// A deterministic, schema-valid canned activity result per declared worker
+/// action, keyed by action name. Both backends' runs use the SAME map, so an
+/// activity that decodes on one decodes identically on the other. Unlike a
+/// generic echo, each value satisfies its action's declared return-type codec,
+/// so the workflow runs its REAL body instead of taking an activity-decode
+/// detour (the flagship's greet -> shout path actually executes).
+pub fn action_results(document: &Document, root: &Path) -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    let mut insert = |name: &str, ty: &TypeRef| {
+        let value = example_for_schema(&schema_for_typeref(document, root, ty));
+        if let Ok(json) = serde_json::to_string(&value) {
+            results.insert(name.to_owned(), json);
+        }
+    };
+    for worker in &document.workers {
+        for action in &worker.actions {
+            insert(&action.name, &action.returns);
+        }
+    }
+    // A `child name(…) -> Ret` synthesizes a child workflow that dispatches an
+    // activity named after the child to produce its `Ret`; provide that result
+    // too, so a child-spawning fixture runs its real body instead of failing at
+    // the child's unanswered activity.
+    for child in &document.children {
+        insert(&child.name, &child.returns);
+    }
+    results
+}
+
+/// Resolves a declared return `TypeRef` to a JSON schema, using the same
+/// deriver the manifest schemas use for named/builtin leaves and composing the
+/// list/optional wrappers structurally.
+fn schema_for_typeref(document: &Document, root: &Path, ty: &TypeRef) -> Value {
+    match ty {
+        TypeRef::Named { name, .. } => {
+            aion_awl::schema_for_type_in(document, root, name).unwrap_or_else(|_| json!({}))
+        }
+        TypeRef::List { inner, .. } => {
+            json!({ "type": "array", "items": schema_for_typeref(document, root, inner) })
+        }
+        TypeRef::Optional { inner, .. } => {
+            json!({ "anyOf": [schema_for_typeref(document, root, inner), { "type": "null" }] })
+        }
+    }
+}
+
+/// Generates an object instance carrying only its required properties,
+/// resolving nested `$ref`s against `defs`.
+fn example_object(map: &Map<String, Value>, defs: Option<&Value>) -> Value {
     let mut instance = Map::new();
     let required: Vec<&str> = map
         .get("required")
@@ -147,7 +216,7 @@ fn example_object(map: &Map<String, Value>) -> Value {
     if let Some(Value::Object(properties)) = map.get("properties") {
         for (name, property_schema) in properties {
             if required.contains(&name.as_str()) {
-                instance.insert(name.clone(), example_for_schema(property_schema));
+                instance.insert(name.clone(), example_with_defs(property_schema, defs));
             }
         }
     }

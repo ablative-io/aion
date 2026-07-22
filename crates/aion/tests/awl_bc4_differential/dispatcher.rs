@@ -1,31 +1,39 @@
 //! The one deterministic activity dispatcher shared by BOTH backends of every
-//! differential run. It is a pure function of `(activity name, activity
-//! input)`, so any difference between the reference and direct trails can only
-//! come from backend behavior, never from the dispatcher.
+//! differential run. It is a pure function of the activity name, so any
+//! difference between the reference and direct trails can only come from
+//! backend behavior, never from the dispatcher.
 //!
-//! The canned result is a stable echo of the activity type plus the parsed
-//! input (`{"awl_bc4": <name>, "input": <input>}`). Whether the generated
-//! output codec accepts that echo or rejects it, it does so IDENTICALLY on
-//! both backends (the codecs are what BC-2/BC-3 proved equivalent), so the
-//! resulting trail — a completion or a codec-driven failure — is byte-identical
-//! either way. That is exactly the property the differential asserts.
+//! Each canned result is a schema-valid instance of the fixture's declared
+//! action return type (`fixtures::action_results`), so the activity's generated
+//! output codec ACCEPTS it and the workflow runs its real body — the flagship's
+//! `greet -> shout` path actually executes rather than tripping an
+//! activity-decode detour. The identical map drives both runs, so a completion
+//! or a data-driven failure outcome is byte-identical either way.
+
+use std::collections::HashMap;
 
 use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
-use serde_json::{Value, json};
 
-/// A deterministic, stateless echo dispatcher.
-pub struct EchoDispatcher;
+/// A deterministic dispatcher returning the canned schema-valid result for each
+/// declared action.
+pub struct TypedDispatcher {
+    results: HashMap<String, String>,
+}
 
-impl ActivityDispatcher for EchoDispatcher {
+impl TypedDispatcher {
+    /// Builds a dispatcher over a fixture's `(action name -> result JSON)` map.
+    pub fn new(results: HashMap<String, String>) -> Self {
+        Self { results }
+    }
+}
+
+impl ActivityDispatcher for TypedDispatcher {
     fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
-        // Parse the input so the echo carries structured data; fall back to
-        // the raw string when it is not JSON. Both paths are deterministic.
-        let input = serde_json::from_str::<Value>(request.input.as_str())
-            .unwrap_or_else(|_| Value::String(request.input.clone()));
-        Ok(json!({
-            "awl_bc4": request.name,
-            "input": input,
+        self.results.get(&request.name).cloned().ok_or_else(|| {
+            // Deterministic and identical on both backends: a fixture that
+            // dispatches an activity with no declared return type fails the
+            // same way on each side (surfaced, never a silent divergence).
+            format!("terminal:no canned result for activity `{}`", request.name)
         })
-        .to_string())
     }
 }

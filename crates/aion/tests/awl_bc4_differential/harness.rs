@@ -222,10 +222,75 @@ pub fn splice_direct(
     }
     let archive = PackageBuilder::new(reference.manifest().clone(), BeamSet::new(modules)?)
         .write_to_bytes()?;
-    Ok(Package::load_from_bytes(
-        archive,
-        ExtractionLimits::unbounded(),
-    )?)
+    let direct = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
+    assert_splice_distinct(reference, &direct, &entry, direct_bytes)?;
+    Ok(direct)
+}
+
+/// Hard precondition making the differential mutation-sensitive: after reload,
+/// the direct package's entry beam MUST equal the `select`ed bytes, MUST differ
+/// from the reference entry beam, the two package content hashes MUST differ,
+/// and every non-entry module MUST be byte-identical between the two packages.
+/// Without this a no-op splice (retaining the reference entry) or a run against
+/// `reference.clone()` would compare a package to itself and pass vacuously.
+///
+/// # Errors
+///
+/// Returns an error naming the first violated invariant.
+pub fn assert_splice_distinct(
+    reference: &Package,
+    direct: &Package,
+    entry: &str,
+    direct_bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let direct_entry = direct
+        .beams()
+        .get(entry)
+        .ok_or_else(|| format!("spliced package lost its entry beam `{entry}`"))?;
+    if direct_entry != direct_bytes {
+        return Err(format!(
+            "spliced entry `{entry}` is not the select() bytes ({} vs {} bytes)",
+            direct_entry.len(),
+            direct_bytes.len()
+        )
+        .into());
+    }
+    let reference_entry = reference
+        .beams()
+        .get(entry)
+        .ok_or_else(|| format!("reference package has no entry beam `{entry}`"))?;
+    if reference_entry == direct_entry {
+        return Err(format!(
+            "spliced entry `{entry}` is byte-identical to the reference entry — \
+             the direct production was not spliced in (no-op splice)"
+        )
+        .into());
+    }
+    if reference.content_hash() == direct.content_hash() {
+        return Err(
+            "reference and direct packages share a content hash — the entry bytes did not change"
+                .into(),
+        );
+    }
+    for beam in reference.beams().iter() {
+        if beam.name() == entry {
+            continue;
+        }
+        let other = direct.beams().get(beam.name()).ok_or_else(|| {
+            format!(
+                "direct package dropped SDK-closure module `{}`",
+                beam.name()
+            )
+        })?;
+        if other != beam.bytes() {
+            return Err(format!(
+                "non-entry module `{}` differs between backends — the splice mutated the SDK closure",
+                beam.name()
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Lowers + selects one fixture to its direct `.beam` bytes.
