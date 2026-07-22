@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use aion_core::{Event, RunId, WorkflowFilter, WorkflowStatus};
+use chrono::Utc;
 
 use crate::{
     EngineError,
@@ -221,6 +222,66 @@ pub(super) async fn sweep_continued_as_new_replacements(
 
 /// Whether a successor `WorkflowStarted` continuing `continued_run_id` is
 /// durable for `workflow_id`.
+/// Retire every declared-timeout deadline left uncancelled behind a NON-timeout
+/// terminal — the crash-window repair for the two-write terminal transition.
+///
+/// A terminal writer records its terminal and then, as a SEPARATE durable write,
+/// cancels the run's recorded deadline. A crash (or a transient store failure)
+/// between the two leaves a run that is durably `Completed`/`Failed`/`Cancelled`
+/// or continued-as-new while its `deadline:{run}` timer is still live —
+/// permanently violating D5 and letting whole-history recovery keep re-arming it.
+/// This sweep drives that condition to closure at startup, in addition to the
+/// process-exit re-entry (`handle_process_exit`) and the deadline-fire repair
+/// (`WorkflowDeadlineHandler`), so no history can hold a terminal + an
+/// uncancelled recorded deadline across a restart.
+///
+/// The candidate set is the durable timer rows (bounded by armed timers, not all
+/// workflows), filtered to deadline ids. A `WorkflowTimedOut` terminal is
+/// deliberately SKIPPED: its deadline is owned by `WorkflowDeadlineHandler`
+/// teardown as that teardown's resume anchor, and `recover_due` re-fires it to
+/// drive `ResumeTeardown`. A run with no terminal yet keeps its live deadline.
+/// Idempotent: an already-retired deadline reads as not outstanding and records
+/// nothing.
+pub(super) async fn sweep_uncancelled_terminal_deadlines(
+    context: &StartupRecoveryContext,
+) -> Result<(), EngineError> {
+    let horizon = Utc::now()
+        .checked_add_signed(chrono::Duration::days(3_652_500))
+        .unwrap_or_else(Utc::now);
+    let rows = context.store.as_ref().expired_timers(horizon).await?;
+    for entry in rows {
+        let Some(run_id) = crate::time::deadline_run_id(&entry.timer_id) else {
+            continue;
+        };
+        let history = context
+            .store
+            .as_ref()
+            .read_history(&entry.workflow_id)
+            .await?;
+        if crate::time::outstanding_deadline_timer(&history, &run_id).is_none() {
+            continue;
+        }
+        match crate::lifecycle::completion::terminal_outcome_from_history(&history, &run_id) {
+            Some(crate::registry::TerminalOutcome::TimedOut(_)) | None => {}
+            Some(_) => {
+                let head = history.iter().map(Event::seq).max().unwrap_or_default();
+                let mut recorder = crate::durability::Recorder::resume_at(
+                    entry.workflow_id.clone(),
+                    Arc::clone(&context.store),
+                    head,
+                );
+                tracing::info!(
+                    workflow_id = %entry.workflow_id,
+                    run_id = %run_id,
+                    "retiring an uncancelled deadline left behind a non-timeout terminal (startup repair)"
+                );
+                crate::time::retire_run_deadline(&mut recorder, &history, &run_id).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn successor_started(
     context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,

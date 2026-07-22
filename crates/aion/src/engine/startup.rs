@@ -24,7 +24,10 @@ use super::api_schedule::{
     schedule_coordinator_package_version, schedule_coordinator_run_id,
     schedule_coordinator_workflow_id, schedule_coordinator_workflow_type,
 };
-use super::startup_sweeps::{sweep_continued_as_new_replacements, sweep_recorded_children};
+use super::startup_sweeps::{
+    sweep_continued_as_new_replacements, sweep_recorded_children,
+    sweep_uncancelled_terminal_deadlines,
+};
 
 pub(super) async fn recover_timers_on_startup(
     nif_state: &crate::runtime::EngineNifState,
@@ -75,7 +78,8 @@ pub(super) async fn recover_active_workflows_on_startup(
         ))) as Arc<dyn ActiveWorkflowRecoverySeam>
     });
     repopulate_active_workflows(&context, recovery.as_ref()).await?;
-    sweep_continued_as_new_replacements(&context).await
+    sweep_continued_as_new_replacements(&context).await?;
+    sweep_uncancelled_terminal_deadlines(&context).await
 }
 
 /// Re-resident the active workflows on shards this LIVE engine has just adopted

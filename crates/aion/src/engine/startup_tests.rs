@@ -13,6 +13,7 @@ use serde_json::json;
 use super::{
     RecoveredResident, StartupRecoveryContext, register_recovered_resident,
     register_recovered_resident_with_reconcile, sweep_continued_as_new_replacements,
+    sweep_uncancelled_terminal_deadlines,
 };
 use crate::EngineError;
 use crate::loader::WorkflowCatalog;
@@ -449,6 +450,112 @@ async fn recovered_reconcile_failure_after_publication_runs_observed_abort() -> 
     assert_eq!(runtime.retained_activity_completions(), 0);
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
+    runtime.shutdown()?;
+    Ok(())
+}
+
+/// Seeds a workflow whose run recorded `terminal` but whose armed deadline was
+/// never cancelled (the two-write crash window), plus its durable timer row.
+async fn seed_terminal_with_uncancelled_deadline(
+    store: &Arc<dyn EventStore>,
+    workflow_id: &WorkflowId,
+    run_id: &RunId,
+    terminal: Event,
+) -> Result<aion_core::TimerId, Box<dyn std::error::Error>> {
+    let deadline_id = crate::time::deadline_timer_id(run_id)?;
+    let mut recorder = crate::durability::Recorder::new(workflow_id.clone(), Arc::clone(store));
+    recorder
+        .record_workflow_started(
+            Utc::now(),
+            crate::durability::WorkflowStartRecord {
+                workflow_type: "sweeper".to_owned(),
+                input: Payload::from_json(&json!({}))?,
+                run_id: run_id.clone(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+        )
+        .await?;
+    recorder
+        .record_timer_started(Utc::now(), deadline_id.clone(), Utc::now())
+        .await?;
+    match terminal {
+        Event::WorkflowCompleted { result, .. } => {
+            recorder
+                .record_workflow_completed(Utc::now(), result)
+                .await?;
+        }
+        Event::WorkflowTimedOut { timeout, .. } => {
+            recorder
+                .record_workflow_timed_out(Utc::now(), timeout)
+                .await?;
+        }
+        other => return Err(format!("unsupported terminal in seed helper: {other:?}").into()),
+    }
+    store
+        .schedule_timer(workflow_id, &deadline_id, Utc::now())
+        .await?;
+    Ok(deadline_id)
+}
+
+/// The startup sweep retires an uncancelled deadline left behind a NON-timeout
+/// terminal (crash-window repair), but leaves a `WorkflowTimedOut` deadline live
+/// — that one is owned by the deadline handler's teardown and re-driven by
+/// `recover_due`.
+#[tokio::test]
+async fn startup_sweep_retires_non_timeout_terminal_deadlines_but_skips_timed_out()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let completed_id = WorkflowId::new_v4();
+    let completed_run = RunId::new_v4();
+    seed_terminal_with_uncancelled_deadline(
+        &store,
+        &completed_id,
+        &completed_run,
+        Event::WorkflowCompleted {
+            envelope: EventEnvelope {
+                seq: 0,
+                recorded_at: Utc::now(),
+                workflow_id: completed_id.clone(),
+            },
+            result: Payload::from_json(&json!("done"))?,
+        },
+    )
+    .await?;
+    let timed_out_id = WorkflowId::new_v4();
+    let timed_out_run = RunId::new_v4();
+    seed_terminal_with_uncancelled_deadline(
+        &store,
+        &timed_out_id,
+        &timed_out_run,
+        Event::WorkflowTimedOut {
+            envelope: EventEnvelope {
+                seq: 0,
+                recorded_at: Utc::now(),
+                workflow_id: timed_out_id.clone(),
+            },
+            timeout: "workflow".to_owned(),
+        },
+    )
+    .await?;
+
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let catalog = Arc::new(WorkflowCatalog::new());
+    let context = recovery_context(Arc::clone(&store), Arc::clone(&runtime), catalog);
+
+    sweep_uncancelled_terminal_deadlines(&context).await?;
+
+    let completed_history = store.read_history(&completed_id).await?;
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&completed_history, &completed_run),
+        None,
+        "the sweep retires the deadline behind the completed terminal: {completed_history:#?}"
+    );
+    let timed_out_history = store.read_history(&timed_out_id).await?;
+    assert!(
+        crate::time::outstanding_deadline_timer(&timed_out_history, &timed_out_run).is_some(),
+        "the sweep leaves a TimedOut deadline live for its owning teardown: {timed_out_history:#?}"
+    );
     runtime.shutdown()?;
     Ok(())
 }

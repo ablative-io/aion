@@ -207,6 +207,54 @@ fn count_timed_out(history: &[Event]) -> usize {
         .count()
 }
 
+/// A deadline that fires behind a competing NON-timeout terminal REPAIRS the
+/// interrupted terminal transition: it retires the still-outstanding deadline
+/// (rather than losing without cancelling it), so whole-history recovery stops
+/// re-arming it. This is the guaranteed in-process / `recover_due` re-drive for a
+/// two-write terminal crash — the live wheel or startup recovery re-arms the
+/// deadline, and this fire completes D5.
+#[tokio::test(flavor = "multi_thread")]
+async fn deadline_fire_retires_the_deadline_behind_a_competing_terminal() -> TestResult {
+    let run = timed_run().await?;
+    let workflow_id = run.handle.workflow_id().clone();
+    let run_id = run.handle.run_id().clone();
+    arm_deadline(&run).await?;
+    // The run completed, but its deadline cancellation never committed.
+    {
+        let recorder = run.handle.recorder();
+        let mut recorder = recorder.lock().await;
+        recorder
+            .record_workflow_completed(chrono::Utc::now(), Payload::from_json(&json!("done"))?)
+            .await?;
+    }
+    assert!(
+        crate::time::outstanding_deadline_timer(
+            &run.store.read_history(&workflow_id).await?,
+            &run_id
+        )
+        .is_some(),
+        "the deadline is outstanding before the repairing fire"
+    );
+
+    run.handler
+        .on_deadline_elapsed(workflow_id.clone(), run_id.clone())
+        .await?;
+
+    let history = run.store.read_history(&workflow_id).await?;
+    assert_eq!(
+        count_timed_out(&history),
+        0,
+        "the losing deadline records no timeout terminal: {history:#?}"
+    );
+    assert_eq!(
+        crate::time::outstanding_deadline_timer(&history, &run_id),
+        None,
+        "the fire retires the deadline left by the interrupted completion: {history:#?}"
+    );
+    run.runtime.shutdown()?;
+    Ok(())
+}
+
 /// A visibility store whose `record_visibility` errors while armed, then
 /// delegates once disarmed — to inject a real post-terminal teardown failure.
 struct FlakyVisibility {

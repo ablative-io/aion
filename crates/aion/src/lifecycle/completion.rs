@@ -78,12 +78,22 @@ async fn handle_process_exit_async(
         if let Some(existing) = terminal_outcome_from_history(&history, handle.run_id()) {
             // Resume an interrupted terminal transition: the terminal append and
             // its deadline cancellation are two durable writes, so a crash
-            // between them (in ANY terminal writer) leaves the deadline
-            // outstanding. Re-encountering this run's own terminal, complete the
-            // cancellation under the recorder lock so whole-history recovery never
-            // re-arms the predecessor deadline. Idempotent: an already-cancelled
-            // (or never-armed) deadline records nothing.
-            crate::time::retire_run_deadline(&mut recorder, &history, handle.run_id()).await?;
+            // between them (in a complete/fail/cancel/CAN writer) leaves the
+            // deadline outstanding. Re-encountering this run's own terminal,
+            // complete the cancellation under the recorder lock so whole-history
+            // recovery never re-arms the predecessor deadline. Idempotent: an
+            // already-cancelled (or never-armed) deadline records nothing.
+            //
+            // A `WorkflowTimedOut` terminal is the ONE exception: its deadline is
+            // owned exclusively by `WorkflowDeadlineHandler` teardown, which keeps
+            // it live as its own resume anchor across fallible visibility work and
+            // retires it LAST. This monitor is woken by that teardown's own
+            // `cancel_pid`, so retiring the deadline here would destroy the
+            // teardown's anchor mid-flight. Leave it to the handler; a re-fire via
+            // `recover_due` drives `ResumeTeardown`.
+            if !matches!(existing, TerminalOutcome::TimedOut(_)) {
+                crate::time::retire_run_deadline(&mut recorder, &history, handle.run_id()).await?;
+            }
             Err(existing)
         } else {
             let outcome = match outcome {
@@ -131,11 +141,12 @@ async fn handle_process_exit_async(
     let terminal = match recorded {
         Err(existing) => {
             handle.completion().notify(existing.clone());
-            // Any deadline retirement this pre-recorded terminal needed was
-            // already completed above, under the recorder lock, by the resume call
-            // — so a transition interrupted between its terminal append and its
-            // deadline cancellation is repaired here rather than leaving the
-            // deadline live for whole-history recovery to re-arm.
+            // Any deadline retirement a NON-timeout pre-recorded terminal needed
+            // was already completed above, under the recorder lock, by the resume
+            // call — repairing a transition interrupted between its terminal append
+            // and its deadline cancellation. A `WorkflowTimedOut` terminal is left
+            // untouched on purpose: its deadline belongs to the deadline handler's
+            // teardown, not to this monitor.
             reconcile_terminal_registry(&context, handle.workflow_id(), handle.run_id()).await?;
             if let TerminalOutcome::ContinuedAsNew {
                 input,
@@ -506,6 +517,47 @@ mod tests {
             crate::time::outstanding_deadline_timer(&history, &run_id),
             None,
             "re-encountering the own terminal completes the deadline cancellation: {history:#?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn process_exit_does_not_retire_a_timed_out_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Item 3×5 interaction: timeout teardown keeps its deadline live as its
+        // resume anchor across fallible visibility work, and the process-exit
+        // monitor it wakes via `cancel_pid` must NOT retire that TimedOut
+        // deadline. A monitor that retired it would strand an interrupted
+        // teardown.
+        let active = active_workflow().await?;
+        let run_id = active.handle.run_id().clone();
+        let deadline_id = crate::time::deadline_timer_id(&run_id)?;
+        {
+            let recorder = active.handle.recorder();
+            let mut recorder = recorder.lock().await;
+            recorder
+                .record_timer_started(chrono::Utc::now(), deadline_id.clone(), chrono::Utc::now())
+                .await?;
+            recorder
+                .record_workflow_timed_out(chrono::Utc::now(), String::from("workflow"))
+                .await?;
+        }
+
+        handle_process_exit_async(
+            active.context.clone(),
+            active.handle.clone(),
+            Ok(WorkflowProcessOutcome::Completed(payload("late")?)),
+        )
+        .await?;
+
+        let history = active
+            .context
+            .store
+            .read_history(active.handle.workflow_id())
+            .await?;
+        assert!(
+            crate::time::outstanding_deadline_timer(&history, &run_id).is_some(),
+            "the monitor must leave a TimedOut deadline live for its owning teardown: {history:#?}"
         );
         Ok(())
     }

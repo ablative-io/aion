@@ -131,11 +131,20 @@ impl WorkflowDeadlineHandler {
             }
             Some(_) => {
                 // A competing terminal (complete/fail/cancel/continue-as-new) won.
+                // The deadline loses — but if it is still outstanding, that
+                // terminal writer's own deadline cancellation did not commit (a
+                // two-write crash), so this fire REPAIRS it: retire the deadline
+                // here, under the recorder lock, rather than losing without
+                // cancelling and letting whole-history recovery keep re-arming it.
+                // This is the guaranteed re-drive for an interrupted non-timeout
+                // terminal transition — the live wheel or `recover_due`/`tick`
+                // re-arms the still-live deadline, and this fire completes D5.
                 tracing::debug!(
                     %workflow_id,
                     %run_id,
-                    "workflow deadline elapsed but another terminal was already recorded; deadline loses"
+                    "workflow deadline elapsed but another terminal was already recorded; retiring the deadline and losing"
                 );
+                crate::time::retire_run_deadline(&mut recorder, &history, run_id).await?;
                 Ok(DeadlineDisposition::LoseCleanly)
             }
             None => {
