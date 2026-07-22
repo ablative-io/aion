@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "One-line summary of the problem."
+    },
+    "assignee": {
+      "type": "string",
+      "description": "Present only when somebody has claimed the ticket."
+    }
+  }
+}

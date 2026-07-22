@@ -1,0 +1,10 @@
+//! Probe: make a note of the token and hand it back.
+workflow probe
+  input token: String
+  outcome done: type String, route success
+
+worker probe
+  action make(token: String) -> String
+
+step one
+  token |> make |> route done
