@@ -424,7 +424,7 @@ async fn runtime_deployed_package_survives_restart_and_recovers_runs() -> TestRe
 async fn explicit_timeout_deploy_survives_restart_under_the_same_store_key() -> TestResult {
     let legacy = reload_package(&compile_reload_beam(1)?, "run")?;
     let mut manifest = legacy.manifest().clone();
-    manifest.timeout = Duration::new(7_200, 500_000_000);
+    manifest.timeout = Some(Duration::new(7_200, 500_000_000));
     let archive = PackageBuilder::new(manifest, legacy.beams().clone())
         .with_explicit_timeout_identity()
         .write_to_bytes()?;

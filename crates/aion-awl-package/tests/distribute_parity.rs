@@ -67,7 +67,7 @@ fn direct_archive_carries_the_implicit_child_with_gleam_path_identity() -> TestR
     assert_eq!(entry.entry_function, reference.entry_function);
     assert_eq!(entry.input_schema, reference.input_schema);
     assert_eq!(entry.output_schema, reference.output_schema);
-    assert_eq!(entry.timeout.as_secs(), reference.timeout_seconds);
+    assert_eq!(entry.timeout, reference.timeout);
     assert!(entry.internal, "implicit children are package-internal");
 
     // The compile seam's own entries match too (the packaging input).
@@ -146,7 +146,7 @@ fn child_entry(workflow_type: &str) -> SynthesizedWorkflowEntry {
         entry_function: "child_run".to_owned(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "string" }),
-        timeout_seconds: 60,
+        timeout: Some(std::time::Duration::from_secs(60)),
         internal: true,
     }
 }

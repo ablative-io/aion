@@ -18,20 +18,18 @@ use aion_package::{
 
 use crate::bundle;
 
-/// Manifest workflow timeout applied to AWL-native packages.
-///
-/// This explicit policy default applies when an AWL document does not declare
-/// its own workflow timeout. It is never inferred from action timeouts.
-pub const DEFAULT_WORKFLOW_TIMEOUT: Duration = Duration::from_secs(60 * 60);
-
 /// Options for [`assemble_awl`].
 ///
 /// Construct via [`Default`] and assign fields, so call sites keep compiling
 /// when options are added.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AwlAssembleOptions {
-    /// Overrides the manifest workflow timeout; `None` applies
-    /// [`DEFAULT_WORKFLOW_TIMEOUT`].
+    /// The document's explicitly authored workflow timeout, or `None` when the
+    /// document declared none. There is NO policy default: a `None` timeout is
+    /// written to the manifest as absent, and the package keeps its beams-only
+    /// (legacy) identity, so the engine arms no deadline. Only a `Some` timeout
+    /// opts the package into the explicit-timeout identity that authorises a
+    /// deadline.
     pub timeout: Option<Duration>,
 }
 
@@ -119,7 +117,9 @@ pub fn assemble_awl(
         entry_function: "run".to_owned(),
         input_schema: compiled.input_schema.clone(),
         output_schema: compiled.output_schema.clone(),
-        timeout: opts.timeout.unwrap_or(DEFAULT_WORKFLOW_TIMEOUT),
+        // No policy default: an unauthored timeout is written as absent, and the
+        // package stays on its beams-only identity below, so nothing arms.
+        timeout: opts.timeout,
         activities: declared_activities(compiled),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
@@ -159,7 +159,7 @@ fn additional_workflows(compiled: &CompiledWorkflow) -> Result<Vec<WorkflowEntry
             entry_function: entry.entry_function.clone(),
             input_schema: entry.input_schema.clone(),
             output_schema: entry.output_schema.clone(),
-            timeout: Duration::from_secs(entry.timeout_seconds),
+            timeout: entry.timeout,
             internal: entry.internal,
         });
     }
@@ -189,7 +189,7 @@ mod tests {
     use aion_awl::{ActionRequirement, CompiledWorkflow};
     use serde_json::json;
 
-    use super::{AwlAssembleOptions, DEFAULT_WORKFLOW_TIMEOUT, assemble_awl};
+    use super::{AwlAssembleOptions, assemble_awl};
     use aion_package::{ExtractionLimits, Package};
 
     fn hand_built(name: &str) -> CompiledWorkflow {
@@ -240,23 +240,44 @@ mod tests {
         Ok(())
     }
 
+    /// LAW 1 at the assembler: an unauthored timeout writes NO manifest timeout
+    /// and NO explicit-timeout identity, so the package cannot arm a deadline.
+    /// An authored timeout writes the value and opts into the identity that
+    /// authorises arming.
     #[test]
-    fn timeout_defaults_to_the_policy_constant_and_override_wins()
+    fn unauthored_timeout_is_absent_and_authored_timeout_is_declared()
     -> Result<(), Box<dyn std::error::Error>> {
-        let defaulted = assemble_awl(&hand_built("timeout_case"), AwlAssembleOptions::default())?;
-        let package = Package::load_from_bytes(defaulted, ExtractionLimits::unbounded())?;
-        assert_eq!(package.manifest().timeout, DEFAULT_WORKFLOW_TIMEOUT);
+        let plain = assemble_awl(&hand_built("timeout_case"), AwlAssembleOptions::default())?;
+        let package = Package::load_from_bytes(plain, ExtractionLimits::unbounded())?;
+        assert_eq!(
+            package.manifest().timeout,
+            None,
+            "an unauthored timeout is absent, not a buried default"
+        );
+        assert!(
+            !package.has_declared_timeout(),
+            "an unauthored package has no declared timeout, so nothing can arm"
+        );
+        assert_eq!(package.declared_timeout(), None);
 
-        let overridden = assemble_awl(
+        let authored = assemble_awl(
             &hand_built("timeout_case"),
             AwlAssembleOptions {
                 timeout: Some(std::time::Duration::from_secs(90)),
             },
         )?;
-        let package = Package::load_from_bytes(overridden, ExtractionLimits::unbounded())?;
+        let package = Package::load_from_bytes(authored, ExtractionLimits::unbounded())?;
         assert_eq!(
             package.manifest().timeout,
-            std::time::Duration::from_secs(90)
+            Some(std::time::Duration::from_secs(90))
+        );
+        assert!(
+            package.has_declared_timeout(),
+            "an authored timeout opts into the explicit-timeout identity"
+        );
+        assert_eq!(
+            package.declared_timeout(),
+            Some(std::time::Duration::from_secs(90))
         );
         Ok(())
     }

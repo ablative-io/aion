@@ -124,6 +124,36 @@ impl Package {
         &self.content_hash
     }
 
+    /// Whether this package's version identity commits to an explicitly authored
+    /// workflow timeout.
+    ///
+    /// This is the single, tamper-evident authority for "did the author declare
+    /// a workflow timeout": it is true only when the content hash is the
+    /// domain-separated timeout-bearing identity over exactly `manifest.timeout`.
+    /// A legacy (beams-only) archive — even one whose manifest still carries a
+    /// defaulted `timeout` value — reads as `false`, so it can never arm a
+    /// deadline. Callers pair this with [`Self::manifest`] to read the declared
+    /// timeout: the value is trustworthy precisely because it is bound into the
+    /// version hash.
+    #[must_use]
+    pub fn has_declared_timeout(&self) -> bool {
+        has_explicit_timeout_identity(&self.beams, &self.manifest, &self.content_hash)
+    }
+
+    /// The explicitly authored workflow timeout of the primary entry, or `None`.
+    ///
+    /// Returns `Some` only when the package identity commits to a declared
+    /// timeout (see [`Self::has_declared_timeout`]); otherwise `None`, so a
+    /// legacy or defaulted manifest yields no deadline.
+    #[must_use]
+    pub fn declared_timeout(&self) -> Option<std::time::Duration> {
+        if self.has_declared_timeout() {
+            self.manifest.timeout
+        } else {
+            None
+        }
+    }
+
     /// Produces the canonical cross-system version record for this loaded package.
     #[must_use]
     pub fn version_record(&self) -> WorkflowVersion {

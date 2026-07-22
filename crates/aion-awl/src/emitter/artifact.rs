@@ -1,5 +1,7 @@
 //! Structured output of AWL-to-Gleam emission.
 
+use std::time::Duration;
+
 use serde_json::{Map, Value, json};
 
 use super::types::{GType, NamedDef, TypeEnv};
@@ -17,8 +19,10 @@ pub struct SynthesizedWorkflowEntry {
     pub input_schema: Value,
     /// JSON Schema produced by the generated output codec.
     pub output_schema: Value,
-    /// Workflow timeout inherited from the parent contract.
-    pub timeout_seconds: u64,
+    /// Workflow timeout inherited from the parent contract when the document
+    /// declared one, `None` otherwise. `None` is the honest "no authored
+    /// timeout" — the child arms no deadline rather than a buried default.
+    pub timeout: Option<Duration>,
     /// Synthesized entries are package-internal implementation details.
     pub internal: bool,
 }
@@ -46,7 +50,9 @@ impl EmittedArtifact {
                     "workflow_type": entry.workflow_type,
                     "entry_module": entry.entry_module,
                     "entry_function": entry.entry_function,
-                    "timeout_seconds": entry.timeout_seconds,
+                    // Absent (authored no timeout) serialises as JSON null; the
+                    // project sidecar reader decodes that back to `None`.
+                    "timeout_seconds": entry.timeout.map(|timeout| timeout.as_secs()),
                     "input_schema": entry.input_schema,
                     "output_schema": entry.output_schema,
                     "internal": entry.internal,

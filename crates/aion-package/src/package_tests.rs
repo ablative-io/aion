@@ -20,7 +20,7 @@ fn sample_manifest() -> Manifest {
         entry_function: "run".to_owned(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
-        timeout: Duration::from_secs(30),
+        timeout: Some(Duration::from_secs(30)),
         activities: vec![DeclaredActivity {
             activity_type: "charge_card".to_owned(),
         }],
@@ -341,7 +341,7 @@ fn to_archive_bytes_preserves_legacy_identity() -> Result<(), PackageError> {
 #[test]
 fn to_archive_bytes_preserves_explicit_timeout_identity() -> Result<(), PackageError> {
     let mut manifest = sample_manifest();
-    manifest.timeout = Duration::new(7_200, 500_000_000);
+    manifest.timeout = Some(Duration::new(7_200, 500_000_000));
     let bytes = PackageBuilder::with_source(
         manifest,
         sample_beams()?,

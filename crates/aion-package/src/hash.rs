@@ -87,12 +87,25 @@ pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentH
     ContentHash(digest.finalize().into())
 }
 
+/// Whether this package's version identity commits to an explicitly authored
+/// workflow timeout.
+///
+/// True only when the stored content hash is the domain-separated
+/// timeout-bearing identity over exactly `manifest.timeout` — never the
+/// beams-only legacy identity. A manifest that merely carries a defaulted
+/// `timeout` value under a legacy (beams-only) hash therefore reads as NOT
+/// declared, so a legacy archive can never arm a deadline. The check is
+/// tamper-evident: the timeout value returned by [`crate::Package`] is provably
+/// the one baked into the version hash, so a hand-edited timeout that was not
+/// part of the identity cannot fake declaredness.
 pub(crate) fn has_explicit_timeout_identity(
     beams: &BeamSet,
     manifest: &Manifest,
     hash: &ContentHash,
 ) -> bool {
-    hash != &content_hash(beams) && hash == &content_hash_with_timeout(beams, manifest.timeout)
+    manifest.timeout.is_some_and(|timeout| {
+        hash != &content_hash(beams) && hash == &content_hash_with_timeout(beams, timeout)
+    })
 }
 
 pub(crate) fn verified_content_hash(
@@ -100,18 +113,20 @@ pub(crate) fn verified_content_hash(
     manifest: &Manifest,
 ) -> Result<ContentHash, PackageError> {
     let legacy_hash = content_hash(beams);
-    let timeout_hash = content_hash_with_timeout(beams, manifest.timeout);
     let stored = manifest.version.as_str();
     if stored == legacy_hash.to_string() {
-        Ok(legacy_hash)
-    } else if stored == timeout_hash.to_string() {
-        Ok(timeout_hash)
-    } else {
-        Err(PackageError::IntegrityMismatch {
-            expected: stored.to_owned(),
-            computed: legacy_hash.to_string(),
-        })
+        return Ok(legacy_hash);
     }
+    if let Some(timeout) = manifest.timeout {
+        let timeout_hash = content_hash_with_timeout(beams, timeout);
+        if stored == timeout_hash.to_string() {
+            return Ok(timeout_hash);
+        }
+    }
+    Err(PackageError::IntegrityMismatch {
+        expected: stored.to_owned(),
+        computed: legacy_hash.to_string(),
+    })
 }
 
 fn update_beams(digest: &mut Sha256, beams: &BeamSet) {

@@ -109,7 +109,11 @@ impl PackageBuilder {
         }
 
         let hash = if self.explicit_timeout_identity {
-            content_hash_with_timeout(&self.beams, self.manifest.timeout)
+            let timeout = self
+                .manifest
+                .timeout
+                .ok_or(PackageError::ExplicitTimeoutWithoutValue)?;
+            content_hash_with_timeout(&self.beams, timeout)
         } else {
             content_hash(&self.beams)
         };
@@ -213,7 +217,7 @@ mod tests {
             entry_function: "run".to_owned(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),
-            timeout: Duration::from_secs(30),
+            timeout: Some(Duration::from_secs(30)),
             activities: vec![DeclaredActivity {
                 activity_type: "charge_card".to_owned(),
             }],

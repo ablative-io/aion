@@ -205,7 +205,7 @@ fn assert_round_trip(root: &Path, packaged: &aion_package::PackagedWorkflow) -> 
 
     let manifest = reloaded.manifest();
     assert_eq!(manifest.entry_function, "run");
-    assert_eq!(manifest.timeout, Duration::from_secs(30));
+    assert_eq!(manifest.timeout, Some(Duration::from_secs(30)));
     assert_eq!(manifest.version.as_str(), record.content_hash.to_string());
     assert!(reloaded.deployed_entry_module().starts_with("hello_world$"));
     assert!(reloaded.beams().get("hello_world").is_some());

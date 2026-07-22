@@ -188,7 +188,7 @@ mod tests {
 
         assert_eq!(
             package.manifest().timeout,
-            std::time::Duration::from_secs(21_600)
+            Some(std::time::Duration::from_secs(21_600))
         );
         Ok(())
     }
