@@ -11,7 +11,7 @@ use std::time::Duration;
 use aion_core::{Event, TimerCancelCause, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry};
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
@@ -41,6 +41,13 @@ pub(super) struct TimerNifBridge {
     /// `recover_due` route a deadline fire to the engine instead of recording a
     /// generic `TimerFired`.
     deadline_handler: Mutex<Option<Arc<dyn DeadlineHandler>>>,
+    /// The single per-timer first-recorded-wins coordinator shared by every
+    /// [`TimerService`] this bridge constructs, so a cancel obtained from one
+    /// service instance and a fire obtained from another mutually exclude per
+    /// timer. Owning it here (not per service) is what makes the guard real
+    /// across the separately-obtained services the live wheel and `Engine::cancel`
+    /// use.
+    terminal_updates: Arc<DashSet<(WorkflowId, TimerId)>>,
 }
 
 struct PendingTimerTask {
@@ -109,7 +116,8 @@ impl TimerNifBridge {
     pub(super) fn service(self: &Arc<Self>) -> TimerService {
         let engine: Arc<dyn EngineHandle> = self.clone();
         let store: Arc<dyn ReadableEventStore> = self.store.clone();
-        let service = TimerService::new(engine, store);
+        let service = TimerService::new(engine, store)
+            .with_terminal_updates(Arc::clone(&self.terminal_updates));
         match self.deadline_handler() {
             Some(handler) => service.with_deadline_handler(handler),
             None => service,
@@ -357,23 +365,54 @@ impl EngineHandle for TimerNifBridge {
                 workflow_id: workflow_id.clone(),
             })?;
         let recorder = handle.recorder();
-        run_blocking(&self.tokio_handle, async {
+        let store = Arc::clone(&self.store);
+        let workflow_id = workflow_id.clone();
+        run_blocking(&self.tokio_handle, async move {
             let mut recorder = recorder.lock().await;
+            // Late-append refusal under the SAME recorder lock that records the
+            // timer event: if the active run already recorded a terminal, refuse
+            // ALL late timer appends (fire OR cancel) cleanly — no post-terminal
+            // `TimerFired`, no wake. A parked sleep that elapses in the
+            // post-terminal window is thereby refused rather than mutating a
+            // terminal history, closing the whole late-timer class, not only the
+            // deadline case.
+            let history = store.read_history(&workflow_id).await?;
+            if active_run_has_terminal(&history) {
+                return Ok(());
+            }
             match outcome {
                 TimerOutcome::Fired(timer_id) => {
-                    recorder.record_timer_fired(recorded_at, timer_id).await
+                    recorder.record_timer_fired(recorded_at, timer_id).await?;
                 }
                 TimerOutcome::Cancelled(timer_id, cause) => {
                     recorder
                         .record_timer_cancelled(recorded_at, timer_id, cause)
-                        .await
+                        .await?;
                 }
             }
+            Ok(())
         })
-        .map_err(|error| EngineSeamError::Recorder {
-            reason: error.to_string(),
+        .map_err(|error: Box<dyn std::error::Error + Send + Sync>| {
+            EngineSeamError::Recorder {
+                reason: error.to_string(),
+            }
         })
     }
+}
+
+/// Whether the workflow's active run segment has already recorded a terminal.
+///
+/// The active run is the one opened by the latest `WorkflowStarted`; a timer
+/// event that arrives after that run terminated is a late fire/cancel the bridge
+/// refuses to append.
+fn active_run_has_terminal(history: &[Event]) -> bool {
+    let Some(run_id) = history.iter().rev().find_map(|event| match event {
+        Event::WorkflowStarted { run_id, .. } => Some(run_id.clone()),
+        _ => None,
+    }) else {
+        return false;
+    };
+    crate::lifecycle::completion::terminal_outcome_from_history(history, &run_id).is_some()
 }
 
 /// Install the engine-scoped timer bridge used by raw NIF function pointers.
@@ -394,6 +433,7 @@ pub(crate) fn install_timer_nif_bridge(
         next_timer_generation: AtomicU64::new(0),
         nif_state: Arc::downgrade(state),
         deadline_handler: Mutex::new(None),
+        terminal_updates: Arc::new(DashSet::new()),
     });
     match state.timer_bridge.lock() {
         Ok(mut installed) => *installed = Some(bridge),

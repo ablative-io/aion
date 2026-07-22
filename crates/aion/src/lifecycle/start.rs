@@ -206,20 +206,50 @@ pub async fn start_workflow_with_options(
         completion,
     });
 
-    register_started_handle(&context, &handle)?;
+    publish_started_handle(&context, &handle)?;
+
+    arm_declared_deadline_or_fail_start(&context, &workflow_id, &handle, armed_deadline).await?;
+
+    install_started_monitor(&context, &handle)?;
     deliver_deferred_signals(&context, &handle);
 
-    // Persist the durable timer row and arm the live wheel AFTER registration so
-    // the workflow is resident and the wheel actually arms (a schedule before
-    // registration would write the row but skip the wheel). The recorded
-    // `TimerStarted` above is the durability anchor, so a schedule failure here
-    // is loud but non-fatal: startup/adoption recovery re-arms the deadline from
-    // history via `outstanding_future_timers`.
-    if let Some((deadline_id, fire_at)) = armed_deadline {
-        arm_declared_deadline(&context, &workflow_id, deadline_id, fire_at).await;
-    }
-
     Ok(handle)
+}
+
+/// Establish the declared deadline LIVE before acknowledging the start, failing
+/// the start honestly if it cannot be armed.
+///
+/// The durable timer row and the live wheel are armed here (after registration,
+/// so the workflow is resident and the wheel actually arms), while the recorded
+/// `TimerStarted` is the recovery anchor. A declared deadline MUST arm — a run
+/// that proceeded with a silently-inert deadline would run forever if this single
+/// attempt failed and the engine stayed alive — so a persistence or arming
+/// failure retracts the registry publication and aborts the still-unmonitored
+/// process, returning the typed error with no half-started run. A run with no
+/// declared deadline (`armed_deadline == None`) is a no-op.
+///
+/// # Errors
+///
+/// Returns the typed [`EngineError`] from [`arm_declared_deadline`] after
+/// retracting the partial start.
+async fn arm_declared_deadline_or_fail_start(
+    context: &StartWorkflowContext,
+    workflow_id: &WorkflowId,
+    handle: &WorkflowHandle,
+    armed_deadline: Option<(aion_core::TimerId, chrono::DateTime<Utc>)>,
+) -> Result<(), EngineError> {
+    let Some((deadline_id, fire_at)) = armed_deadline else {
+        return Ok(());
+    };
+    if let Err(error) = arm_declared_deadline(context, workflow_id, deadline_id, fire_at).await {
+        retract_registry_publication(context, handle);
+        return Err(abort_unmonitored_start(
+            &context.runtime,
+            handle.pid(),
+            error,
+        ));
+    }
+    Ok(())
 }
 
 /// Record the run's declared-timeout deadline `TimerStarted`, if one is declared.
@@ -280,43 +310,40 @@ fn deadline_fire_at(
 
 /// Persist the durable deadline row and arm the live wheel for a resident run.
 ///
-/// Best-effort by contract: the durable `TimerStarted` recorded at start is the
-/// recoverable anchor, so every failure here is logged and swallowed — recovery
-/// re-arms the deadline from history. Never fails an already-durable start.
+/// The durable timer row and the live-wheel task are both established here,
+/// before the start is acknowledged. Failure is returned to the caller — the
+/// start path fails the start rather than proceeding with an inert deadline; the
+/// recorded `TimerStarted` remains the recovery anchor for a re-drive.
+///
+/// # Errors
+///
+/// Returns [`EngineError`] when the timer bridge is unavailable or the durable
+/// row/wheel could not be armed.
 async fn arm_declared_deadline(
     context: &StartWorkflowContext,
     workflow_id: &WorkflowId,
     deadline_id: aion_core::TimerId,
     fire_at: chrono::DateTime<Utc>,
-) {
-    let timer_service = match crate::runtime::nif_timer_bridge::installed_timer_service(
-        context.runtime.nif_state(),
-    ) {
-        Ok(service) => service,
-        Err(error) => {
-            tracing::warn!(
-                %workflow_id,
-                %deadline_id,
-                %error,
-                "timer service unavailable while arming workflow deadline; recovery will re-arm it from the recorded TimerStarted"
-            );
-            return;
-        }
-    };
-    if let Err(error) = timer_service
+) -> Result<(), EngineError> {
+    let timer_service =
+        crate::runtime::nif_timer_bridge::installed_timer_service(context.runtime.nif_state())
+            .map_err(|error| EngineError::Runtime {
+                reason: format!(
+                    "timer service unavailable while arming workflow deadline: {error}"
+                ),
+            })?;
+    timer_service
         .schedule(workflow_id.clone(), deadline_id.clone(), fire_at)
         .await
-    {
-        tracing::warn!(
-            %workflow_id,
-            %deadline_id,
-            %error,
-            "failed to arm workflow deadline live wheel; recovery will re-arm it from the recorded TimerStarted"
-        );
-    }
+        .map_err(|error| EngineError::Runtime {
+            reason: format!("failed to arm workflow deadline {deadline_id}: {error}"),
+        })
 }
 
-fn register_started_handle(
+/// Publishes the started handle into the active registry (with the test-only
+/// start-publication pause), retracting a partial publication if the insert
+/// fails.
+fn publish_started_handle(
     context: &StartWorkflowContext,
     handle: &WorkflowHandle,
 ) -> Result<(), EngineError> {
@@ -329,26 +356,40 @@ fn register_started_handle(
         )
         .map(|_| ())
     {
-        if let Err(remove_error) = context
-            .registry
-            .remove(handle.workflow_id(), handle.run_id())
-        {
-            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract partial workflow registry publication after insert failed");
-        }
+        retract_registry_publication(context, handle);
         return Err(abort_unmonitored_start(&context.runtime, pid, error));
     }
     #[cfg(test)]
     context.runtime.pause_at_start_publication_for_test(pid)?;
-    if let Err(error) = install_completion_monitor(context, pid, handle) {
-        if let Err(remove_error) = context
-            .registry
-            .remove(handle.workflow_id(), handle.run_id())
-        {
-            tracing::warn!(workflow_pid = pid, error = %remove_error, cause = %error, "failed to retract workflow registry publication after monitor installation failed");
-        }
+    Ok(())
+}
+
+/// Installs the completion monitor for an already-published handle, retracting
+/// the registry publication if installation fails.
+fn install_started_monitor(
+    context: &StartWorkflowContext,
+    handle: &WorkflowHandle,
+) -> Result<(), EngineError> {
+    if let Err(error) = install_completion_monitor(context, handle.pid(), handle) {
+        retract_registry_publication(context, handle);
         return Err(error);
     }
     Ok(())
+}
+
+/// Best-effort retraction of a handle's registry publication during a failed
+/// start; a failure to remove is logged (the entry is superseded on re-drive).
+fn retract_registry_publication(context: &StartWorkflowContext, handle: &WorkflowHandle) {
+    if let Err(error) = context
+        .registry
+        .remove(handle.workflow_id(), handle.run_id())
+    {
+        tracing::warn!(
+            workflow_pid = handle.pid(),
+            error = %error,
+            "failed to retract workflow registry publication during failed start"
+        );
+    }
 }
 
 fn abort_unmonitored_start(

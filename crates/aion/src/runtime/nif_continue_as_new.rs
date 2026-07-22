@@ -89,9 +89,27 @@ fn continue_as_new(args: &[Term], process_context: &mut ProcessContext) -> Resul
                         Utc::now(),
                         input_for_record,
                         None,
-                        parent_run_id,
+                        parent_run_id.clone(),
                     )
-                    .await
+                    .await?;
+                // D5: retire the predecessor's declared-timeout deadline as part
+                // of the continue-as-new transition, under the same recorder lock.
+                // The deadline id is read from history (no minting) and matched to
+                // exactly this predecessor run, so an uncancelled predecessor
+                // deadline is never re-armed against the continued run after
+                // failover.
+                if let Some(deadline_id) =
+                    crate::time::outstanding_deadline_timer(&history, &parent_run_id)
+                {
+                    recorder
+                        .record_timer_cancelled(
+                            Utc::now(),
+                            deadline_id,
+                            aion_core::TimerCancelCause::WorkflowIntent,
+                        )
+                        .await?;
+                }
+                Ok(())
             })
         })
         .map_err(|error| context_error_term(process_context, &error))?;

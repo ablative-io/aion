@@ -15,7 +15,7 @@
 //! registers a handler holding whatever weak references it needs at construction
 //! time.
 
-use aion_core::{RunId, TimerId};
+use aion_core::{Event, RunId, TimerId};
 use uuid::Uuid;
 
 /// Reserved name prefix for a workflow's declared-timeout deadline timer.
@@ -61,6 +61,39 @@ pub fn deadline_run_id(timer_id: &TimerId) -> Option<RunId> {
     Uuid::parse_str(suffix).ok().map(RunId::new)
 }
 
+/// The still-live reserved deadline timer for `run_id`, derived purely from
+/// recorded history — or `None` when the run never armed a deadline (or its
+/// deadline was already fired/cancelled).
+///
+/// LAW 1: this constructs NO deadline id. It reads the id only from a
+/// `TimerStarted` event whose id is a reserved deadline timer for exactly
+/// `run_id` (matched by the run encoded in the id, not by a minted candidate),
+/// so a timeout-less run — which recorded no such event — yields `None` and
+/// touches no deadline object of any kind. Liveness is last-event-wins: a later
+/// `TimerFired`/`TimerCancelled` for the same id retires it.
+#[must_use]
+pub fn outstanding_deadline_timer(history: &[Event], run_id: &RunId) -> Option<TimerId> {
+    let mut live: Option<TimerId> = None;
+    for event in history {
+        let (timer_id, started) = match event {
+            Event::TimerStarted { timer_id, .. } => (timer_id, true),
+            Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
+                (timer_id, false)
+            }
+            _ => continue,
+        };
+        if !is_deadline_timer(timer_id) || deadline_run_id(timer_id).as_ref() != Some(run_id) {
+            continue;
+        }
+        live = if started {
+            Some(timer_id.clone())
+        } else {
+            None
+        };
+    }
+    live
+}
+
 /// Errors surfaced by a [`DeadlineHandler`] to the timer service.
 ///
 /// Deliberately message-only: the handler lives engine-side and produces the
@@ -95,12 +128,75 @@ pub trait DeadlineHandler: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use aion_core::{RunId, TimerId};
+    use aion_core::{Event, EventEnvelope, RunId, TimerCancelCause, TimerId, WorkflowId};
     use uuid::Uuid;
 
-    use super::{deadline_run_id, deadline_timer_id, is_deadline_timer};
+    use super::{
+        deadline_run_id, deadline_timer_id, is_deadline_timer, outstanding_deadline_timer,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn envelope(seq: u64, workflow_id: &WorkflowId) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        }
+    }
+
+    #[test]
+    fn outstanding_deadline_timer_is_none_for_a_run_without_a_deadline() -> TestResult {
+        // LAW 1: a run whose history has no deadline `TimerStarted` yields no
+        // deadline object of any kind — not even a constructed candidate id.
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = RunId::new_v4();
+        let history = vec![Event::TimerStarted {
+            envelope: envelope(1, &workflow_id),
+            // An ordinary author timer, never a deadline.
+            timer_id: TimerId::anonymous(3),
+            fire_at: chrono::Utc::now(),
+        }];
+        assert_eq!(outstanding_deadline_timer(&history, &run_id), None);
+        Ok(())
+    }
+
+    #[test]
+    fn outstanding_deadline_timer_tracks_liveness_and_scopes_to_the_run() -> TestResult {
+        let workflow_id = WorkflowId::new_v4();
+        let this_run = RunId::new_v4();
+        let other_run = RunId::new_v4();
+        let this_deadline = deadline_timer_id(&this_run)?;
+        let other_deadline = deadline_timer_id(&other_run)?;
+
+        // Armed for this run, plus another run's deadline that must be ignored.
+        let armed = vec![
+            Event::TimerStarted {
+                envelope: envelope(1, &workflow_id),
+                timer_id: this_deadline.clone(),
+                fire_at: chrono::Utc::now(),
+            },
+            Event::TimerStarted {
+                envelope: envelope(2, &workflow_id),
+                timer_id: other_deadline,
+                fire_at: chrono::Utc::now(),
+            },
+        ];
+        assert_eq!(
+            outstanding_deadline_timer(&armed, &this_run),
+            Some(this_deadline.clone())
+        );
+
+        // A later cancel retires it (last-event-wins).
+        let mut cancelled = armed;
+        cancelled.push(Event::TimerCancelled {
+            envelope: envelope(3, &workflow_id),
+            timer_id: this_deadline,
+            cause: TimerCancelCause::WorkflowIntent,
+        });
+        assert_eq!(outstanding_deadline_timer(&cancelled, &this_run), None);
+        Ok(())
+    }
 
     #[test]
     fn deadline_timer_id_round_trips_to_its_run() -> TestResult {

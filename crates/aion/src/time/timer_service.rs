@@ -21,7 +21,14 @@ pub struct TimerService {
     engine: Arc<dyn EngineHandle>,
     store: Arc<dyn ReadableEventStore>,
     recorded_at: fn() -> DateTime<Utc>,
-    terminal_updates: DashSet<(WorkflowId, TimerId)>,
+    /// Per-timer first-recorded-wins coordinator shared across EVERY service
+    /// instance the production bridge hands out. Cancel and fire obtain
+    /// SEPARATE service instances (the live wheel constructs one, `Engine::cancel`
+    /// another), so a per-instance set would not exclude them; a shared `Arc`
+    /// makes a cancel and a fire for the same timer mutually exclude — the
+    /// #cancel-vs-fire race the review flagged. Bare unit-test services get their
+    /// own set, which is correct for a single-instance test.
+    terminal_updates: Arc<DashSet<(WorkflowId, TimerId)>>,
     /// Engine-registered handler for reserved `deadline:{run_id}` fires.
     ///
     /// `None` on a bare service (unit tests): a deadline fire is then a typed
@@ -81,9 +88,25 @@ impl TimerService {
             engine,
             store,
             recorded_at,
-            terminal_updates: DashSet::new(),
+            terminal_updates: Arc::new(DashSet::new()),
             deadline_handler: None,
         }
+    }
+
+    /// Replaces this service's per-timer terminal-update coordinator with a
+    /// shared one, returning the service for chaining.
+    ///
+    /// The production timer bridge owns ONE coordinator and hands it to every
+    /// [`TimerService`] it constructs, so a cancel obtained from one service and
+    /// a fire obtained from another still serialize per timer (first-recorded
+    /// wins). Without this, each service would guard against itself only.
+    #[must_use]
+    pub fn with_terminal_updates(
+        mut self,
+        terminal_updates: Arc<DashSet<(WorkflowId, TimerId)>>,
+    ) -> Self {
+        self.terminal_updates = terminal_updates;
+        self
     }
 
     /// Registers the engine-side deadline handler for reserved `deadline:{run_id}`
@@ -215,7 +238,7 @@ impl TimerService {
         loop {
             if self.terminal_updates.insert(key.clone()) {
                 return TerminalUpdateSlot {
-                    terminal_updates: &self.terminal_updates,
+                    terminal_updates: self.terminal_updates.as_ref(),
                     key,
                 };
             }
@@ -983,6 +1006,69 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(TimerServiceError::Deadline(_))));
+        Ok(())
+    }
+
+    /// Two services obtained separately but sharing ONE terminal-update
+    /// coordinator (as the production bridge hands out) serialize a cancel and a
+    /// fire of the same timer: exactly one terminal timer event is recorded, never
+    /// both. Mutation-sensitive — a per-service coordinator would let both read
+    /// the timer live and record a `TimerFired` AND a `TimerCancelled`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shared_coordinator_serializes_cancel_and_fire_across_services()
+    -> Result<(), TimerServiceError> {
+        use dashmap::DashSet;
+
+        for _ in 0..40 {
+            let process = WorkflowProcessHandle::new(42);
+            let concrete_store = Arc::new(InMemoryStore::default());
+            let recorder_store: Arc<dyn WritableEventStore> = concrete_store.clone();
+            let readable: Arc<dyn ReadableEventStore> = concrete_store.clone();
+            let engine = Arc::new(FakeEngineHandle::recording_to(recorder_store));
+            let coordinator = Arc::new(DashSet::new());
+            let service_a =
+                TimerService::with_recorded_at(engine.clone(), readable.clone(), recorded_at)
+                    .with_terminal_updates(Arc::clone(&coordinator));
+            let service_b =
+                TimerService::with_recorded_at(engine.clone(), readable.clone(), recorded_at)
+                    .with_terminal_updates(Arc::clone(&coordinator));
+
+            let workflow_id = workflow_id();
+            let timer_id = timer_id();
+            let fire_at = instant(200);
+            engine.set_residency(workflow_id.clone(), WorkflowResidency::Resident(process))?;
+            engine.record_workflow_event(
+                &workflow_id,
+                timer_started_event(&workflow_id, &timer_id, 1),
+            )?;
+
+            let cancel = service_a.cancel(
+                workflow_id.clone(),
+                timer_id.clone(),
+                TimerCancelCause::WorkflowIntent,
+            );
+            let fire = service_b.fire_timer(workflow_id.clone(), timer_id.clone(), fire_at);
+            let (cancel_result, fire_result) = tokio::join!(cancel, fire);
+            cancel_result?;
+            fire_result?;
+
+            let history = history(&concrete_store, &workflow_id).await?;
+            let terminal_timer_events = history
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Event::TimerFired { timer_id: recorded, .. }
+                        | Event::TimerCancelled { timer_id: recorded, .. }
+                            if recorded == &timer_id
+                    )
+                })
+                .count();
+            assert_eq!(
+                terminal_timer_events, 1,
+                "first-recorded wins across shared services: {history:#?}"
+            );
+        }
         Ok(())
     }
 

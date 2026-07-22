@@ -130,6 +130,28 @@ fn count_timed_out(history: &[Event]) -> usize {
         .count()
 }
 
+/// Whether the store holds a durable DEADLINE timer row for the workflow,
+/// inspected via `expired_timers` at a timestamp far past every plausible
+/// `fire_at`. A workflow's own author sleep timers create rows too, so LAW
+/// assertions must scope to the reserved `deadline:` family rather than any row.
+async fn workflow_has_deadline_row(
+    store: &Arc<dyn EventStore>,
+    workflow_id: &WorkflowId,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let far_future = chrono::Utc::now() + chrono::Duration::days(365 * 100);
+    Ok(store
+        .expired_timers(far_future)
+        .await?
+        .into_iter()
+        .any(|entry| {
+            &entry.workflow_id == workflow_id
+                && entry
+                    .timer_id
+                    .name()
+                    .is_some_and(|name| name.starts_with("deadline:"))
+        }))
+}
+
 /// Spin until the run's history records its deadline `TimerStarted` but no
 /// terminal yet — the deadline is armed and the run is still live.
 async fn wait_until_deadline_armed(
@@ -210,6 +232,13 @@ async fn no_declared_timeout_arms_nothing() -> TestResult {
         0,
         "LAW 1: no WorkflowTimedOut without a declared timeout"
     );
+    // LAW 1 at the store boundary: no durable timer ROW exists for the run
+    // either — not just no history event. This catches a "row scheduled but
+    // TimerStarted omitted" regression the history-only assertion cannot see.
+    assert!(
+        !workflow_has_deadline_row(&store, &workflow_id).await?,
+        "LAW 1: a run with no declared timeout has no durable timer row"
+    );
     engine.shutdown()?;
     Ok(())
 }
@@ -248,6 +277,12 @@ async fn legacy_defaulted_manifest_never_arms() -> TestResult {
         aion_core::status_from_events(&history),
         WorkflowStatus::TimedOut,
         "LAW 2: status is not TimedOut past the manifest timeout"
+    );
+    // LAW 2 at the store boundary: no durable deadline timer row was scheduled
+    // for the legacy/defaulted manifest either.
+    assert!(
+        !workflow_has_deadline_row(&store, &workflow_id).await?,
+        "LAW 2: a legacy/defaulted manifest schedules no durable timer row"
     );
     let _ = run_id;
     engine.shutdown()?;
@@ -300,6 +335,145 @@ async fn declared_timeout_fires_to_timed_out() -> TestResult {
         aion_core::status_from_events(&history),
         WorkflowStatus::TimedOut
     );
+    // Late-result refusal: the workflow was parked on its long sleep when the
+    // deadline fired. Teardown retires that sleep, and the terminal history
+    // refuses any late append — so NO `TimerFired` (and no second terminal)
+    // appears after the `WorkflowTimedOut`.
+    let terminal_index = history
+        .iter()
+        .position(|event| matches!(event, Event::WorkflowTimedOut { .. }))
+        .ok_or("no WorkflowTimedOut in history")?;
+    assert!(
+        !history[terminal_index + 1..]
+            .iter()
+            .any(|event| matches!(event, Event::TimerFired { .. })),
+        "no TimerFired is appended after the timeout terminal: {history:#?}"
+    );
+    let _ = run_id;
+    engine.shutdown()?;
+    Ok(())
+}
+
+// --- Continue-as-new durably cancels the predecessor deadline (D5). ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn continue_as_new_cancels_the_predecessor_deadline() -> TestResult {
+    // A comfortably long deadline so neither run times out during the test; we
+    // only inspect the recorded transition.
+    let package = sleep_query_with_timeout(Duration::from_secs(120), true)?;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = build_engine(&store, package).await?;
+    let (workflow_id, predecessor_run) = start_sleeper(&engine, LONG_SLEEP_MS).await?;
+    wait_until_deadline_armed(&store, &workflow_id).await?;
+
+    let successor = engine
+        .continue_as_new(
+            &workflow_id,
+            &predecessor_run,
+            Payload::from_json(&json!({ "sleep_ms": LONG_SLEEP_MS }))?,
+            None,
+        )
+        .await?;
+    let successor_run = successor.run_id().clone();
+
+    let history = store.read_history(&workflow_id).await?;
+    let predecessor_deadline = aion::time::deadline_timer_id(&predecessor_run)?;
+    let successor_deadline = aion::time::deadline_timer_id(&successor_run)?;
+
+    // The predecessor deadline is durably cancelled with WorkflowIntent, AT the
+    // transition (before the successor's own WorkflowStarted).
+    let cancel_index = history
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::TimerCancelled { timer_id, cause: aion_core::TimerCancelCause::WorkflowIntent, .. }
+                    if timer_id == &predecessor_deadline
+            )
+        })
+        .ok_or("predecessor deadline was not cancelled at continue-as-new")?;
+    let continued_index = history
+        .iter()
+        .position(|event| matches!(event, Event::WorkflowContinuedAsNew { .. }))
+        .ok_or("no WorkflowContinuedAsNew")?;
+    assert!(
+        cancel_index > continued_index,
+        "the deadline cancel follows the terminal append: {history:#?}"
+    );
+
+    // The successor arms its OWN fresh deadline and it is still live.
+    assert!(
+        history
+            .iter()
+            .any(|event| matches!(event, Event::TimerStarted { timer_id, .. } if timer_id == &successor_deadline)),
+        "the successor arms its own deadline: {history:#?}"
+    );
+    assert_eq!(
+        aion::time::outstanding_deadline_timer(&history, &predecessor_run),
+        None,
+        "the predecessor deadline is retired, so failover re-arm cannot resurrect it"
+    );
+    assert_eq!(
+        aion::time::outstanding_deadline_timer(&history, &successor_run),
+        Some(successor_deadline),
+        "the successor deadline stays live"
+    );
+    engine.shutdown()?;
+    Ok(())
+}
+
+// --- Live ops-console stream delivers the engine-fired timeout terminal. ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn timed_out_terminal_is_delivered_on_the_live_event_stream() -> TestResult {
+    use futures::StreamExt;
+
+    let package = sleep_query_with_timeout(Duration::from_millis(400), true)?;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .event_streaming(std::num::NonZeroUsize::new(256).ok_or("capacity")?)
+        .load_workflows(package)
+        .build()
+        .await?;
+    let (workflow_id, run_id) = start_sleeper(&engine, LONG_SLEEP_MS).await?;
+
+    // A real filtered subscription scoped to this workflow.
+    let mut stream = engine.subscribe(aion::EventFilter {
+        workflow_id: Some(workflow_id.clone()),
+        run: None,
+        family: None,
+    });
+
+    // Consume the live tail until the engine-fired timeout terminal is delivered.
+    let overall_deadline = Instant::now() + COMPLETE_DEADLINE;
+    let mut delivered = None;
+    while Instant::now() < overall_deadline {
+        match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+            Ok(Some(Ok(event))) => {
+                if matches!(event, Event::WorkflowTimedOut { .. }) {
+                    delivered = Some(event);
+                    break;
+                }
+            }
+            Ok(Some(Err(_))) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    // The ops-console selector projects a delivered `WorkflowTimedOut` frame as
+    // `TimedOut` (mapping unit-tested in aion-server's selector); here we prove
+    // the engine actually publishes it live to a subscriber.
+    match delivered {
+        Some(Event::WorkflowTimedOut { timeout, .. }) => assert_eq!(timeout, "workflow"),
+        other => {
+            return Err(format!(
+                "no WorkflowTimedOut frame delivered on the live stream: {other:?}"
+            )
+            .into());
+        }
+    }
     let _ = run_id;
     engine.shutdown()?;
     Ok(())
