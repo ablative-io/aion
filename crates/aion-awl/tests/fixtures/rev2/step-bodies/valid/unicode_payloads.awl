@@ -1,0 +1,9 @@
+//! Café ☕ — thread UTF-8 (日本語, emoji 🚀, Ω) through string literals and a concat.
+workflow unicode_payloads
+  input name: String
+  outcome greeted: type Greeting, route success
+
+type Greeting { message: String, who: String }
+
+step greet
+  route greeted(message: "こんにちは 🚀 café Ω — " + name, who: name)

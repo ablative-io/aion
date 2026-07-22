@@ -1,0 +1,182 @@
+module child_spawn_combo source=child_spawn_combo.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_grade:
+    aion@workflow:spawn_and_wait/6 [children] (lit#13, v2, v1, v3, v4, v5)
+    aion@workflow:spawn/6 [children] (lit#14, v11, v10, v12, v13, v14)
+== durable families == children
+== atoms ==
+  [0] grade
+  [1] child_spawn_combo_input
+  [2] scored_outcome
+  [3] ok
+== literals ==
+  [0] "score"
+  [1] "essay"
+  [2] "scored"
+  [3] "outcome"
+  [4] "ChildSpawnComboOutcome"
+  [5] "scored"
+  [6] "payload"
+  [7] "child"
+  [8] "outcome"
+  [9] "payload"
+  [10] "child"
+  [11] "outcome"
+  [12] "payload"
+  [13] "score_essay"
+  [14] "notify_graded"
+== types ==
+  record Grade tag=grade
+    score: int
+  record ChildSpawnComboInput tag=child_spawn_combo_input
+    essay: string
+  union ChildSpawnComboOutcome
+    scored -> scored_outcome(ref(Grade))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=child_spawn_combo_input_codec output=child_spawn_combo_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(child_spawn_combo.ChildSpawnComboInput, child_spawn_combo.ChildSpawnComboOutcome, AwlError)
+  T-DEF name="child_spawn_combo" input=child_spawn_combo_input_codec output=child_spawn_combo_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (child_spawn_combo.ChildSpawnComboInput) -> Result(child_spawn_combo.ChildSpawnComboOutcome, AwlError)
+  T-EXEC fields=[essay:String] entry=step_grade args=[0]
+== fn grade_codec/0 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: () -> Codec(child_spawn_combo.Grade)
+  v0 = make_closure grade_to_json captures=[]
+  v1 = call_local grade_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn grade_to_json/1 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: (child_spawn_combo.Grade) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"score": v1|>awlc.int_to_json}
+  return v2
+== fn grade_decoder/0 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: () -> Decoder(child_spawn_combo.Grade)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure grade_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn grade_decoder$0/1 origin=lifted(grade_decoder, #0) ==
+  sig: (Int) -> Decoder(child_spawn_combo.Grade)
+  v1 = record(grade, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn child_spawn_combo_input_codec/0 origin=codec_template(RecordTrio, ChildSpawnComboInput, record#1) ==
+  sig: () -> Codec(child_spawn_combo.ChildSpawnComboInput)
+  v0 = make_closure child_spawn_combo_input_to_json captures=[]
+  v1 = call_local child_spawn_combo_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_spawn_combo_input_to_json/1 origin=codec_template(RecordTrio, ChildSpawnComboInput, record#1) ==
+  sig: (child_spawn_combo.ChildSpawnComboInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"essay": v1|>awlc.string_to_json}
+  return v2
+== fn child_spawn_combo_input_decoder/0 origin=codec_template(RecordTrio, ChildSpawnComboInput, record#1) ==
+  sig: () -> Decoder(child_spawn_combo.ChildSpawnComboInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure child_spawn_combo_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn child_spawn_combo_input_decoder$0/1 origin=lifted(child_spawn_combo_input_decoder, #0) ==
+  sig: (String) -> Decoder(child_spawn_combo.ChildSpawnComboInput)
+  v1 = record(child_spawn_combo_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn child_spawn_combo_outcome_codec/0 origin=codec_template(UnionTrio, ChildSpawnComboOutcome, union#2) ==
+  sig: () -> Codec(child_spawn_combo.ChildSpawnComboOutcome)
+  v0 = make_closure child_spawn_combo_outcome_to_json captures=[]
+  v1 = call_local child_spawn_combo_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_spawn_combo_outcome_to_json/1 origin=codec_template(UnionTrio, ChildSpawnComboOutcome, union#2) ==
+  sig: (child_spawn_combo.ChildSpawnComboOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#2|>awlc.string_to_json, "payload": v1|>grade_to_json}
+  return v2
+== fn child_spawn_combo_outcome_decoder/0 origin=codec_template(UnionTrio, ChildSpawnComboOutcome, union#2) ==
+  sig: () -> Decoder(child_spawn_combo.ChildSpawnComboOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure child_spawn_combo_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn child_spawn_combo_outcome_decoder$outcome/1 origin=lifted(child_spawn_combo_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(child_spawn_combo.ChildSpawnComboOutcome)
+  if cmp Eq v0 lit#5:
+    v3 = call_local grade_decoder()
+    v4 = make_closure child_spawn_combo_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#6, v3, v4)
+  else:
+    v1 = record(grade, [0])
+    v2 = record(scored_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#4)
+== fn child_spawn_combo_outcome_decoder$arm0/1 origin=lifted(child_spawn_combo_outcome_decoder, #1) ==
+  sig: (child_spawn_combo.Grade) -> Decoder(child_spawn_combo.ChildSpawnComboOutcome)
+  v1 = record(scored_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn awl_child_output_grade_codec/0 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: () -> Codec(child_spawn_combo.Grade)
+  v0 = make_closure awl_child_output_grade_to_json captures=[]
+  v1 = call_local awl_child_output_grade_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_grade_to_json/1 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: (child_spawn_combo.Grade) -> Json
+  v1 = json_obj {"outcome": lit#7|>awlc.string_to_json, "payload": v0|>grade_to_json}
+  return v1
+== fn awl_child_output_grade_decoder/0 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: () -> Decoder(child_spawn_combo.Grade)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_grade_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn awl_child_output_grade_decoder$outcome/1 origin=lifted(awl_child_output_grade_decoder, #0) ==
+  sig: (String) -> Decoder(child_spawn_combo.Grade)
+  v1 = call_local grade_decoder()
+  v2 = make_closure awl_child_output_grade_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v1, v2)
+== fn awl_child_output_grade_decoder$payload/1 origin=lifted(awl_child_output_grade_decoder, #1) ==
+  sig: (child_spawn_combo.Grade) -> Decoder(child_spawn_combo.Grade)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn awl_child_output_nil_codec/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Codec(Nil)
+  v0 = make_closure awl_child_output_nil_to_json captures=[]
+  v1 = call_local awl_child_output_nil_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_nil_to_json/1 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: (Nil) -> Json
+  v1 = json_obj {"outcome": lit#10|>awlc.string_to_json, "payload": v0|>awlc.nil_to_json}
+  return v1
+== fn awl_child_output_nil_decoder/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Decoder(Nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_nil_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn awl_child_output_nil_decoder$outcome/1 origin=lifted(awl_child_output_nil_decoder, #0) ==
+  sig: (String) -> Decoder(Nil)
+  v1 = call_rt aion@awl@codec:nil_decoder/0()
+  v2 = make_closure awl_child_output_nil_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v1, v2)
+== fn awl_child_output_nil_decoder$payload/1 origin=lifted(awl_child_output_nil_decoder, #1) ==
+  sig: (Nil) -> Decoder(Nil)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn step_grade/1 origin=region(grade) ==
+  sig: (String) -> Result(child_spawn_combo.ChildSpawnComboOutcome, AwlError)
+  v1 = json_obj {"essay": v0|>awlc.string_to_json}
+  v2 = make_closure awl$child_witness captures=[]
+  v3 = call_rt aion@awl@codec:json_value/0() live_after=[v1, v2]
+  v4 = call_local awl_child_output_grade_codec() live_after=[v1, v2, v3]
+  v5 = call_rt aion@awl@error:codec/0() live_after=[v1, v2, v3, v4]
+  v6 = call_rt aion@workflow:spawn_and_wait/6(lit#13, v2, v1, v3, v4, v5)
+  v7 = call_rt aion@awl@error:map_child_error/1(v6)
+  v8 = try_bind v7
+  v9 = field(v8, 1)
+  v10 = json_obj {"score": v9|>awlc.int_to_json}
+  v11 = make_closure awl$child_witness captures=[]
+  v12 = call_rt aion@awl@codec:json_value/0() live_after=[v8, v10, v11]
+  v13 = call_local awl_child_output_nil_codec() live_after=[v8, v10, v11, v12]
+  v14 = call_rt aion@awl@error:codec/0() live_after=[v8, v10, v11, v12, v13]
+  v15 = call_rt aion@workflow:spawn/6(lit#14, v11, v10, v12, v13, v14) live_after=[v8]
+  v16 = call_rt aion@awl@error:map_spawn_error/1(v15) live_after=[v8]
+  v17 = try_bind v16 live_after=[v8]
+  v18 = field(v8, 1)
+  v19 = record(grade, [v18])
+  v20 = record(scored_outcome, [v19])
+  v21 = record(ok, [v20])
+  return v21
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

@@ -1,0 +1,14 @@
+//! An action whose per-attempt timeout sits inside a bounded retry schedule.
+workflow timeout_inside_retry
+  input endpoint: String
+  outcome fetched: type Fetched, route success
+
+type Fetched { body: String }
+
+worker net
+  action fetch(endpoint: String) -> Fetched
+    node network, timeout 30s, retry 4 backoff 5s..2m
+
+step call
+  fetch(endpoint: endpoint) -> result
+  route fetched(body: result.body)

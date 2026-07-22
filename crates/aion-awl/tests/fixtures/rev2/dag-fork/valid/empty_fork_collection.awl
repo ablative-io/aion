@@ -1,0 +1,19 @@
+//! Fan a check over a collection that may be empty — the zero-item fork boundary.
+workflow empty_fork_collection
+  input docs: [Doc]
+  outcome summarized: type Summary, route success
+
+type Doc     { title: String }
+type Verdict { title: String, ok: Bool }
+type Summary { checked: Int }
+
+worker review
+  action check_doc(doc: Doc) -> Verdict
+
+step check_all
+  fork doc in docs
+    check_doc(doc: doc)
+  join -> verdicts
+
+  verdicts |> count -> checked
+  route summarized(checked: checked)

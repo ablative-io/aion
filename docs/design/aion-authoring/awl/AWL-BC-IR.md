@@ -694,7 +694,8 @@ capability manifest for the beamr AOT track, layered above this flat table.
 
 ## 7. The IR contract table (D-AOT2)
 
-Representation rows — each asserted by a BC-4 fixture test:
+Representation rows — each asserted by a BC-4 fixture test, except where a row
+is annotated otherwise (IR-14):
 
 | # | Gleam value / construct | Erlang term / binding statement | Grounding |
 |---|---|---|---|
@@ -711,7 +712,7 @@ Representation rows — each asserted by a BC-4 fixture test:
 | IR-11 | `Codec(a)` | record whose `encode`/`decode` fields are funs (T-ACTRAW's `call_fun` depends on this row; pinned by test) | `wrappers.rs:121-138` |
 | IR-12 | module reference | mangled atom (`aion@workflow`, `gleam@dynamic@decode`, …) | draft §4; capstone imports |
 | IR-13 | entry ABI | `run/1` receives the raw input payload term; returns `{ok, ResultBinary}` — bytes recorded verbatim as `WorkflowCompleted.result`; error path `{error, AwlErrorTerm}` | capstone obs. 8 |
-| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate`/`trim`; routes/loop recursion are tail calls | draft §4; capstone B; validator recon 4 |
+| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate`/`trim`; routes/loop recursion are tail calls. **NOT asserted by a BC-4 fixture test** — x/y register allocation and tail-call instruction shape are not observable at the durable trail level; exercised structurally by aion-awl's `select` tests, direct byte/instruction-level assertion deferred to BC-5 codegen inspection (coordinator ruling, BC-4 round 3) | draft §4; capstone B; validator recon 4 |
 | IR-15 | export set | exactly `definition/0`, `run/1`, `execute/1`; no `module_info/0,1` | decision 12; capstone obs. 4 |
 | IR-16 | error propagation | `result.try` sites lower structurally as flattened `TryBind` (§2.2); trail-invariant; instruction streams intentionally differ from erlc's; fallback R1 | capstone B |
 | IR-17 | durations | constructed only via `aion@duration:milliseconds/1` from precomputed ms; no duration wire codec exists or can be constructed | codec design §2; `exprs.rs:23-34` |

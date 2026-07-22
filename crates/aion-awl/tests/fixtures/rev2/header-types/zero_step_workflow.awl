@@ -1,0 +1,6 @@
+//! A workflow with no steps at all — nothing routes its outcome.
+workflow zero_step_workflow
+  input ignored: String
+  outcome idle: type Idle, route success
+
+type Idle { note: String }

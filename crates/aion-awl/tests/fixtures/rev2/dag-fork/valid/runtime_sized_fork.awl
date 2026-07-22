@@ -1,0 +1,16 @@
+//! Fan a probe over a runtime-sized list of regions — the count is only known at run time.
+workflow runtime_sized_fork
+  input regions: [String]
+  outcome probed: type Probes, route success
+
+type Snapshot { region: String, healthy: Bool }
+type Probes   { snapshots: [Snapshot] }
+
+worker probe
+  action probe_region(region: String) -> Snapshot
+
+step fan
+  fork region in regions
+    probe_region(region: region)
+  join -> snapshots
+  route probed(snapshots: snapshots)
