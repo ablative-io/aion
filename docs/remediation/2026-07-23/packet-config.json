@@ -1,7 +1,7 @@
 {
   "config": {
-    "repo_root": "/Users/deanwhiting/Developer/stack/aion",
-    "packet_dir": "/Users/deanwhiting/Developer/stack/aion/docs/remediation/2026-07-23",
+    "repo_root": "/Users/annabel/Developer/ablative/aion-runner",
+    "packet_dir": "/Users/annabel/Developer/ablative/aion-runner/docs/remediation/2026-07-23",
     "base_branch": "main",
     "gates": [
       { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
@@ -19,7 +19,8 @@
       { "name": "brief_compliance", "charter": "Argue that the diff disobeys its brief: hold every scope_out wall, every acceptance criterion, and the workspace laws named in the brief against the diff, line by line. Scope creep is a blocking finding." }
     ],
     "max_waves": 12,
+    "meridian_server": "http://100.67.104.58:29876",
     "meridian_as": "Meridian",
-    "meridian_to": "Vesper Lynd"
+    "meridian_watchers": ["Vesper Lynd", "Tom"]
   }
 }

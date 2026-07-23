@@ -10,6 +10,13 @@
 //! lane content — the coordinator reads the files and emits typed wave
 //! selections, so the committed packet stays the single source of truth.
 //!
+//! Meridian has two layers: the coordinator posts judgment (plans, wave
+//! reports, escalation detail) per its charter, and the workflow ALSO sends
+//! mechanical heartbeat posts at every boundary that matters — wave landed,
+//! run held on a ruling, rulings applied, packet closed or halted — so a
+//! parked or halted run can never sit silent even if an agent turn under-
+//! reports. Heartbeats go to every name in `config.meridian_watchers`.
+//!
 //! Operator notes: the run finishes only when a select turn returns zero
 //! entries; every cycle passes through `select`, which carries the
 //! `max config.max_waves visits` bound. Deep-tear escalations block on the
@@ -20,6 +27,19 @@ workflow remediation_packet
   signal ruling: RulingBatch
   outcome finished: type PacketResult, route success
   outcome halted:   type PacketHalt,   route failure
+
+const select_schema = schema of WaveSelection
+const land_schema = schema of LandReport
+const applied_schema = schema of AppliedReport
+const closing_schema = schema of ClosingReport
+
+const coordinator_role = """
+You are the remediation packet coordinator. Your charter file is named in the
+prompt - on your first turn read it before anything else, and obey it for the
+whole packet. Post to meridian with the meridian CLI exactly as the charter
+specifies; the workflow also sends mechanical heartbeats, which do not
+discharge your own reporting obligations.
+"""
 
 /// Where the packet lives and how every lane runs. `repo_root` is the
 /// coordinator's integration checkout; lane worktrees are provisioned
@@ -33,8 +53,9 @@ type PacketConfig {
   max_fix_cycles: Int,
   lenses: [Lens],
   max_waves: Int,
+  meridian_server: String,
   meridian_as: String,
-  meridian_to: String,
+  meridian_watchers: [String],
 }
 
 type GateCommand { name: String, argv: [String] }
@@ -148,6 +169,17 @@ type AppliedReport { summary: String, merged: [String], rework: [String] }
 /// The closing turn: the packet's final ledger.
 type ClosingReport { summary: String, landed: [String], unlanded: [String], waves: Int }
 
+/// The exact `run_command` output contract of the general worker.
+type CommandResult {
+  name: String,
+  argv: [String],
+  exit_code: Int,
+  passed: Bool,
+  stdout: String,
+  output: String,
+  duration_ms: Int,
+}
+
 type PacketResult { landed: [String], unlanded: [String], waves: Int, summary: String }
 type PacketHalt   { reason: String, summary: String }
 
@@ -160,11 +192,13 @@ worker general
     node agent
   action close_packet(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> ClosingReport
     node agent
+  action run_command(workspace_path: String, name: String, argv: [String]) -> CommandResult
+    node shell
 
 child lane_run(lane_id: String, brief: Brief, config: RunConfig) -> LaneResult
 
 step select
-  select_wave(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace - read it before anything else on your first turn, and obey it for the whole packet. The lane manifest is " + config.packet_dir + "/PACKET.md; lane briefs are in " + config.packet_dir + "/lanes/. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "Select the next wave. On your first turn: read the charter, the manifest, and every lane brief; plan the full wave sequence; post the plan to meridian; then emit wave 1. On later turns: account for what has landed, been ruled on, or needs rework, and emit the next wave - rework lanes carry the feedback you were given. Emit ZERO entries only when every dispatchable lane has landed or is terminally reported. For each entry: echo the lane's dev-brief input from its lane file, slimmed per the charter's dispatch convention (summary objective plus mandatory read-first pointer at the lane brief file); set config.base_branch to the parent lane's branch for stacked lanes, otherwise " + config.base_branch + "; repo_root is " + config.repo_root + ".", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"wave_label\",\"note\",\"entries\"],\"properties\":{\"wave_label\":{\"type\":\"string\"},\"note\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"lane_id\",\"risk\",\"brief\",\"config\"],\"properties\":{\"lane_id\":{\"type\":\"string\"},\"risk\":{\"type\":\"string\"},\"brief\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"title\",\"objective\",\"context\",\"pointers\",\"scope_in\",\"scope_out\",\"acceptance\",\"notes\"],\"properties\":{\"id\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"objective\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"pointers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"scope_in\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"scope_out\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"acceptance\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"notes\":{\"type\":\"string\"}}},\"config\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"repo_root\",\"base_branch\",\"gates\",\"verify_gates\",\"max_fix_cycles\",\"lenses\"],\"properties\":{\"repo_root\":{\"type\":\"string\"},\"base_branch\":{\"type\":\"string\"},\"gates\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"argv\"],\"properties\":{\"name\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"verify_gates\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"argv\"],\"properties\":{\"name\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"max_fix_cycles\":{\"type\":\"integer\"},\"lenses\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"charter\"],\"properties\":{\"name\":{\"type\":\"string\"},\"charter\":{\"type\":\"string\"}}}}}}}}}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> wave
+  select_wave(instructions: coordinator_role, prompt: "Select the next wave. Your charter is " + config.packet_dir + "/coordinator-brief.md; the lane manifest is " + config.packet_dir + "/PACKET.md; lane briefs are in " + config.packet_dir + "/lanes/. Meridian: server " + config.meridian_server + ", identity " + config.meridian_as + ". On your first turn: read the charter, the manifest, and every lane brief; plan the full wave sequence; post the plan to meridian; then emit wave 1. On later turns: account for what has landed, been ruled on, or needs rework, and emit the next wave - rework lanes carry the feedback you were given. Emit ZERO entries only when every dispatchable lane has landed or is terminally reported. For each entry: echo the lane's dev-brief input from its lane file, slimmed per the charter's dispatch convention; set config.base_branch to the parent lane's branch for stacked lanes, otherwise " + config.base_branch + "; repo_root is " + config.repo_root + ".", output_schema: select_schema, session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> wave
 
   outcome empty: when wave.entries is empty, route close
   outcome build: otherwise, route build_wave
@@ -175,7 +209,11 @@ step build_wave
     lane_run(lane_id: entry.lane_id, brief: entry.brief, config: entry.config)
   join -> lane_results
 
-  land_wave(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "The wave's lane runs are complete; their results are recorded in this run's history and each lane's branch and evidence are in the repository. Land the wave per your charter: judge each branch yourself at the diff, merge satisfied small-risk lanes one at a time in your planned order, queue unsatisfied lanes as rework with your findings, and hold every deep-tear lane as an escalation - never merge one without a recorded approve ruling. After the wave's last merge run the full battery at the wave-tail tree; push only green. Post the wave report to meridian, and if you escalate, say exactly what you need ruled. Set packet_complete only when nothing dispatchable remains after this wave; set halt only for a state your charter forbids you to push past.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"wave_label\",\"merged\",\"rework\",\"escalations\",\"battery_pass\",\"pushed\",\"packet_complete\",\"halt\",\"summary\"],\"properties\":{\"wave_label\":{\"type\":\"string\"},\"merged\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"rework\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"escalations\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"lane_id\",\"branch\",\"reason\"],\"properties\":{\"lane_id\":{\"type\":\"string\"},\"branch\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}}}},\"battery_pass\":{\"type\":\"boolean\"},\"pushed\":{\"type\":\"boolean\"},\"packet_complete\":{\"type\":\"boolean\"},\"halt\":{\"type\":\"boolean\"},\"summary\":{\"type\":\"string\"}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> land
+  land_wave(instructions: coordinator_role, prompt: "The wave's lane runs are complete; their results are recorded in this run's history and each lane's branch and evidence are in the repository. Your charter is " + config.packet_dir + "/coordinator-brief.md. Meridian: server " + config.meridian_server + ", identity " + config.meridian_as + ". Land the wave per your charter: push every lane branch to origin first, judge each branch yourself at the diff, merge satisfied small-risk lanes one at a time in your planned order, queue unsatisfied lanes as rework with your findings, and hold every deep-tear lane as an escalation - never merge one without a recorded approve ruling. After the wave's last merge run the full battery at the wave-tail tree; push only green. Post the wave report to meridian, and if you escalate, say exactly what you need ruled. Set packet_complete only when nothing dispatchable remains after this wave; set halt only for a state your charter forbids you to push past.", output_schema: land_schema, session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> land
+
+  fork watcher in config.meridian_watchers
+    run_command(workspace_path: config.repo_root, name: "meridian wave heartbeat", argv: ["meridian", "message", "send", "--server", config.meridian_server, "--as", config.meridian_as, "--to", watcher, "--message", "[remediation-packet " + workflow.id + "] wave " + land.wave_label + " landed-turn done. " + land.summary])
+  join -> wave_heartbeats
 
   outcome stop: when land.halt, route wrap_halt
   outcome escalated: when not land.escalations is empty, route hold_ruling
@@ -183,16 +221,32 @@ step build_wave
   outcome done: otherwise, route close
 
 step hold_ruling
+  fork watcher in config.meridian_watchers
+    run_command(workspace_path: config.repo_root, name: "meridian hold heartbeat", argv: ["meridian", "message", "send", "--server", config.meridian_server, "--as", config.meridian_as, "--to", watcher, "--message", "[remediation-packet " + workflow.id + "] HELD on the ruling signal - deep-tear lane(s) await a verdict. " + land.summary + " Answer with: aion signal " + workflow.id + " ruling --payload '{\"rulings\":[{\"lane_id\":\"...\",\"decision\":\"approve|changes\",\"notes\":\"...\"}]}'"])
+  join -> hold_heartbeats
+
   wait ruling -> rulings
 
-  apply_rulings(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "A ruling batch has arrived for your held escalations; it is recorded in this run's history. Apply it per your charter: merge each approved lane (battery at the new tree, push only green), queue each changes ruling as rework carrying the ruling's notes verbatim, and post the outcome to meridian. Lanes escalated but absent from the batch stay held - re-escalate them on your next report.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"summary\",\"merged\",\"rework\"],\"properties\":{\"summary\":{\"type\":\"string\"},\"merged\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"rework\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> applied
+  apply_rulings(instructions: coordinator_role, prompt: "A ruling batch has arrived for your held escalations; it is recorded in this run's history. Your charter is " + config.packet_dir + "/coordinator-brief.md. Meridian: server " + config.meridian_server + ", identity " + config.meridian_as + ". Apply it per your charter: merge each approved lane (battery at the new tree, push only green), queue each changes ruling as rework carrying the ruling's notes verbatim, and post the outcome to meridian. Lanes escalated but absent from the batch stay held - re-escalate them on your next report.", output_schema: applied_schema, session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> applied
+
+  fork watcher in config.meridian_watchers
+    run_command(workspace_path: config.repo_root, name: "meridian rulings-applied heartbeat", argv: ["meridian", "message", "send", "--server", config.meridian_server, "--as", config.meridian_as, "--to", watcher, "--message", "[remediation-packet " + workflow.id + "] rulings applied. " + applied.summary])
+  join -> applied_heartbeats
 
   route select
 
 step close
-  close_packet(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "The packet is complete. Reconcile the final ledger against the repository and the manifest: every lane landed on the base branch, or listed unlanded with its terminal reason. Verify the base branch is pushed. Post the closing report to meridian. Report the ledger exactly as it is - an unlanded lane is stated, never smoothed over.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"summary\",\"landed\",\"unlanded\",\"waves\"],\"properties\":{\"summary\":{\"type\":\"string\"},\"landed\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"unlanded\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"waves\":{\"type\":\"integer\"}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> closing
+  close_packet(instructions: coordinator_role, prompt: "The packet is complete. Your charter is " + config.packet_dir + "/coordinator-brief.md. Meridian: server " + config.meridian_server + ", identity " + config.meridian_as + ". Reconcile the final ledger against the repository and the manifest: every lane landed on the base branch, or listed unlanded with its terminal reason. Verify the base branch is pushed. Post the closing report to meridian. Report the ledger exactly as it is - an unlanded lane is stated, never smoothed over.", output_schema: closing_schema, session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> closing
+
+  fork watcher in config.meridian_watchers
+    run_command(workspace_path: config.repo_root, name: "meridian close heartbeat", argv: ["meridian", "message", "send", "--server", config.meridian_server, "--as", config.meridian_as, "--to", watcher, "--message", "[remediation-packet " + workflow.id + "] CLOSED. " + closing.summary])
+  join -> close_heartbeats
 
   route finished(landed: closing.landed, unlanded: closing.unlanded, waves: closing.waves, summary: closing.summary)
 
 step wrap_halt
+  fork watcher in config.meridian_watchers
+    run_command(workspace_path: config.repo_root, name: "meridian halt heartbeat", argv: ["meridian", "message", "send", "--server", config.meridian_server, "--as", config.meridian_as, "--to", watcher, "--message", "[remediation-packet " + workflow.id + "] HALTED by the coordinator - operator attention required. " + land.summary])
+  join -> halt_heartbeats
+
   route halted(reason: land.summary, summary: land.wave_label + ": halted by the coordinator - see the run history and meridian for the full state")

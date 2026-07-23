@@ -53,6 +53,8 @@ meridian message send --server "http://100.67.104.58:29876" --as Meridian --to "
 
 Recipients by exact name: `Tom`, `Vesper Lynd`, `Waffles the Terrible`. A report naming several people is sent once per person. If a send fails on an unknown recipient name, report the failure in your next structured turn's summary — never silently drop a report.
 
+The workflow additionally sends mechanical heartbeat posts at wave-landed, held-for-ruling, rulings-applied, close, and halt boundaries. Those are a floor, not your reporting — they carry only your structured summaries, so write summaries that stand alone, and keep posting the judgment layers (plan, escalation detail, wave analysis) yourself.
+
 - **Plan post** (before wave 1): waves, lanes per wave, ordering rationale, anything you chose to defer. Mention Tom and Vesper.
 - **Lane completion** (each lane): one short message — disposition, branch, gate summary, your merge/escalate decision. Mention nobody unless action is needed.
 - **Wave boundary:** wave results, battery verdict, push status, next wave's plan. Mention Tom.
