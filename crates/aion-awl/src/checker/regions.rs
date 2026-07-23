@@ -74,17 +74,15 @@ pub(super) fn structure(ctx: &mut Ctx<'_>, flow: &Flow<'_>) {
                         );
                     }
                 }
-                Statement::Collect(collect) => {
-                    if position != 0 {
-                        ctx.error(
-                            collect.span,
-                            format!(
-                                "`collect` opens its step — it must be the first \
-                                 statement of step `{}`",
-                                step.name
-                            ),
-                        );
-                    }
+                Statement::Collect(collect) if position != 0 => {
+                    ctx.error(
+                        collect.span,
+                        format!(
+                            "`collect` opens its step — it must be the first \
+                             statement of step `{}`",
+                            step.name
+                        ),
+                    );
                 }
                 _ => {}
             }
