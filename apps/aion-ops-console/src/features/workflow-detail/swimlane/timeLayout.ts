@@ -29,6 +29,7 @@ export type AxisLayout = {
   events: readonly OrderedTimelineEvent[];
   rankByEvent: ReadonlyMap<string, number>;
   rankWidth: number;
+  runningWorkflowIds: ReadonlySet<string>;
 };
 
 export type PositionedBar = {
@@ -179,6 +180,9 @@ export function buildAxisLayout(
     events,
     rankByEvent,
     rankWidth: events.length === 0 ? 0 : trackWidth / events.length,
+    runningWorkflowIds: new Set(
+      workflows.filter((workflow) => workflow.isRunning).map((workflow) => workflow.workflowId)
+    ),
   };
 }
 
@@ -208,7 +212,10 @@ export function positionBar(
     const timestamps = points.map((point) => point.timestampMs);
     const start = timestamps.length > 0 ? Math.min(...timestamps) : firstPoint.timestampMs;
     let end = timestamps.length > 0 ? Math.max(...timestamps) : start;
-    if (clip !== null) {
+    if (clip === null && bar.status === 'running' && axis.runningWorkflowIds.has(workflowId)) {
+      end = Math.max(end, axis.bounds.tEnd);
+      pointSpan = end === start;
+    } else if (clip !== null) {
       end = Math.max(start, Math.min(end, clip.cursor));
       pointSpan = end === start;
     }

@@ -149,6 +149,8 @@ export type SubscribeOptions = {
    * reconnect budget.
    */
   onResync?: ResyncHandler | undefined;
+  /** Flush consumer-owned delivery buffers before an error or socket close is observed. */
+  flushPending?: (() => void) | undefined;
 };
 
 /**
@@ -223,4 +225,5 @@ export type SubscriptionRecord = {
   handler: AionEventHandler;
   lastSeenSequence: number | null;
   onResync?: ResyncHandler | undefined;
+  flushPending?: (() => void) | undefined;
 };

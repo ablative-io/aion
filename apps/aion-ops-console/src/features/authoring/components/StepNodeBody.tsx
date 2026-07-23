@@ -9,8 +9,8 @@ import {
   edgeLaneSpread,
   lateralEdgePath,
   layoutEmbedded,
-  parallelEdgeOffsets,
   type PlacedNode,
+  parallelEdgeOffsets,
   substepGraphPath,
   substepScopeLabel,
 } from '../lib/canvas-layout';

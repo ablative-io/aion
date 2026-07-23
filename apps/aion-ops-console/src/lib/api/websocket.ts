@@ -6,17 +6,14 @@ import {
   type SubscriptionConnection,
   SubscriptionErrorState,
 } from './websocket-connection';
+import { deliverEventMessage, flushPendingDelivery } from './websocket-delivery';
 import {
-  assertExpectedWorkflowSequence,
   browserWebSocketConstructor,
   buildSubscribeMessage,
   buildWebSocketUrl,
   consoleWarn,
-  frameDecodeError,
-  parseFrame,
   reconnectExhaustedError,
   stripTrailingSlash,
-  subscriberApplicationError,
 } from './websocket-protocol';
 import { ApplicationRecoveryPolicy } from './websocket-recovery-policy';
 import {
@@ -151,6 +148,7 @@ export class AionEventWebSocketManager {
     this.intentionalClose = true;
 
     for (const connection of this.connections.values()) {
+      flushPendingDelivery(connection, this.warn, this.connectionErrors);
       this.clearReconnectTimer(connection);
       this.recoveryPolicy.cancel(connection);
       connection.reconnectAttempts = 0;
@@ -179,6 +177,7 @@ export class AionEventWebSocketManager {
       handler,
       lastSeenSequence: options.lastSeenSequence ?? null,
       onResync: options.onResync,
+      flushPending: options.flushPending,
     };
     const connection: SubscriptionConnection = {
       subscription,
@@ -354,6 +353,7 @@ export class AionEventWebSocketManager {
       return;
     }
 
+    flushPendingDelivery(connection, this.warn, this.connectionErrors);
     this.recoveryPolicy.cancel(connection);
     connection.socket = null;
     connection.state = 'reconnecting';
@@ -394,46 +394,12 @@ export class AionEventWebSocketManager {
     socket: ManagedWebSocket,
     data: unknown
   ): void {
-    let frame: ReturnType<typeof parseFrame>;
-
-    try {
-      frame = parseFrame(data);
-      assertExpectedWorkflowSequence(connection.subscription, frame.event);
-    } catch (error) {
-      // No-silent-failure (M1): surface a typed error to listeners so the UI can
-      // show that the feed dropped a frame. The console trail is secondary.
-      this.warn('Unable to parse Aion event WebSocket frame', error);
-      this.connectionErrors.set(connection, frameDecodeError(error, connection.subscription.id));
-      failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket));
-      return;
-    }
-
-    const subscription = connection.subscription;
-
-    let recoveryImpact: ReturnType<AionEventHandler>;
-    try {
-      recoveryImpact = subscription.handler(frame.event, {
-        subscriptionId: subscription.id,
-        namespace: frame.namespace,
-        filter: subscription.filter,
-      });
-    } catch (error) {
-      this.warn('Aion event subscriber failed to apply a WebSocket frame', error);
-      this.connectionErrors.set(connection, subscriberApplicationError(error, subscription.id));
-
-      failFeedBoundary(socket, () => this.handleUnexpectedDisconnect(connection, socket));
-      return;
-    }
-
-    // The durable cursor means "already applied", not merely decoded/delivered.
-    this.recoveryPolicy.markFrameDelivered(connection, socket, recoveryImpact);
-    subscription.lastSeenSequence = frame.event.data.envelope.seq;
-    if (
-      this.recoveryPolicy.isUnresolved(connection.error) &&
-      subscription.filter.kind === 'workflow'
-    ) {
-      this.recoveryPolicy.complete(connection, socket);
-    }
+    deliverEventMessage(connection, socket, data, {
+      warn: this.warn,
+      connectionErrors: this.connectionErrors,
+      recoveryPolicy: this.recoveryPolicy,
+      disconnect: () => this.handleUnexpectedDisconnect(connection, socket),
+    });
   }
 
   private updateStatus(): void {

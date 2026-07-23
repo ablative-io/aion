@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { EventIcon, type EventIconTone } from '@/components/EventIcon';
 import { Badge } from '@/components/ui';
 import { cn } from '@/lib/utils';
@@ -12,7 +13,11 @@ type TimelineEntryProps = {
   onSelect?: ((entry: TimelineEntryModel) => void) | undefined;
 };
 
-function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps) {
+const TimelineEntry = memo(function TimelineEntry({
+  entry,
+  selected = false,
+  onSelect,
+}: TimelineEntryProps) {
   const selectable = onSelect !== undefined;
 
   return (
@@ -53,7 +58,7 @@ function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps
       </article>
     </li>
   );
-}
+});
 
 function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
   if (entry.kind === 'activity') {

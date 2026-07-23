@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { cn } from '@/lib/utils';
 
 import type { BarStatus, SwimlaneBar } from './laneLayout';
@@ -11,7 +12,7 @@ type LaneBarProps = {
 };
 
 /** A status/shape encoded bar already resolved onto the active shared axis. */
-function LaneBar({ positioned, selected, onSelect }: LaneBarProps) {
+const LaneBar = memo(function LaneBar({ positioned, selected, onSelect }: LaneBarProps) {
   const { bar, left, width, marker, attemptOffsets } = positioned;
 
   return (
@@ -41,7 +42,7 @@ function LaneBar({ positioned, selected, onSelect }: LaneBarProps) {
       </span>
     </button>
   );
-}
+});
 
 function AttemptSegments({ bar, offsets }: { bar: SwimlaneBar; offsets: readonly number[] }) {
   if (offsets.length === 0) {

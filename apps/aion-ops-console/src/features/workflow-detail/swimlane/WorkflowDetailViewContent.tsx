@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
@@ -10,11 +10,11 @@ import type { Event, WorkflowId } from '@/types';
 import { EventTimeline } from '../components/EventTimeline';
 import type { projectTimeline } from '../lib/timeline';
 import { deriveFailureContext, ReopenDiff } from '../reopen';
-import type { LifecycleOutcome, WorkflowDetailProps } from '../types';
+import type { LifecycleOutcome, TimelineEntry, WorkflowDetailProps } from '../types';
 import { AttemptNavigator } from './AttemptNavigator';
 import { DetailSheet } from './DetailSheet';
-import { resolveSelectionSurface } from './selectionSurface';
 import { Swimlane, type SwimlaneSelection } from './Swimlane';
+import { resolveSelectionSurface } from './selectionSurface';
 
 type ViewMode = 'swimlane' | 'list';
 
@@ -146,30 +146,42 @@ function WorkflowDetailViewContent({
   const clusterEntries = selectionSurface.clusterEntries;
   const activeScopedSelection = selectionSurface.scopedSelection;
 
-  function selectFromBar(selection: SwimlaneSelection, origin?: { x: number }) {
-    const container = timelineRef.current;
-    setSheetOriginX(origin && container ? origin.x - container.getBoundingClientRect().left : null);
-    setScopedSelection(selection);
-    setSelectedSequence(selection.sequence);
-  }
-
-  function selectFromList(sequence: number) {
-    setSheetOriginX(null);
-    setScopedSelection(null);
-    setSelectedSequence(sequence);
-  }
-
-  function closeSelection() {
+  const selectFromBar = useCallback(
+    (selection: SwimlaneSelection, origin?: { x: number }) => {
+      const container = timelineRef.current;
+      setSheetOriginX(
+        origin && container ? origin.x - container.getBoundingClientRect().left : null
+      );
+      setScopedSelection(selection);
+      setSelectedSequence(selection.sequence);
+    },
+    [setSelectedSequence]
+  );
+  const selectFromList = useCallback(
+    (sequence: number) => {
+      setSheetOriginX(null);
+      setScopedSelection(null);
+      setSelectedSequence(sequence);
+    },
+    [setSelectedSequence]
+  );
+  const selectTimelineEntry = useCallback(
+    (entry: TimelineEntry) => selectFromList(entry.sequence),
+    [selectFromList]
+  );
+  const closeSelection = useCallback(() => {
     setScopedSelection(null);
     setSelectedSequence(null);
-  }
-
-  function selectClusterEntry(sequence: number) {
-    if (activeScopedSelection !== null) {
-      setScopedSelection({ ...activeScopedSelection, sequence });
-    }
-    setSelectedSequence(sequence);
-  }
+  }, [setSelectedSequence]);
+  const selectClusterEntry = useCallback(
+    (sequence: number) => {
+      if (activeScopedSelection !== null) {
+        setScopedSelection({ ...activeScopedSelection, sequence });
+      }
+      setSelectedSequence(sequence);
+    },
+    [activeScopedSelection, setSelectedSequence]
+  );
 
   if (namespace === null) {
     return (
@@ -246,7 +258,7 @@ function WorkflowDetailViewContent({
           ) : (
             <EventTimeline
               entries={timeline}
-              onSelect={(entry) => selectFromList(entry.sequence)}
+              onSelect={selectTimelineEntry}
               selectedSequence={selectedSequence}
             />
           )}

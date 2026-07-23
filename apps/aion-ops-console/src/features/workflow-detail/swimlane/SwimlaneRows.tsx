@@ -1,3 +1,4 @@
+import { memo, useCallback, useMemo } from 'react';
 import { EventIcon, type EventIconKind } from '@/components/EventIcon';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
@@ -91,21 +92,7 @@ export function Axis({ axis, labelWidth }: { axis: AxisLayout | null; labelWidth
   );
 }
 
-export function LaneRow({
-  lane,
-  depth,
-  collapsed,
-  axis,
-  trackWidth,
-  workflowId,
-  selectedSequence,
-  selectedWorkflowId,
-  childExpanded,
-  scrubClip = null,
-  onToggle,
-  onToggleChild,
-  onSelect,
-}: {
+type LaneRowProps = {
   lane: SwimlaneLane;
   depth: number;
   collapsed: boolean;
@@ -120,22 +107,46 @@ export function LaneRow({
   onToggle: () => void;
   onToggleChild: (() => void) | null;
   onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
-}) {
-  const items = clusterPositionedBars(
-    lane.bars.map((bar) =>
-      positionBar(
-        workflowId,
-        bar,
-        axis,
-        MIN_BAR_WIDTH,
-        scrubClip === null
-          ? null
-          : {
-              cursor: scrubClip.cursor,
-              fullEntry: scrubClip.fullEntriesById.get(bar.id) ?? bar.entry,
-            }
-      )
-    )
+};
+
+export const LaneRow = memo(function LaneRow({
+  lane,
+  depth,
+  collapsed,
+  axis,
+  trackWidth,
+  workflowId,
+  selectedSequence,
+  selectedWorkflowId,
+  childExpanded,
+  scrubClip = null,
+  onToggle,
+  onToggleChild,
+  onSelect,
+}: LaneRowProps) {
+  const items = useMemo(
+    () =>
+      clusterPositionedBars(
+        lane.bars.map((bar) =>
+          positionBar(
+            workflowId,
+            bar,
+            axis,
+            MIN_BAR_WIDTH,
+            scrubClip === null
+              ? null
+              : {
+                  cursor: scrubClip.cursor,
+                  fullEntry: scrubClip.fullEntriesById.get(bar.id) ?? bar.entry,
+                }
+          )
+        )
+      ),
+    [axis, lane.bars, scrubClip, workflowId]
+  );
+  const selectSingleBar = useCallback(
+    (bar: SwimlaneBar, originX: number) => onSelect(bar, originX, [bar.sequence]),
+    [onSelect]
   );
 
   return (
@@ -203,7 +214,7 @@ export function LaneRow({
               return (
                 <LaneBar
                   key={item.positioned.bar.id}
-                  onSelect={(bar, originX) => onSelect(bar, originX, [bar.sequence])}
+                  onSelect={selectSingleBar}
                   positioned={item.positioned}
                   selected={
                     selectedWorkflowId === workflowId &&
@@ -215,7 +226,7 @@ export function LaneRow({
       </div>
     </li>
   );
-}
+});
 
 export function NoticeRow({
   row,

@@ -50,7 +50,7 @@ function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
   );
 }
 
-export { WorkflowDetailView };
 // Import-stability re-export: `Swimlane.test.tsx` and `swimlane/index.ts` import
 // the presentational content from this module.
 export { WorkflowDetailViewContent } from './WorkflowDetailViewContent';
+export { WorkflowDetailView };
