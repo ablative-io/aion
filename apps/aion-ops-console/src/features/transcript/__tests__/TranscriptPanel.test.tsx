@@ -98,6 +98,23 @@ describe('TranscriptEntryRow', () => {
     expect(markup).toContain('live');
   });
 
+  test('a thinking delta stream is one visually muted flowing block', () => {
+    const entry: TranscriptEntry = {
+      type: 'stream',
+      key: 'stream:agent:rs_1',
+      messageId: 'rs_1',
+      text: 'considering the safest change',
+      streamKind: 'thinking',
+      event: event({ kind: 'Delta', message_id: 'rs_1', text_fragment: ' safest change' }, null),
+    };
+    const markup = renderToStaticMarkup(<TranscriptEntryRow entry={entry} />);
+
+    expect(markup).toContain('Thinking · streaming');
+    expect(markup).toContain('considering the safest change');
+    expect(markup).toContain('text-muted-foreground italic');
+    expect(markup).toContain('View raw event');
+  });
+
   test('a note run renders as ONE counted progress row, not a row per chunk', () => {
     const noteEvent = event(
       { kind: 'Progress', detail: { detail: 'Note', text: 'tool_call_delta' } },

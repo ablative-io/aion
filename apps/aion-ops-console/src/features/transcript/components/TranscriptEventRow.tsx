@@ -6,6 +6,8 @@ import type { ActivityEvent, ActivityEventKind, ProgressDetail, StopKind } from 
 
 import type { TranscriptEntry } from '../hooks/useTranscript';
 import { parseReasoningItem } from '../lib/reasoning';
+import { prettyJson } from '../lib/toolEvents';
+import { StreamingToolCard, ToolCard } from './ToolCard';
 
 /**
  * Presentational transcript rows (NOI-7). {@link TranscriptEntryRow} renders one
@@ -99,7 +101,15 @@ function entryPresentation(entry: TranscriptEntry): RowPresentation {
     case 'event':
       return eventPresentation(entry.event.kind);
     case 'stream':
-      return { label: 'Message · streaming', tone: PRIMARY_TONE, body: entry.text };
+      return {
+        label: entry.streamKind === 'thinking' ? 'Thinking · streaming' : 'Message · streaming',
+        tone: entry.streamKind === 'thinking' ? 'text-special' : PRIMARY_TONE,
+        body: entry.text,
+      };
+    case 'tool':
+      return { label: 'Tool', tone: 'text-live', body: '' };
+    case 'tool-stream':
+      return { label: 'Tool · streaming', tone: 'text-live', body: entry.argumentsText };
     case 'notes':
       return {
         label: 'Progress',
@@ -199,13 +209,44 @@ export function TranscriptBody({ body, expanded, onToggle }: TranscriptBodyProps
 
 /** One folded transcript entry as a list row. */
 function TranscriptEntryRowImpl({ entry, isNew = false }: TranscriptEntryRowProps) {
-  const { label, tone, body } = entryPresentation(entry);
   const { event } = entry;
   const [expanded, setExpanded] = useState(false);
+  const animation = isNew && 'fade-in-0 slide-in-from-bottom-2 animate-in duration-200';
+
+  if (entry.type === 'tool') {
+    return (
+      <li
+        className={cn('pb-2', animation)}
+        data-entry-key={entry.key}
+        data-entry-type={entry.type}
+        data-event-kind={event.kind.kind}
+        data-ephemeral={event.ephemeral}
+      >
+        <ToolCard entry={entry} />
+      </li>
+    );
+  }
+
+  if (entry.type === 'tool-stream') {
+    return (
+      <li
+        className={cn('pb-2', animation)}
+        data-entry-key={entry.key}
+        data-entry-type={entry.type}
+        data-event-kind={event.kind.kind}
+        data-ephemeral={event.ephemeral}
+      >
+        <StreamingToolCard entry={entry} />
+      </li>
+    );
+  }
+
+  const { label, tone, body } = entryPresentation(entry);
+  const contentBlock = textBlockKind(entry);
 
   return (
     <li
-      className={cn('pb-2', isNew && 'fade-in-0 slide-in-from-bottom-2 animate-in duration-200')}
+      className={cn('pb-2', animation)}
       data-entry-key={entry.key}
       data-entry-type={entry.type}
       data-event-kind={event.kind.kind}
@@ -223,10 +264,120 @@ function TranscriptEntryRowImpl({ entry, isNew = false }: TranscriptEntryRowProp
             ) : null}
           </span>
         </div>
-        <TranscriptBody body={body} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+        {contentBlock === null ? (
+          <TranscriptBody body={body} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+        ) : (
+          <FlowingTextBlock
+            expanded={expanded}
+            event={event}
+            muted={contentBlock === 'thinking'}
+            onToggle={() => setExpanded((value) => !value)}
+            text={body}
+          />
+        )}
       </div>
     </li>
   );
+}
+
+function textBlockKind(entry: TranscriptEntry): 'text' | 'thinking' | null {
+  if (entry.type === 'stream') {
+    return entry.streamKind ?? 'text';
+  }
+  if (entry.type !== 'event') {
+    return null;
+  }
+  if (entry.event.kind.kind === 'Message') {
+    return 'text';
+  }
+  if (entry.event.kind.kind === 'Raw' && parseReasoningItem(entry.event.kind.value) !== null) {
+    return 'thinking';
+  }
+  return null;
+}
+
+/** Human prose stays prose: no JSON row and no monospace payload treatment. */
+function FlowingTextBlock({
+  event,
+  expanded,
+  muted,
+  onToggle,
+  text,
+}: {
+  event: ActivityEvent;
+  expanded: boolean;
+  muted: boolean;
+  onToggle: () => void;
+  text: string;
+}) {
+  return (
+    <div className={cn('space-y-2', muted && 'rounded-md bg-surface-subtle p-2')}>
+      <FlowingTextBody expanded={expanded} muted={muted} onToggle={onToggle} text={text} />
+      <details className="text-xs">
+        <summary className="cursor-pointer text-muted-foreground">View raw event</summary>
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-subtle p-2 font-mono text-xs not-italic">
+          {prettyJson(rawEventForDisplay(event))}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function FlowingTextBody({
+  expanded,
+  muted,
+  onToggle,
+  text,
+}: {
+  expanded: boolean;
+  muted: boolean;
+  onToggle: () => void;
+  text: string;
+}) {
+  const textClass = cn(
+    'whitespace-pre-wrap break-words text-sm leading-relaxed',
+    muted ? 'text-muted-foreground italic' : 'text-foreground'
+  );
+  if (!isBodyClamped(text)) {
+    return <div className={textClass}>{text}</div>;
+  }
+  return (
+    <div>
+      <div className={cn('relative', !expanded && 'max-h-64 overflow-hidden')}>
+        <div className={textClass}>{text}</div>
+        {expanded ? null : (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface-default to-transparent"
+          />
+        )}
+      </div>
+      <Button
+        className="mt-2 h-7 px-2 text-xs"
+        onClick={onToggle}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        {expanded ? 'Collapse' : `Show all (${bodySizeLabel(text)})`}
+      </Button>
+    </div>
+  );
+}
+
+/** Preserve the established rule that provider-encrypted reasoning never enters the DOM. */
+function rawEventForDisplay(event: ActivityEvent): ActivityEvent {
+  if (event.kind.kind !== 'Raw' || parseReasoningItem(event.kind.value) === null) {
+    return event;
+  }
+  return {
+    ...event,
+    kind: {
+      kind: 'Raw',
+      source: event.kind.source,
+      value: '[provider reasoning payload omitted; summary rendered above]',
+    },
+  };
 }
 
 /**
