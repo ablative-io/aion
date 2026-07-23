@@ -9,15 +9,14 @@ export {
   type SwimlaneLayout,
 } from './laneLayout';
 export {
-  childNodePath,
   type ChildTimelineState,
+  childNodePath,
   flattenLaneTree,
   isWorkflowCycle,
   type LaneTreeRow,
 } from './laneTree';
 export { Scrubber } from './Scrubber';
-export { resolveSelectionSurface, type SelectionSurface } from './selectionSurface';
-export { selectionForBar, Swimlane, type SwimlaneSelection } from './Swimlane';
+export { Swimlane, type SwimlaneSelection, selectionForBar } from './Swimlane';
 export {
   cutsAtGlobalRank,
   cutsAtTimestamp,
@@ -25,6 +24,7 @@ export {
   scrubSequences,
   snapGlobalRank,
 } from './scrub';
+export { resolveSelectionSurface, type SelectionSurface } from './selectionSurface';
 export {
   type AxisLayout,
   type AxisMode,

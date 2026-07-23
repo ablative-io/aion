@@ -1,15 +1,16 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useMemo, useRef, useState } from 'react';
 
-import { type EventSubscriptionManager, useEventSubscription } from '@/features/live-feed';
+import { type EventSubscriptionManager, useBatchedEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
 import type { ResyncHandler, WorkflowEventSubscriptionFilter } from '@/lib/api';
 import type { Event, WorkflowId } from '@/types';
 import {
   eventSequence,
+  isTerminalWorkflowEvent,
   mergeEventsBySequence,
   projectTimeline,
-  terminalOutcomeForEvents,
+  terminalOutcomeForMergedEvents,
 } from '../lib/timeline';
 import type { LifecycleOutcome, TimelineEntry } from '../types';
 import { workflowHistoryQueryKey } from './useWorkflowHistory';
@@ -52,8 +53,12 @@ export function useLiveWorkflowEvents({
     () => mergeEventsBySequence(history, liveEvents),
     [history, liveEvents]
   );
-  const terminalOutcome = useMemo(() => terminalOutcomeForEvents(mergedEvents), [mergedEvents]);
+  const terminalOutcome = useMemo(
+    () => terminalOutcomeForMergedEvents(mergedEvents),
+    [mergedEvents]
+  );
   const lastSeenSequence = useMemo(() => latestSequence(mergedEvents), [mergedEvents]);
+  const timeline = useMemo(() => projectTimeline(mergedEvents), [mergedEvents]);
   const subscriptionFilter = useMemo<WorkflowEventSubscriptionFilter | null>(() => {
     if (!enabled || !isSelectedNamespace(selectedNamespace) || terminalOutcome !== null) {
       return null;
@@ -62,14 +67,14 @@ export function useLiveWorkflowEvents({
     return { kind: 'workflow', namespace: selectedNamespace, workflowId };
   }, [enabled, selectedNamespace, terminalOutcome, workflowId]);
 
-  useEventSubscription({
+  useBatchedEventSubscription({
     enabled: subscriptionFilter !== null,
     filter: subscriptionFilter,
     lastSeenSequence,
     manager,
-    onEvent: (event) => {
-      setLiveEvents((current) => mergeEventsBySequence(current, [event]));
-      return true;
+    flushAfter: isTerminalWorkflowEvent,
+    onEvents: (events) => {
+      setLiveEvents((current) => mergeEventsBySequence(current, events));
     },
     onResync: async (context) => {
       if (isSelectedNamespace(selectedNamespace)) {
@@ -99,7 +104,7 @@ export function useLiveWorkflowEvents({
     isTerminal: terminalOutcome !== null,
     lastSeenSequence,
     terminalOutcome,
-    timeline: projectTimeline(mergedEvents),
+    timeline,
   };
 }
 

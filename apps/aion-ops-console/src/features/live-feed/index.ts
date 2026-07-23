@@ -9,5 +9,7 @@ export {
   type EventSubscriptionState,
   namespaceSubscriptionFilter,
   subscribeToNamespaceFilter,
+  subscribeToNamespaceFilterBatched,
+  useBatchedEventSubscription,
   useEventSubscription,
 } from './hooks/useEventSubscription';

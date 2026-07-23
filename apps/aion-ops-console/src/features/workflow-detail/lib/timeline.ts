@@ -1,11 +1,10 @@
-import type { Event, EventEnvelope, TimerCancelCause, TimerId } from '@/types';
+import type { Event, TimerCancelCause, TimerId } from '@/types';
 
 import type {
   ActivityAttempt,
   ActivityTimelineEntry,
   ChildWorkflowTimelineEntry,
   GenericTimelineEntry,
-  LifecycleOutcome,
   LifecycleTimelineEntry,
   SignalTimelineEntry,
   TimelineEntry,
@@ -16,12 +15,21 @@ import {
   lifecycleOutcome,
   lifecyclePayload,
   lifecycleSummary,
-  type TerminalLifecycleType,
 } from './lifecycle';
+import { eventEnvelope, eventRecordedAt, eventSequence } from './timelineEvents';
 import { classifyKnownEvent, genericSummary } from './timelineVariants';
 
 // Stable re-export so existing consumers keep their `../lib/timeline` import path.
 export { decodePayload, isPayloadBytes, payloadSummary } from './payload';
+export {
+  eventEnvelope,
+  eventRecordedAt,
+  eventSequence,
+  isTerminalWorkflowEvent,
+  mergeEventsBySequence,
+  terminalOutcomeForEvents,
+  terminalOutcomeForMergedEvents,
+} from './timelineEvents';
 export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const activities = new Map<string, ActivityTimelineEntry>();
@@ -73,67 +81,6 @@ export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
   }
 
   return entries.sort((left, right) => left.sequence - right.sequence);
-}
-
-export function eventSequence(event: Event): number {
-  return event.data.envelope.seq;
-}
-
-export function eventRecordedAt(event: Event): string {
-  return event.data.envelope.recorded_at;
-}
-
-export function eventEnvelope(event: Event): EventEnvelope {
-  return event.data.envelope;
-}
-
-export function mergeEventsBySequence(history: readonly Event[], live: readonly Event[]): Event[] {
-  const eventsBySequence = new Map<number, Event>();
-
-  for (const event of [...history, ...live]) {
-    const sequence = eventSequence(event);
-
-    if (!eventsBySequence.has(sequence)) {
-      eventsBySequence.set(sequence, event);
-    }
-  }
-
-  return [...eventsBySequence.values()].sort(
-    (left, right) => eventSequence(left) - eventSequence(right)
-  );
-}
-
-export function terminalOutcomeForEvents(events: readonly Event[]): LifecycleOutcome | null {
-  // A later `WorkflowReopened` SUPERSEDES an earlier terminal event (AD-012): the
-  // run is live again, so the projection must not keep reporting it terminal —
-  // stale-terminal here freezes the status badge AND disables the live event
-  // subscription while the reopened run is actually executing.
-  const lifecycleEvent = mergeEventsBySequence(events, [])
-    .filter(
-      (event): event is TerminalOrReopenedEvent =>
-        isTerminalWorkflowEvent(event) || event.type === 'WorkflowReopened'
-    )
-    .at(-1);
-
-  if (lifecycleEvent === undefined || lifecycleEvent.type === 'WorkflowReopened') {
-    return null;
-  }
-  return lifecycleOutcome(lifecycleEvent);
-}
-
-type TerminalOrReopenedEvent =
-  | Extract<Event, { type: TerminalLifecycleType }>
-  | Extract<Event, { type: 'WorkflowReopened' }>;
-
-export function isTerminalWorkflowEvent(
-  event: Event
-): event is Extract<Event, { type: TerminalLifecycleType }> {
-  return (
-    event.type === 'WorkflowCompleted' ||
-    event.type === 'WorkflowFailed' ||
-    event.type === 'WorkflowCancelled' ||
-    event.type === 'WorkflowTimedOut'
-  );
 }
 
 function lifecycleEntry(event: Extract<Event, { type: LifecycleType }>): LifecycleTimelineEntry {

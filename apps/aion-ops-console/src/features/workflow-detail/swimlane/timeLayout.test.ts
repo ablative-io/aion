@@ -129,6 +129,26 @@ test('running shared extent uses now while a terminal extent stops at its last e
   });
 });
 
+test('a running span keeps extending to the growing live axis edge', () => {
+  const running = workflow('running', [activityScheduled(1, 'running', 1)], true);
+  const bar = layoutSwimlane(running.entries).lanes.find((lane) => lane.kind === 'activity')
+    ?.bars[0];
+  const firstAxis = buildAxisLayout([running], 'time', 100, BASE + 10_000);
+  const nextAxis = buildAxisLayout([running], 'time', 100, BASE + 20_000);
+  if (bar === undefined || firstAxis === null || nextAxis === null) {
+    throw new Error('expected a running activity on a live time axis');
+  }
+
+  const first = positionBar('running', bar, firstAxis);
+  const next = positionBar('running', bar, nextAxis);
+
+  expect(first.marker).toBe(false);
+  expect(first.left + first.width).toBe(firstAxis.trackWidth);
+  expect(next.marker).toBe(false);
+  expect(next.left + next.width).toBe(nextAxis.trackWidth);
+  expect(nextAxis.bounds.tEnd).toBe(BASE + 20_000);
+});
+
 test('stepped mode orders the union by recorded_at then seq across workflows', () => {
   const parent = workflow('parent', [
     signalReceived(10, 'parent', 5),

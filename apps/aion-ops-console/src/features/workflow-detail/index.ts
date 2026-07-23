@@ -21,8 +21,8 @@ export {
 export { computeReopen, ReopenDiff } from './reopen';
 export {
   type BarStatus,
-  buildRankIndex,
   buildAxisLayout,
+  buildRankIndex,
   flattenLaneTree,
   LaneBar,
   type LaneKind,

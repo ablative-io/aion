@@ -9,6 +9,10 @@ import type {
 } from '@/lib/api/websocket';
 import { configuredEventSocket } from '@/lib/config';
 import type { Event, Namespace } from '@/types';
+import {
+  type AnimationFrameBatchScheduler,
+  createAnimationFrameBatch,
+} from './animationFrameBatch';
 
 /**
  * The slice of the WebSocket manager an event subscription depends on.
@@ -42,6 +46,16 @@ type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilte
   onResync?: ResyncHandler | undefined;
 };
 
+type BatchedNamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilter> = Omit<
+  NamespaceScopedSubscriptionInput<TFilter>,
+  'onEvent'
+> & {
+  onEvents: (events: readonly Event[]) => void;
+  flushAfter: (event: Event) => boolean;
+  /** Test seam for deterministic frame and timeout scheduling. */
+  batchScheduler?: AnimationFrameBatchScheduler | undefined;
+};
+
 export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
   namespace: Namespace,
   filter: Omit<TFilter, 'namespace'>
@@ -67,6 +81,40 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
     lastSeenSequence: options.afterSeq,
     onResync: options.onResync,
   });
+}
+
+export function subscribeToNamespaceFilterBatched<TFilter extends AionEventSubscriptionFilter>(
+  manager: EventSubscriptionManager,
+  namespace: Namespace,
+  filter: Omit<TFilter, 'namespace'>,
+  onEvents: (events: readonly Event[]) => void,
+  flushAfter: (event: Event) => boolean,
+  options: {
+    afterSeq?: number | undefined;
+    onResync?: ResyncHandler | undefined;
+    batchScheduler?: AnimationFrameBatchScheduler | undefined;
+  } = {}
+) {
+  const batch = createAnimationFrameBatch(onEvents, options.batchScheduler);
+  const unsubscribe = manager.subscribe(
+    namespaceSubscriptionFilter<TFilter>(namespace, filter),
+    (event) => {
+      batch.push(event, flushAfter(event));
+      return true;
+    },
+    {
+      lastSeenSequence: options.afterSeq,
+      onResync: options.onResync,
+      flushPending: batch.flush,
+    }
+  );
+
+  return () => {
+    // React cleanup owns unsubscription, so discard instead of committing state
+    // during unmount. Manager-driven error/close paths flush via flushPending.
+    batch.cancel();
+    unsubscribe();
+  };
 }
 
 type ResyncHandlerRef = {
@@ -134,6 +182,54 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
       }
     );
   }, [enabled, filter, manager, selectedNamespace]);
+
+  return {
+    enabled: active,
+    namespace: isSelectedNamespace(selectedNamespace) ? selectedNamespace : null,
+  };
+}
+
+/** Opt-in frame-coalesced delivery for high-volume workflow-detail subscriptions. */
+export function useBatchedEventSubscription<TFilter extends AionEventSubscriptionFilter>({
+  enabled = true,
+  afterSeq,
+  lastSeenSequence,
+  filter,
+  manager = configuredEventSocket,
+  onEvents,
+  flushAfter,
+  onResync,
+  batchScheduler,
+}: BatchedNamespaceScopedSubscriptionInput<TFilter>): EventSubscriptionState {
+  const { selectedNamespace } = useNamespace();
+  const active = enabled && filter !== null && isSelectedNamespace(selectedNamespace);
+  const onEventsRef = useRef(onEvents);
+  onEventsRef.current = onEvents;
+  const flushAfterRef = useRef(flushAfter);
+  flushAfterRef.current = flushAfter;
+  const onResyncRef = useRef(onResync);
+  onResyncRef.current = onResync;
+  const cursorRef = useRef<number | undefined>(undefined);
+  cursorRef.current = lastSeenSequence ?? afterSeq;
+
+  useEffect(() => {
+    if (!(enabled && filter !== null) || !isSelectedNamespace(selectedNamespace)) {
+      return;
+    }
+
+    return subscribeToNamespaceFilterBatched<TFilter>(
+      manager,
+      selectedNamespace,
+      filter,
+      (events) => onEventsRef.current(events),
+      (event) => flushAfterRef.current(event),
+      {
+        afterSeq: cursorRef.current,
+        onResync: resyncHandlerFromRef(onResyncRef),
+        batchScheduler,
+      }
+    );
+  }, [batchScheduler, enabled, filter, manager, selectedNamespace]);
 
   return {
     enabled: active,

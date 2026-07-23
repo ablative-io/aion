@@ -5,13 +5,13 @@ import type { Event, Payload, WorkflowId } from '@/types';
 
 import { projectTimeline } from '../lib/timeline';
 import {
-  childNodePath,
   type ChildTimelineState,
+  childNodePath,
   flattenLaneTree,
   isWorkflowCycle,
 } from './laneTree';
+import { Swimlane, selectionForBar } from './Swimlane';
 import { resolveSelectionSurface } from './selectionSurface';
-import { selectionForBar, Swimlane } from './Swimlane';
 
 const ROOT = 'root-1';
 const CHILD = 'child-1';

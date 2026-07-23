@@ -17,8 +17,8 @@ import type { AwlDiagnostic, AwlDocument, EditResult, GestureOperation } from '.
 import { authoringFacade } from '../lib/facade';
 import { diagnosticsByStep } from '../lib/projection';
 import type { GraphProjection, LayoutRecord, ProjectionStep } from '../lib/projection-types';
-import { CanvasGestureControls } from './CanvasGestureControls';
 import { ParallelCanvasEdge } from './CanvasEdge';
+import { CanvasGestureControls } from './CanvasGestureControls';
 import { type CanvasNodeData, ChildCanvasNode, StepCanvasNode } from './CanvasNode';
 
 const NODE_WIDTH = 240;

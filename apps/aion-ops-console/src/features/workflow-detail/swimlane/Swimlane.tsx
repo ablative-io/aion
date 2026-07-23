@@ -6,14 +6,15 @@ import type { WorkflowId } from '@/types';
 
 import type { TimelineEntry } from '../types';
 import { ChildTimelineLoader } from './ChildTimelineLoader';
-import { layoutSwimlane, type SwimlaneBar } from './laneLayout';
+import { layoutSwimlane, type SwimlaneBar, type SwimlaneLane } from './laneLayout';
 import { type ChildTimelineState, childNodePath, flattenLaneTree } from './laneTree';
 import { Scrubber } from './Scrubber';
 import { Axis, ChartToolbar, LaneRow, NoticeRow } from './SwimlaneRows';
 import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo, snapGlobalRank } from './scrub';
-import { type AxisMode, buildAxisLayout } from './timeLayout';
+import { type AxisMode, buildAxisLayout, type LaneScrubClip } from './timeLayout';
 
 export const LANE_LABEL_WIDTH = 168;
+const NO_EXPANDED_CHILDREN: readonly string[] = [];
 
 export type SwimlaneSelection = {
   workflowId: WorkflowId;
@@ -50,6 +51,12 @@ export type SwimlaneProps = {
   nowMs?: number;
 };
 
+type LaneRowHandlers = {
+  onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
+  onToggle: () => void;
+  onToggleChild: (() => void) | null;
+};
+
 /**
  * One shared chart for a workflow tree: time fits the viewport, stepped mode uses
  * the visible global event order, and expanded child workflows splice true rows
@@ -65,7 +72,7 @@ function Swimlane({
   scrubPosition = null,
   onScrubChange,
   initialAxisMode = 'time',
-  initialExpandedChildren = [],
+  initialExpandedChildren = NO_EXPANDED_CHILDREN,
   initialChildTimelines,
   loadChildren = false,
   nowMs: nowOverride,
@@ -103,7 +110,7 @@ function Swimlane({
   const containerRef = useRef<HTMLElement | null>(null);
   const containerWidth = useObservedWidth(containerRef);
   const nowMs = useCurrentTime(
-    tree.workflows.some((item) => item.isRunning),
+    axisMode === 'time' && tree.workflows.some((item) => item.isRunning),
     nowOverride
   );
   const axis = useMemo(
@@ -124,6 +131,44 @@ function Swimlane({
       ? cutsAtTimestamp(tree.workflows, scrubPosition)
       : cutsAtGlobalRank(tree.workflows, scrubPosition);
   }, [axisMode, scrubPosition, tree.workflows]);
+  const hasRootLanes = useMemo(
+    () => tree.rows.some((row) => row.kind === 'lane' && row.path === workflowId),
+    [tree.rows, workflowId]
+  );
+  const timelinesByPath = useMemo(() => {
+    const timelines = new Map<string, readonly TimelineEntry[]>();
+    for (const row of tree.rows) {
+      if (!timelines.has(row.path)) {
+        timelines.set(row.path, timelineForPath(row.path, workflowId, entries, childTimelines));
+      }
+    }
+    return timelines;
+  }, [childTimelines, entries, tree.rows, workflowId]);
+  const fullEntriesByPath = useMemo(() => {
+    const entriesByPath = new Map<string, ReadonlyMap<string, TimelineEntry>>();
+    if (cuts === null) {
+      return entriesByPath;
+    }
+    for (const [path, timeline] of timelinesByPath) {
+      entriesByPath.set(path, new Map(timeline.map((entry) => [entry.id, entry])));
+    }
+    return entriesByPath;
+  }, [cuts, timelinesByPath]);
+  const scrubLanesByPath = useMemo(() => {
+    const lanesByPath = new Map<string, ReadonlyMap<string, SwimlaneLane>>();
+    if (cuts === null) {
+      return lanesByPath;
+    }
+    const workflowIdByPath = new Map(tree.rows.map((row) => [row.path, row.workflowId]));
+    for (const [path, timeline] of timelinesByPath) {
+      const pathWorkflowId = workflowIdByPath.get(path);
+      const cut = pathWorkflowId === undefined ? undefined : cuts.get(pathWorkflowId);
+      const visibleEntries = cut === null || cut === undefined ? [] : prefixUpTo(timeline, cut);
+      const lanes = layoutSwimlane(visibleEntries).lanes;
+      lanesByPath.set(path, new Map(lanes.map((lane) => [lane.id, lane])));
+    }
+    return lanesByPath;
+  }, [cuts, timelinesByPath, tree.rows]);
   /** The clip cursor in the active axis coordinate: ms in time, rank in stepped. */
   const scrubCursor =
     scrubPosition === null || axis === null
@@ -131,6 +176,16 @@ function Swimlane({
       : axisMode === 'time'
         ? scrubPosition
         : snapGlobalRank(scrubPosition, axis.events.length);
+  const scrubClipsByPath = useMemo(() => {
+    const clips = new Map<string, LaneScrubClip>();
+    if (scrubCursor === null) {
+      return clips;
+    }
+    for (const [path, fullEntriesById] of fullEntriesByPath) {
+      clips.set(path, { cursor: scrubCursor, fullEntriesById });
+    }
+    return clips;
+  }, [fullEntriesByPath, scrubCursor]);
 
   const updateChildState = useCallback((path: string, state: ChildTimelineState) => {
     setChildTimelines((current) => {
@@ -143,7 +198,61 @@ function Swimlane({
     });
   }, []);
 
-  if (layoutSwimlane(entries).lanes.length === 0) {
+  const setMode = useCallback(
+    (mode: AxisMode) => {
+      setAxisMode(mode);
+      onScrubChange?.(null);
+    },
+    [onScrubChange]
+  );
+  const toggleRow = useCallback((id: string) => {
+    setCollapsedRows((current) => toggleSetMember(current, id));
+  }, []);
+  const toggleChild = useCallback(
+    (parentPath: string, childWorkflowId: string) => {
+      const path = childNodePath(parentPath, childWorkflowId);
+      const expanded =
+        !collapsedPaths.has(path) &&
+        (expandedPaths.has(path) || initialExpandedIds.has(childWorkflowId));
+      if (expanded) {
+        setCollapsedPaths((current) => new Set(current).add(path));
+        setExpandedPaths((current) => withoutPathAndDescendants(current, path));
+      } else {
+        setCollapsedPaths((current) => {
+          const next = new Set(current);
+          next.delete(path);
+          return next;
+        });
+        setExpandedPaths((current) => new Set(current).add(path));
+      }
+    },
+    [collapsedPaths, expandedPaths, initialExpandedIds]
+  );
+  const rowHandlers = useMemo(() => {
+    const handlers = new Map<string, LaneRowHandlers>();
+    for (const row of tree.rows) {
+      if (row.kind !== 'lane') {
+        continue;
+      }
+      const timeline = timelinesByPath.get(row.path) ?? [];
+      const childId = row.lane.childWorkflowId;
+      handlers.set(row.id, {
+        onSelect: (bar, originX, clusterSequences) =>
+          onSelect(selectionForBar(row.workflowId as WorkflowId, timeline, bar, clusterSequences), {
+            x: originX,
+          }),
+        onToggle: () => toggleRow(row.id),
+        onToggleChild: childId === null ? null : () => toggleChild(row.path, childId),
+      });
+    }
+    return handlers;
+  }, [onSelect, timelinesByPath, toggleChild, toggleRow, tree.rows]);
+  const handleScrub = useCallback(
+    (position: number | null) => onScrubChange?.(position),
+    [onScrubChange]
+  );
+
+  if (!hasRootLanes) {
     return (
       <EmptyState description="No correlated events to lay out yet." title="Nothing to visualize" />
     );
@@ -152,33 +261,6 @@ function Swimlane({
   const trackWidth = axis?.trackWidth ?? 0;
   const innerWidth =
     axisMode === 'stepped' ? LANE_LABEL_WIDTH + trackWidth : Math.max(0, containerWidth);
-
-  function setMode(mode: AxisMode) {
-    setAxisMode(mode);
-    onScrubChange?.(null);
-  }
-
-  function toggleRow(id: string) {
-    setCollapsedRows((current) => toggleSetMember(current, id));
-  }
-
-  function toggleChild(parentPath: string, childWorkflowId: string) {
-    const path = childNodePath(parentPath, childWorkflowId);
-    const expanded =
-      !collapsedPaths.has(path) &&
-      (expandedPaths.has(path) || initialExpandedIds.has(childWorkflowId));
-    if (expanded) {
-      setCollapsedPaths((current) => new Set(current).add(path));
-      setExpandedPaths((current) => withoutPathAndDescendants(current, path));
-    } else {
-      setCollapsedPaths((current) => {
-        const next = new Set(current);
-        next.delete(path);
-        return next;
-      });
-      setExpandedPaths((current) => new Set(current).add(path));
-    }
-  }
 
   return (
     <>
@@ -199,27 +281,12 @@ function Swimlane({
               if (row.kind === 'notice') {
                 return <NoticeRow key={row.id} labelWidth={LANE_LABEL_WIDTH} row={row} />;
               }
-              const timeline = timelineForPath(row.path, workflowId, entries, childTimelines);
-              const cut = cuts?.get(row.workflowId);
-              const visibleEntries =
-                cuts === null
-                  ? timeline
-                  : cut === null || cut === undefined
-                    ? []
-                    : prefixUpTo(timeline, cut);
-              const lane = layoutSwimlane(visibleEntries).lanes.find(
-                (candidate) => candidate.id === row.lane.id
-              );
-              if (lane === undefined || axis === null) {
+              const lane =
+                cuts === null ? row.lane : scrubLanesByPath.get(row.path)?.get(row.lane.id);
+              const handlers = rowHandlers.get(row.id);
+              if (lane === undefined || axis === null || handlers === undefined) {
                 return null;
               }
-              const scrubClip =
-                cuts === null || scrubCursor === null
-                  ? null
-                  : {
-                      cursor: scrubCursor,
-                      fullEntriesById: new Map(timeline.map((entry) => [entry.id, entry])),
-                    };
               const childId = row.lane.childWorkflowId;
               const childPath = childId === null ? null : childNodePath(row.path, childId);
               const childExpanded =
@@ -235,20 +302,10 @@ function Swimlane({
                   depth={row.depth}
                   key={row.id}
                   lane={lane}
-                  onSelect={(bar, originX, clusterSequences) =>
-                    onSelect(
-                      selectionForBar(
-                        row.workflowId as WorkflowId,
-                        timeline,
-                        bar,
-                        clusterSequences
-                      ),
-                      { x: originX }
-                    )
-                  }
-                  onToggle={() => toggleRow(row.id)}
-                  onToggleChild={childId === null ? null : () => toggleChild(row.path, childId)}
-                  scrubClip={scrubClip}
+                  onSelect={handlers.onSelect}
+                  onToggle={handlers.onToggle}
+                  onToggleChild={handlers.onToggleChild}
+                  scrubClip={scrubClipsByPath.get(row.path) ?? null}
                   selectedSequence={selectedSequence}
                   selectedWorkflowId={selectedWorkflowId}
                   trackWidth={trackWidth}
@@ -258,12 +315,7 @@ function Swimlane({
             })}
           </ul>
         </div>
-        <Scrubber
-          axis={axis}
-          mode={axisMode}
-          onScrub={(position) => onScrubChange?.(position)}
-          scrubPosition={scrubPosition}
-        />
+        <Scrubber axis={axis} mode={axisMode} onScrub={handleScrub} scrubPosition={scrubPosition} />
       </section>
       {loadChildren
         ? tree.requests.map((request) => (

@@ -1,7 +1,7 @@
 import type { TimelineEntry } from '../types';
 import {
-  orderedVisibleEvents,
   type OrderedTimelineEvent,
+  orderedVisibleEvents,
   type VisibleWorkflow,
 } from './timeLayout';
 
