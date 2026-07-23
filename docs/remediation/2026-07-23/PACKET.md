@@ -23,7 +23,7 @@
 | L06 | Positional `now()` | F-1 | deep_tear | — | ready |
 | L07 | haematite outbox CAS + single-commit append | F-3 m-1 | deep_tear | — | ready |
 | L08 | Conformance oracle extension | F-9 m-2 F-8(code) | small | L07 | ready |
-| L09 | SDK error-taxonomy reconciliation | F-5 F-6 F-7 | small | — | **blocked: Tom's 10-vs-13 ruling** |
+| L09 | SDK error-taxonomy reconciliation | F-5 F-6 F-7 | small | — | ready — ruling recorded: Rust's 13 variants are canonical |
 | L10 | Minors sweep | F-10 m-5 m-6 m-7 m-9 m-10 m-11 m-12 | small | — | ready |
 | L11 | God-file splits (`store.rs` ~2100, `state.rs` ~1080) | standards | small | L07 | optional — dispatch last, skip if churn outweighs value |
 
@@ -40,3 +40,4 @@
 ## Decisions recorded
 
 - *(2026-07-24)* Packet cut from REVIEW-23-07.md. L09 blocked pending Tom's canonical-taxonomy ruling (Vesper's lean: keep Rust's 13; `not_owner`-terminal in three SDKs is the production bug).
+- *(2026-07-24, Tom)* **Taxonomy ruling: Rust's 13 variants are canonical.** L09 unblocked; its brief was pre-written for exactly this option and dispatches as-is.

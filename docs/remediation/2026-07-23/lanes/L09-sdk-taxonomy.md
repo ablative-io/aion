@@ -1,10 +1,10 @@
 # L09 — SDK error-taxonomy reconciliation
 
-**Findings:** F-5 (major — production bug in three SDKs), F-6, F-7 · **Risk:** small · **Depends on:** — · **Status:** **BLOCKED: Tom's canonical-taxonomy ruling (10 vs 13)**
+**Findings:** F-5 (major — production bug in three SDKs), F-6, F-7 · **Risk:** small · **Depends on:** — · **Status:** ready — **ruling recorded (Tom, 2026-07-24): Rust's 13 variants are canonical**
 
-Do not dispatch until the ruling is recorded in `PACKET.md`. The brief below is written for **Option 13** (Vesper's recommendation: adopt Rust's 13-variant taxonomy as canonical); if Tom rules for 10, the objective's direction inverts (collapse Rust to the contract) and the brief must be re-cut before dispatch.
+The brief below was pre-written for exactly this ruling and dispatches as-is.
 
-## dev_brief input (Option 13 — pending ruling)
+## dev_brief input (Option 13 — as ruled)
 
 ```json
 {

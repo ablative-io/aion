@@ -1,0 +1,25 @@
+{
+  "config": {
+    "repo_root": "/Users/deanwhiting/Developer/stack/aion",
+    "packet_dir": "/Users/deanwhiting/Developer/stack/aion/docs/remediation/2026-07-23",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "--workspace"] }
+    ],
+    "verify_gates": [
+      { "name": "clippy", "argv": ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "--workspace"] }
+    ],
+    "max_fix_cycles": 3,
+    "lenses": [
+      { "name": "correctness", "charter": "Argue that the diff is behaviorally wrong: hunt logic errors, broken invariants, missed edge cases, and unproven claims. A claim without test evidence at these bytes is a finding." },
+      { "name": "regressions", "charter": "Argue that the diff breaks something that worked: hunt changed behavior outside the brief's scope, weakened tests, and removed guarantees. The base commit is your reference." },
+      { "name": "brief_compliance", "charter": "Argue that the diff disobeys its brief: hold every scope_out wall, every acceptance criterion, and the workspace laws named in the brief against the diff, line by line. Scope creep is a blocking finding." }
+    ],
+    "max_waves": 12,
+    "meridian_as": "Meridian",
+    "meridian_to": "Vesper Lind"
+  }
+}

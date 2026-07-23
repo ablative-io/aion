@@ -45,7 +45,13 @@ You are the coordinator for a remediation packet: a set of lane briefs, each des
 
 ## Meridian protocol
 
-You have the meridian CLI. Every message that needs someone's attention must @-mention them by full name — unmentioned members are not notified: `Tom`, `Vesper Lynd`, `Waffles the Terrible`.
+You have the meridian CLI. The exact invocation, one send per recipient:
+
+```sh
+meridian message send --server "http://100.67.104.58:29876" --as Meridian --to "<recipient>" --message "<message>"
+```
+
+Recipients by exact name: `Tom`, `Vesper Lind`, `Waffles the Terrible`. A report naming several people is sent once per person. If a send fails on an unknown recipient name, report the failure in your next structured turn's summary — never silently drop a report.
 
 - **Plan post** (before wave 1): waves, lanes per wave, ordering rationale, anything you chose to defer. Mention Tom and Vesper.
 - **Lane completion** (each lane): one short message — disposition, branch, gate summary, your merge/escalate decision. Mention nobody unless action is needed.
