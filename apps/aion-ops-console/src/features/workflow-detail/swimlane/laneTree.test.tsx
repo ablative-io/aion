@@ -9,6 +9,7 @@ import {
   childNodePath,
   flattenLaneTree,
   isWorkflowCycle,
+  timerGroupPath,
 } from './laneTree';
 import { Swimlane, selectionForBar } from './Swimlane';
 import { resolveSelectionSurface } from './selectionSurface';
@@ -55,6 +56,24 @@ function childStarted(
       input: PAYLOAD,
       package_version: '1.0.0',
     },
+  };
+}
+
+function timerStarted(seq: number, workflowId: string, name: string, second: number): Event {
+  return {
+    type: 'TimerStarted',
+    data: {
+      envelope: envelope(seq, workflowId, second),
+      timer_id: { Named: name },
+      fire_at: '2026-07-15T01:00:00Z',
+    },
+  };
+}
+
+function timerFired(seq: number, workflowId: string, name: string, second: number): Event {
+  return {
+    type: 'TimerFired',
+    data: { envelope: envelope(seq, workflowId, second), timer_id: { Named: name } },
   };
 }
 
@@ -144,6 +163,54 @@ test('child loading is lazy: only an expanded path requests history and collapse
   );
   expect(recollapsed.rows.every((row) => row.depth === 0)).toBe(true);
   expect(recollapsed.requests).toHaveLength(0);
+});
+
+test('timer expansion is scoped to each workflow row, including child workflows', () => {
+  const rootWithTimers = projectTimeline([
+    timerStarted(1, ROOT, 'root-retry', 1),
+    childStarted(2, ROOT, CHILD, 2),
+    timerStarted(3, ROOT, 'root-deadline', 3),
+  ]);
+  const childWithTimers = projectTimeline([
+    timerStarted(1, CHILD, 'child-retry', 4),
+    timerStarted(2, CHILD, 'child-deadline', 5),
+    timerFired(3, CHILD, 'child-retry', 6),
+  ]);
+  const children = new Map<string, ChildTimelineState>([
+    [childPath, { status: 'ready', entries: childWithTimers, isRunning: true }],
+  ]);
+
+  const grouped = flattenLaneTree(
+    { workflowId: ROOT, entries: rootWithTimers, isRunning: true },
+    children,
+    new Set([childPath])
+  );
+  const groupedTimerRows = grouped.rows.filter(
+    (row) => row.kind === 'lane' && row.lane.kind === 'timer'
+  );
+  expect(groupedTimerRows).toHaveLength(2);
+  expect(groupedTimerRows.map((row) => (row.kind === 'lane' ? row.lane.label : ''))).toEqual([
+    'Timers (2)',
+    'Timers (2)',
+  ]);
+
+  const childTimersExpanded = flattenLaneTree(
+    { workflowId: ROOT, entries: rootWithTimers, isRunning: true },
+    children,
+    new Set([childPath, timerGroupPath(childPath)])
+  );
+  const rootTimerRows = childTimersExpanded.rows.filter(
+    (row) => row.kind === 'lane' && row.workflowId === ROOT && row.lane.kind === 'timer'
+  );
+  const childTimerRows = childTimersExpanded.rows.filter(
+    (row) => row.kind === 'lane' && row.workflowId === CHILD && row.lane.kind === 'timer'
+  );
+  expect(rootTimerRows).toHaveLength(1);
+  expect(rootTimerRows[0]?.kind === 'lane' ? rootTimerRows[0].lane.label : null).toBe('Timers (2)');
+  expect(childTimerRows).toHaveLength(2);
+  expect(childTimerRows[0]?.kind === 'lane' ? childTimerRows[0].timerGroupExpanded : null).toBe(
+    true
+  );
 });
 
 test('late expansion consumes the complete durable child history', () => {
