@@ -4,10 +4,10 @@
 
 Aion gives you Temporal-class durable execution: workflows that survive
 `kill -9`, replay from event history, sleep durably for months, and resume
-exactly where they were. Workflows are written in type-safe Gleam, compiled
-to BEAM bytecode, and executed on [beamr](https://crates.io/crates/beamr) —
-a Rust implementation of the BEAM VM — with a Rust persistence and transport
-layer around it.
+exactly where they were. Workflows are authored in type-safe Gleam or in AWL,
+compiled to BEAM bytecode, and executed on
+[beamr](https://crates.io/crates/beamr) — a Rust implementation of the BEAM
+VM — with a Rust persistence and transport layer around it.
 
 ```sh
 cargo install aion-cli --locked   # installs the `aion` binary
@@ -25,9 +25,12 @@ completed durable workflow, with every file you need inline.
 - **Durable execution** — event-sourced histories with deterministic replay.
   Kill the server mid-run; on restart it replays history and the run resumes
   at the same await, without re-executing completed activities.
-- **Typed workflow authoring** in Gleam ([`aion_flow`](gleam/aion_flow/)):
-  activities, durable timers, signals, timeout races, live queries, child
-  workflows, continue-as-new — all statically typed via codecs.
+- **Two first-class authoring surfaces** — typed Gleam
+  ([`aion_flow`](gleam/aion_flow/)) and AWL `.awl` documents. AWL ships with
+  `aion awl check`, `aion awl fmt`, `aion awl emit`, and `aion awl schema`;
+  `aion deploy <file.awl>` direct-compiles and deploys a document, and
+  `aion run <file.awl> --input <json>` compiles, deploys, starts, and awaits
+  it.
 - **Activities on workers you own** — Rust, Python, and TypeScript worker
   SDKs over a gRPC worker protocol with acks, reconnect, heartbeats, and
   cooperative cancellation.
@@ -42,7 +45,13 @@ completed durable workflow, with every file you need inline.
 
 ## Honest limits
 
-- Single-node: one server process owns the store. There is no clustering.
+- Clustering support is compiled into the stock binary by default through the
+  haematite backend; single-node remains the default topology until
+  `[store.cluster]` is configured. Distributed mode uses quorum replication,
+  and the supervisor automatically adopts a declared peer's shards after
+  debounced link loss. Membership and shard ownership are operator-configured,
+  automatic failover requires each peer's `owned_shards`, and `shard_count` is
+  fixed when the database is created — there is no online resharding path.
 - Activity retries are workflow-driven today: the SDK carries an explicit
   `RetryPolicy`, but engine-side automatic re-dispatch is not wired up yet —
   workflows drive their own bounded retry loops (the
@@ -105,8 +114,12 @@ The whole-system design lives in
 |---|---|
 | `aion-core` | Domain model: events, payloads, identifiers, status, errors |
 | `aion-store` | The `EventStore` contract + in-memory reference + conformance suite |
-| `aion-store-libsql` | Default durable store over libSQL |
+| `aion-store-haematite` | Default durable store; single-node or distributed with `[store.cluster]` |
+| `aion-store-libsql` | Alternative durable store over libSQL |
 | `aion-package` | The `.aion` package format, content-hash versioning |
+| `aion-awl` | AWL parser, checker, formatter, schema derivation, and compiler |
+| `aion-awl-lsp` | AWL language-server adapter |
+| `aion-awl-package` | AWL-native `.aion` package assembly |
 | `aion` | The engine: lifecycle, durability/replay, timers, signals, queries |
 | `aion-nif` | Rust helper for in-VM activity NIFs |
 | `aion-proto` | Shared wire contract (gRPC + serde) |

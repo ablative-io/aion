@@ -19,7 +19,7 @@ person/system usually touches only one or two.
 | Role | What they do | What they use |
 |------|--------------|---------------|
 | **Engine operator** | Deploys and runs the engine | `aion` (embed) or `aion-server` (standalone) |
-| **Workflow author** | Defines workflows | `aion_flow` (Gleam), later Elixir |
+| **Workflow author** | Defines workflows | `aion_flow` (Gleam) or AWL through `aion awl` |
 | **In-VM activity author** | Writes native/BEAM activities | `aion-nif` (Rust), or plain Gleam |
 | **Remote activity author** | Writes out-of-process activities | `aion-worker-*` (their language) |
 | **Workflow caller** | Starts/signals/queries workflows | `aion-client-*` (their language) |
@@ -43,10 +43,9 @@ the engine internals.
 - aion-server           Standalone binary. Wraps `aion` with HTTP/gRPC +
                         WebSocket API and the monitoring dashboard.
 - aion-store            Event store trait + in-memory reference impl.
-- aion-store-libsql     Embedded libSQL event store (default, zero-infra).
-                        Local file for embedded mode; embedded-replica sync
-                        to a remote primary for distributed mode.
-- aion-store-postgres   Alternative PostgreSQL event store.
+- aion-store-haematite  Default durable event store. Local in single-node
+                        mode; quorum-replicated under `[store.cluster]`.
+- aion-store-libsql     Alternative embedded libSQL event store.
 - aion-proto            Shared wire types (events, requests) for client/
                         worker/server. gRPC + serde.
 - aion-package          The `.aion` package format: read/write a single-file
@@ -57,6 +56,11 @@ the engine internals.
                         `.aion`. Unlocks server-side authoring endpoints.
 
 ## Workflow Authoring SDKs (compile to .beam, run on beamr)
+- aion-awl              AWL parser, checker, canonical printer, schema
+                        derivation, and compiler.
+- aion-awl-lsp          Language Server Protocol adapter for AWL.
+- aion-awl-package      Compiles and assembles AWL workflows into `.aion`
+                        archives.
 - aion_flow             Gleam package (Hex). Define workflows + activities.
                         The primary authoring surface.
 - aion_flow_ex          Elixir package (Hex). Same concepts, idiomatic
@@ -138,6 +142,9 @@ Responsibilities:
 - Remote worker protocol endpoint (task dispatch to out-of-process workers)
 - Monitoring dashboard (workflow list, history viewer, live event feed)
 - Multi-tenancy / namespace isolation (server mode only)
+- Haematite cluster boot with configured membership, quorum replication,
+  static shard ownership, request forwarding, and automatic adoption of a
+  declared dead peer's shards
 - Config: store selection, ports, auth, TLS
 
 Depends on: `aion`, `aion-proto`, `aion-store-*` (selected at deploy).
@@ -157,35 +164,24 @@ Depends on: nothing in the Aion tree (leaf crate). This is deliberate — the
 trait must be implementable by external crates (Meridian, third parties)
 without pulling in the engine.
 
-### `aion-store-libsql` — embedded default
+### `aion-store-haematite` — default durable backend
 
-`impl EventStore` over libSQL (via the `libsql` Rust SDK). Zero external
-dependencies, file on disk — the default for development, single-node, and
-CLI use.
+`impl EventStore` over haematite. With no `[store.cluster]` section it opens
+or creates a local data directory and owns all shards. In distributed mode it
+routes appends through quorum replication, scopes enumeration to configured
+shard ownership, and supports survivor adoption after a declared peer dies.
 
-libSQL is chosen over plain SQLite on the merits, not just preference: its
-Rust SDK provides **embedded replicas with sync** — a local embedded
-database that replicates to/from a remote primary. This gives us two modes
-from one backend:
-- **Embedded** — pure local libSQL file, zero infra.
-- **Distributed** — each engine instance holds a local replica, writes sync
-  to a remote primary. Partially answers the distributed-coordination
-  question without a separate backend.
+Cluster membership, peer addresses, and shard ownership are configuration,
+not discovery. The virtual `shard_count` is fixed when a database is created;
+there is no reshard path.
 
-> **Turso-native note.** The from-scratch Rust rewrite (Turso Database,
-> formerly "Limbo") is still **beta** as of mid-2026 — not production-ready.
-> libSQL (the C fork with a Rust SDK) is production-ready today. Because the
-> `aion-store` trait abstracts the backend, swapping libSQL's internals for
-> Turso-native (or adding `aion-store-turso`) later is a drop-in change with
-> zero engine impact.
+Depends on: `aion-store`, `haematite`.
 
-Depends on: `aion-store`.
+### `aion-store-libsql` — alternative backend
 
-### `aion-store-postgres` — alternative backend
-
-`impl EventStore` over PostgreSQL (`sqlx` or `tokio-postgres`). For teams
-that already run Postgres and prefer it for the shared event store in
-distributed mode.
+`impl EventStore` over libSQL (via the `libsql` Rust SDK). It provides a local
+database file with zero external infrastructure and remains selectable as the
+lightweight alternative to the default haematite backend.
 
 Depends on: `aion-store`.
 
@@ -376,7 +372,7 @@ their ecosystems.
         |   aion-store  aion-proto   |        |
         |        ^         ^         |        |
         |        |         |         |        |
-        |  aion-store-sqlite  aion-store-postgres
+        |  aion-store-haematite  aion-store-libsql
         |        |
         +--------+
                  |
@@ -416,7 +412,7 @@ Key boundaries:
 This is dependency ordering, not a phased rollout plan (the design is for
 the ideal end state; sequencing is a separate exercise).
 
-1. `aion-store` + `aion-store-libsql` — persistence contract + default
+1. `aion-store` + `aion-store-haematite` — persistence contract + default
 2. `aion-package` — the `.aion` format (load path needed early by the engine)
 3. `aion` core — engine on beamr, embedded Rust API, replay, timers,
    signals, queries
@@ -426,8 +422,7 @@ the ideal end state; sequencing is a separate exercise).
 6. `aion-client-*` — caller SDKs
 7. `aion-worker` + `aion-worker-*` — remote activity workers
 8. `aion-toolchain` — optional server-side compile/check/package
-9. `aion-store-postgres` — alternative shared backend; libSQL embedded
-   replicas cover the primary distributed path
+9. `aion-store-libsql` — alternative embedded backend
 10. Hot code loading in beamr (Bono's 3-4 briefs) — zero-downtime upgrades
 11. `aion_flow_ex` (Elixir) — second authoring language
 

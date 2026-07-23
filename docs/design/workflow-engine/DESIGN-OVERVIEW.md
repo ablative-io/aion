@@ -626,36 +626,29 @@ pub trait EventStore: Send + Sync + 'static {
 
 ### Embedded Mode
 
-The default implementation uses **libSQL** (via the `libsql` Rust SDK).
-Zero external dependencies; the database file lives alongside the
-application. Sufficient for development, testing, single-node deployments,
-CLI tools that embed workflow execution, and any environment that doesn't
-want external infrastructure.
+The default implementation uses **haematite** through
+`aion-store-haematite`. With no `[store.cluster]` section it opens or creates
+a local data directory and owns every shard. A configured `[store.cluster]`
+boot uses the same backend for quorum-replicated, multi-node operation.
 
-libSQL is chosen over plain SQLite on the merits: its Rust SDK provides
-**embedded replicas with sync**, so the same backend serves both the
-embedded (local file) and distributed (local replica syncing to a remote
-primary) modes. The from-scratch Rust rewrite (Turso Database, formerly
-"Limbo") is still beta as of mid-2026; libSQL is production-ready today.
-Because the `EventStore` trait abstracts the backend, swapping to
-Turso-native later is a drop-in change.
+libSQL, through `aion-store-libsql`, is the alternative durable backend. It
+provides a zero-infrastructure local database file for development,
+single-node deployments, and embedded tools. The `EventStore` trait keeps
+either backend behind the same engine boundary.
 
 ```rust
-use aion::Engine;
-use aion_store_libsql::LibSqlStore;
+use aion::EngineBuilder;
+use aion_store_haematite::HaematiteStore;
 
-let store = LibSqlStore::open("workflows.db")?;
-let engine = Engine::builder().store(store).build()?;
+let store = HaematiteStore::create("workflows")?;
+let engine = EngineBuilder::new().store(store).build().await?;
 ```
 
 ### Pluggable Backends
 
 ```rust
-// PostgreSQL
-let store = aion_store_postgres::PostgresStore::connect("postgres://...").await?;
-
-// Meridian's storage layer
-let store = meridian_aion::MeridianStore::new(meridian_storage);
+// libSQL alternative
+let store = aion_store_libsql::LibSqlStore::open("workflows.db")?;
 
 // Custom
 impl EventStore for MyStore { /* ... */ }
@@ -747,12 +740,12 @@ services, no network overhead.
 
 ```rust
 use aion::{Engine, EngineBuilder};
-use aion_store_sqlite::SqliteStore;
+use aion_store_haematite::HaematiteStore;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let engine = EngineBuilder::new()
-        .store(SqliteStore::open("app.db")?)
+        .store(HaematiteStore::create("app-data")?)
         .load_workflows("workflows/ebin/")?
         .build()
         .await?;

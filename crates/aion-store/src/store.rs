@@ -98,7 +98,8 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     /// repair jobs reconcile derived indexes against the authoritative event history.
     async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError>;
 
-    /// Lists workflow identifiers whose projected status is non-terminal.
+    /// Lists workflow identifiers whose projected status is exactly
+    /// [`WorkflowStatus::Running`](aion_core::WorkflowStatus::Running).
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError>;
 
     /// Lists workflow identifiers whose projected status is exactly
