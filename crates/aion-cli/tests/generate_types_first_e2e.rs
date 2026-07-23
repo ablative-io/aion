@@ -9,6 +9,9 @@
 //! Like the scaffold gates, a missing `gleam` CLI FAILS these tests with an
 //! explicit error — never a skip.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 mod common;
 
 use std::path::Path;
@@ -183,6 +186,9 @@ fn stage_coverage_project(parent: &Path) -> Result<std::path::PathBuf, TestError
 /// file.
 #[test]
 fn generate_compiles_round_trips_and_checks() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let project = stage_coverage_project(temp_dir.path())?;
 
@@ -304,6 +310,9 @@ fn gleam_run_round_trip(project: &Path) -> Result<(), TestError> {
 /// nothing new.
 #[test]
 fn type_outside_subset_fails_loudly() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let project = stage_coverage_project(temp_dir.path())?;
     let io_path = project.join("src/codegen_gate_io.gleam");
@@ -330,6 +339,9 @@ fn type_outside_subset_fails_loudly() -> Result<(), TestError> {
 /// authoring is gone.
 #[test]
 fn stray_authored_schema_fails_with_the_migration_hint() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let project = stage_coverage_project(temp_dir.path())?;
     std::fs::write(

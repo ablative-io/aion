@@ -9,6 +9,9 @@
 //! binaries — the upstream defect pinned in `tests/example_query_reentry.rs`)
 //! and these tests isolate the child-await and query semantics themselves.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -103,6 +106,9 @@ async fn assert_parent_completes(
 /// wake crashed the parent (`bad function term {ok, <<...>>}`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_awaits_child_and_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with_fixture(&store).await?;
     let (workflow_id, run_id) = start_parent(&engine, 300).await?;
@@ -117,6 +123,9 @@ async fn parent_awaits_child_and_completes() -> TestResult {
 /// completes normally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn query_answered_while_parked_in_child_await() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with_fixture(&store).await?;
     let (workflow_id, run_id) = start_parent(&engine, 3000).await?;

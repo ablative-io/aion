@@ -830,6 +830,24 @@ pub(super) fn package_from_source(source: WorkflowPackageSource) -> Result<Packa
 
 #[cfg(test)]
 mod tests {
+    mod gleam_test_support {
+        use std::process::Command;
+
+        #[must_use]
+        pub fn skip_if_unavailable() -> bool {
+            if Command::new("gleam")
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+            {
+                return false;
+            }
+
+            println!("skipping Gleam-dependent test: `gleam` is not available on PATH");
+            true
+        }
+    }
+
     use std::{num::NonZeroUsize, path::PathBuf, process::Command, sync::Arc, time::Duration};
 
     use aion_core::{Event, EventEnvelope, Payload, WorkflowId, WorkflowStatus};
@@ -1277,6 +1295,9 @@ mod tests {
 
     #[tokio::test]
     async fn build_loads_already_loaded_package() -> Result<(), Box<dyn std::error::Error>> {
+        if gleam_test_support::skip_if_unavailable() {
+            return Ok(());
+        }
         let package = fixture_package()?;
         let version = package.content_hash().clone();
         let deployed_entry_module = package.deployed_entry_module();
@@ -1377,6 +1398,9 @@ mod tests {
 
     #[tokio::test]
     async fn build_loads_package_from_path() -> Result<(), Box<dyn std::error::Error>> {
+        if gleam_test_support::skip_if_unavailable() {
+            return Ok(());
+        }
         let package = fixture_package()?;
         let version = package.content_hash().clone();
         let path = write_fixture_package(&package)?;

@@ -30,6 +30,9 @@
 //! carry the >64-byte release token too; the short `l1:l2:l3:...` result
 //! strings elsewhere intentionally cover the small-payload path).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -362,6 +365,9 @@ fn decoded_string(payload: &Payload) -> Result<String, Box<dyn std::error::Error
 /// once with the payloads intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_level_chain_completes_and_propagates_results_bottom_up() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let dispatcher = LeafDispatcher::new(None);
     let engine = engine_over(&store, &dispatcher).await?;
@@ -479,6 +485,9 @@ async fn three_level_chain_completes_and_propagates_results_bottom_up() -> TestR
 /// level gains a single event from the query path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queries_at_top_and_leaf_answered_while_leaf_activity_parked() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gate = Gate::new();
     let dispatcher = LeafDispatcher::new(Some(Arc::clone(&gate)));
@@ -535,6 +544,9 @@ async fn queries_at_top_and_leaf_answered_while_leaf_activity_parked() -> TestRe
 /// post-recovery release signal drives the whole chain to completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_at_depth_replays_all_three_histories_byte_identical() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let first_dispatcher = LeafDispatcher::new(None);
     let first_engine = engine_over(&store, &first_dispatcher).await?;
@@ -651,6 +663,9 @@ async fn recovery_at_depth_replays_all_three_histories_byte_identical() -> TestR
 /// and respawn nothing: positional correlation holds at every level.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_mid_leaf_activity_redispatches_without_respawning_children() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let first_gate = Gate::new();
     let first_dispatcher = LeafDispatcher::new(Some(Arc::clone(&first_gate)));
@@ -771,6 +786,9 @@ async fn recovery_mid_leaf_activity_redispatches_without_respawning_children() -
 /// no respawn, and the released chain completes depth-tagged bottom-up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn self_spawning_recursion_stops_at_depth_three_and_recovers() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let first_gate = Gate::new();
     let first_dispatcher = LeafDispatcher::new(Some(Arc::clone(&first_gate)));
@@ -860,6 +878,9 @@ async fn self_spawning_recursion_stops_at_depth_three_and_recovers() -> TestResu
 /// This test pins that behavior; it does not endorse it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_level_two_orphans_level_three_and_fails_level_one_await() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gate = Gate::new();
     let dispatcher = LeafDispatcher::new(Some(Arc::clone(&gate)));

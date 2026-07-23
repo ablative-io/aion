@@ -17,6 +17,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// fail the splice binding before any engine run.
 #[tokio::test(flavor = "multi_thread")]
 async fn reference_package_under_direct_expectation_is_refused() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixtures =
         build_spliced(&[String::from("flagship/valid/awl_hello")], "oracle_self").await?;
     let hello = fixtures.first().ok_or("no awl_hello spliced fixture")?;

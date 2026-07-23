@@ -3,6 +3,9 @@
 //! terminal arrivals may invert item order, tolerant failure preserves a slot,
 //! and no sibling is cancelled.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -411,6 +414,9 @@ async fn assert_durable_child_overlap(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn emitted_multistep_distribute_is_parallel_ordered_and_tolerant() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gates = Gates::new();
     let engine = EngineBuilder::new()

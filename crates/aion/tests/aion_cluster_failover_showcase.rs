@@ -65,6 +65,9 @@
 #![allow(clippy::panic, clippy::doc_markdown, clippy::doc_lazy_continuation)]
 #![allow(clippy::too_many_lines)]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 // The `hello_world` archive is rebuilt from the committed Gleam source on every
 // run (see `common/example_build.rs`); this gate never skips on a missing CLI.
 #[path = "common/example_build.rs"]
@@ -306,6 +309,9 @@ async fn build_engine_over(
 
 #[test]
 fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // ONE long-lived runtime drives EVERY async engine call. Its worker threads
     // outlive each `block_on`, so the engine's captured handles stay valid; and
     // because no `block_on` is in flight between calls, the test thread has no
@@ -539,6 +545,9 @@ fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult 
 // race), so this test is itself deterministic.
 #[test]
 fn inflight_workflow_completes_on_survivor_after_owner_death() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

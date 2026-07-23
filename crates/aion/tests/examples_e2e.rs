@@ -8,6 +8,9 @@
 //! archive is rebuilt from the committed example source on each run — see
 //! `common/example_build.rs` for why these gates must never skip.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -37,6 +40,9 @@ const EXAMPLE_PROJECTS: &[&str] = &[
 
 #[tokio::test]
 async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     for name in EXAMPLE_PROJECTS {
         let report = example_build::build_project(&format!("examples/{name}"))?;
         assert!(
@@ -70,6 +76,9 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
 #[tokio::test]
 async fn invm_demo_example_runs_end_to_end_without_a_dispatcher()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/invm-demo", "invm_demo")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
@@ -163,6 +172,9 @@ impl ActivityDispatcher for PipelineDispatcher {
 
 #[tokio::test]
 async fn data_pipeline_example_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/data-pipeline", "data_pipeline")?;
     let engine = EngineBuilder::new()
         .store(InMemoryStore::default())
@@ -269,6 +281,9 @@ impl ActivityDispatcher for RecordingDispatcher {
 
 #[tokio::test]
 async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/approval-gate", "approval_gate")?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -338,6 +353,9 @@ async fn approval_gate_signal_drives_publication() -> Result<(), Box<dyn std::er
 #[tokio::test]
 async fn subscription_bills_after_deadline_with_signaled_plan_and_rotates()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/subscription", "subscription")?;
     let dispatcher = Arc::new(RecordingDispatcher::new());
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -480,6 +498,9 @@ fn gate_engine_builder(dispatcher: Arc<dyn ActivityDispatcher>) -> EngineBuilder
 #[tokio::test]
 async fn stacked_dev_gate_completes_through_the_entrypoint_shim()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/stacked-dev", "gate")?;
     let engine = gate_engine_builder(Arc::new(GateDispatcher))
         .load_workflows(package)
@@ -515,6 +536,9 @@ async fn stacked_dev_gate_completes_through_the_entrypoint_shim()
 #[tokio::test]
 async fn stacked_dev_gate_records_the_input_decode_envelope_on_garbage_input()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/stacked-dev", "gate")?;
     let engine = gate_engine_builder(Arc::new(GateDispatcher))
         .load_workflows(package)

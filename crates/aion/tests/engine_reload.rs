@@ -8,6 +8,9 @@
 //! completes with the integer N, and `park/1` blocks in `receive` until any
 //! message (a signal marker) releases it, still completing with N.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
@@ -161,6 +164,9 @@ fn version_of(package: &Package) -> PackageVersion {
 
 #[tokio::test]
 async fn load_into_running_engine_routes_new_starts_while_old_run_finishes_on_v1() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("park")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(&store, vec![v1.clone()]).await?;
@@ -202,6 +208,9 @@ async fn load_into_running_engine_routes_new_starts_while_old_run_finishes_on_v1
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn route_flip_under_concurrent_starts_is_atomic() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = Arc::new(engine_with(&store, vec![v1.clone()]).await?);
@@ -268,6 +277,9 @@ async fn route_flip_under_concurrent_starts_is_atomic() -> TestResult {
 
 #[tokio::test]
 async fn idempotent_reload_registers_nothing_and_re_routes_rolled_back_versions() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(&store, vec![v1.clone()]).await?;
@@ -315,6 +327,9 @@ async fn idempotent_reload_registers_nothing_and_re_routes_rolled_back_versions(
 
 #[tokio::test]
 async fn listing_shows_route_flags_and_route_workflow_version_re_points() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(&store, vec![v1.clone(), v2.clone()]).await?;
@@ -367,6 +382,9 @@ async fn listing_shows_route_flags_and_route_workflow_version_re_points() -> Tes
 
 #[tokio::test]
 async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("park")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(&store, vec![v1.clone()]).await?;
@@ -467,6 +485,9 @@ async fn unload_refuses_pinned_versions_and_succeeds_when_free() -> TestResult {
 
 #[tokio::test]
 async fn load_package_after_shutdown_is_refused() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(&store, vec![v1]).await?;
@@ -488,6 +509,9 @@ async fn load_package_after_shutdown_is_refused() -> TestResult {
 /// archive must keep re-loading idempotently.
 #[tokio::test]
 async fn same_hash_different_manifest_reload_is_refused() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let beam = compile_reload_beam(1)?;
     let original = reload_package(&beam, "run")?;
     let diverged = reload_package(&beam, "park")?;

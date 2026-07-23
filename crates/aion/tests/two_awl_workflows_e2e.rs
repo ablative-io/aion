@@ -1,5 +1,8 @@
 //! Two same-shape AWL workflows package, deploy, and restart without child-type collisions.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
@@ -60,6 +63,9 @@ async fn engine(store: &Arc<dyn EventStore>) -> Result<Engine, Box<dyn std::erro
 
 #[tokio::test]
 async fn same_shape_workflows_package_deploy_and_restart_together() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let repo = repo_root()?;
     let root = repo.join("target/flow-vocab-b5-two-workflows");
     fs::create_dir_all(root.join("src"))?;

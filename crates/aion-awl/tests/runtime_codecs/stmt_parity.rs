@@ -36,6 +36,9 @@ pub fn awl_rt_execute_empty() {
 
 #[test]
 fn index_and_lists_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("index_lists.awl");
     let reference = reference_module_at(&path, REF_INDEX_LISTS_DRIVER)?;
     let ebins = gleam_build(&[("ref_index_lists", &reference)])?;
@@ -172,6 +175,9 @@ fn child_stmt_host_ebin(
 
 #[test]
 fn child_call_statement_and_spawn_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let parent_path = parity_fixture("child_call.awl");
     let child_path = parity_fixture("score_essay.awl");
     let ref_parent = reference_module_at(&parent_path, REF_CHILD_CALL_DRIVER)?;
@@ -238,6 +244,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn wait_signal_binds_payload_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("wait_signal.awl");
     let reference = reference_module_at(&path, REF_WAIT_SIGNAL_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_wait_signal", &reference)])?;
@@ -275,6 +284,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn wait_timeout_arms_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("wait_timeout.awl");
     let reference = reference_module_at(&path, REF_WAIT_TIMEOUT_DRIVER)?;
     let base_ebins = gleam_build(&[("ref_wait_timeout", &reference)])?;

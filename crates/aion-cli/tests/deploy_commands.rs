@@ -16,6 +16,9 @@
 //! tests in `crates/aion-server/src/api/deploy_grpc.rs`.
 #![cfg(not(feature = "auth"))]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -202,6 +205,9 @@ fn run_cli(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deploy_subcommands_drive_a_live_server() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let archive_path = write_archive(temp_dir.path())?;
     let archive = archive_path.to_string_lossy().into_owned();

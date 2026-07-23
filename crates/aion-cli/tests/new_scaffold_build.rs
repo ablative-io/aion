@@ -4,6 +4,9 @@
 //! `cargo check`. The hello-world template is proven end to end (server
 //! boot, deploy, start, completion) in `new_hello_world_e2e.rs`.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 mod common;
 
 use std::path::Path;
@@ -36,6 +39,9 @@ fn build_and_package(name: &str, template: &str) -> Result<(), TestError> {
 
 #[test]
 fn hello_world_template_builds_and_packages() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     build_and_package("hello_build_gate", "hello-world")
 }
 
@@ -46,6 +52,9 @@ fn hello_world_template_builds_and_packages() -> Result<(), TestError> {
 /// the project must build.
 #[test]
 fn hello_world_scaffold_generate_round_trips_byte_identically() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let (project, _report) = common::scaffold_project(
         temp_dir.path(),
@@ -98,6 +107,9 @@ fn hello_world_scaffold_generate_round_trips_byte_identically() -> Result<(), Te
 /// leaves no diff; `--check` passes), then the project must build.
 #[test]
 fn agent_scaffold_generate_round_trips_byte_identically() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let (project, report) = common::scaffold_project(
         temp_dir.path(),
@@ -160,11 +172,17 @@ fn agent_scaffold_generate_round_trips_byte_identically() -> Result<(), TestErro
 
 #[test]
 fn approval_flow_template_builds_and_packages() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     build_and_package("approval_build_gate", "approval-flow")
 }
 
 #[test]
 fn saga_template_builds_and_packages() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     build_and_package("saga_build_gate", "saga")
 }
 

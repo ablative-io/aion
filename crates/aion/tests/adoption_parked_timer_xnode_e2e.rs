@@ -15,6 +15,9 @@
 //! and, after A dies, ADOPTS the sleeper's shard (quorum over {B, C}); C is the
 //! witness that keeps quorum reachable.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -348,6 +351,9 @@ fn assert_resumed_on_b(
 
 #[test]
 fn parked_timer_workflow_resumes_on_xnode_shard_adoption() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

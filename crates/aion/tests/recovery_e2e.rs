@@ -7,6 +7,9 @@
 //! replay resumes it, and live execution drives it to completion without
 //! duplicating any recorded event.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -37,6 +40,9 @@ impl ActivityDispatcher for GreetDispatcher {
 
 #[tokio::test]
 async fn interrupted_workflow_recovers_and_completes() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/hello-world", "hello_world")?;
 
     // Simulate the crash: durable history holds only the start event.

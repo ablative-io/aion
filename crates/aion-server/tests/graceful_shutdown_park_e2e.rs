@@ -23,6 +23,9 @@
 //! activity to a reconnected worker at the CONTINUED attempt, and COMPLETES
 //! the workflow.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
@@ -437,6 +440,9 @@ async fn restart_and_complete(
 /// shape), and a restart over the same store completes the workflow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn graceful_drain_parks_in_flight_activity_and_restart_completes() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let dir = tempfile::Builder::new()
         .prefix("aion-graceful-park-")
         .tempdir()?;
@@ -498,6 +504,9 @@ async fn graceful_drain_parks_in_flight_activity_and_restart_completes() -> Resu
 /// the workflow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn drain_timeout_parks_and_exits_success_and_restart_completes() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let dir = tempfile::Builder::new()
         .prefix("aion-timeout-park-")
         .tempdir()?;

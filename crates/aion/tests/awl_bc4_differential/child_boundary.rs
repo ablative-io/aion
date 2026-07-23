@@ -33,6 +33,9 @@ const CHILD_FIXTURES: &[&str] = &[
 /// before the terminal `WorkflowFailed`.
 #[tokio::test(flavor = "multi_thread")]
 async fn child_spawning_fixtures_fail_at_the_child_boundary() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let names: Vec<String> = CHILD_FIXTURES
         .iter()
         .map(|name| (*name).to_owned())
@@ -93,6 +96,9 @@ async fn child_spawning_fixtures_fail_at_the_child_boundary() -> TestResult {
 /// — regression evidence for the round-3 reclassification, not just prose.
 #[tokio::test(flavor = "multi_thread")]
 async fn declarations_combined_fails_via_data_driven_route_failure() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let name = String::from("declarations/valid/declarations_combined");
     let fixtures = build_spliced(std::slice::from_ref(&name), "decl_combined_boundary").await?;
     let fixture = fixtures.first().ok_or("no declarations_combined fixture")?;

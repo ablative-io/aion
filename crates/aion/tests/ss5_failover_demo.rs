@@ -56,6 +56,9 @@
 //! cargo test -p aion-rs --test ss5_failover_demo -- --nocapture
 //! ```
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 // The `hello_world` archive is rebuilt from the committed Gleam source on every
 // run (see `common/example_build.rs`); this gate never skips on a missing CLI.
 #[path = "common/example_build.rs"]
@@ -574,6 +577,9 @@ fn prove_ss5_gate(inputs: &GateInputs<'_>) -> TestResult {
 
 #[test]
 fn ss5_live_survivor_adopts_dead_node_shard_and_resumes_its_workflow() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // ONE long-lived runtime drives EVERY async engine call (its worker threads
     // outlive each `block_on`); the blocking haematite elections run off-runtime
     // inside the store seam. See the module docs for the full rationale.

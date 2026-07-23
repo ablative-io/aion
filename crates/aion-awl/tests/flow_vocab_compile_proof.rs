@@ -4,6 +4,9 @@
 //! the real Gleam toolchain. The generated project lives under the
 //! workspace `target/` directory (never the system temp dir).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -28,6 +31,9 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 /// build`s clean (#248 provenance protocol applies under parallel load).
 #[test]
 fn flow_vocab_b1_fixture_compiles_under_gleam() -> Result<(), Box<dyn Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixture = crate_root().join("tests/fixtures/rev2/ergonomics/valid/flow_vocab_b1.awl");
     let source = fs::read_to_string(&fixture)?;
     let document = parse(&source)?;

@@ -9,6 +9,9 @@
 //! version ... which is not loaded") and the post-restart signal failed with
 //! `WorkflowNotFound`.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -274,6 +277,9 @@ fn unique_db_path() -> PathBuf {
 /// and the run completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_deploy_survives_server_restart_and_run_completes() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let db_path = unique_db_path();
     let archive = archive_bytes(&compile_gated_beam(7)?)?;
     let expected_hash = Package::load_from_bytes(&archive, ExtractionLimits::unbounded())?

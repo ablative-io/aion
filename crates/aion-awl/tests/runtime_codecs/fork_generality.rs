@@ -120,6 +120,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn plain_call_site_config_merges_per_key_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("call_config.awl");
     let reference = reference_module_at(&path, REF_CALL_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_call_config", &reference)])?;
@@ -172,6 +175,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn parallel_action_fork_site_config_dispatches_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("fork_config.awl");
     let reference = reference_module_at(&path, REF_FORK_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_config", &reference)])?;
@@ -225,6 +231,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn sequential_fork_site_config_and_index_prelude_dispatch_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("fork_config_seq.awl");
     let reference = reference_module_at(&path, REF_FORK_CONFIG_SEQ_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_config_seq", &reference)])?;
@@ -278,6 +287,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn named_fork_homogeneous_site_config_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("fork_named_config.awl");
     let reference = reference_module_at(&path, REF_FORK_NAMED_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_named_config", &reference)])?;
@@ -323,6 +335,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn named_fork_heterogeneous_site_config_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("fork_named_hetero_config.awl");
     let reference = reference_module_at(&path, REF_FORK_NAMED_HETERO_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_named_hetero_config", &reference)])?;
@@ -401,6 +416,9 @@ collect_all(_Id, _Specs) ->
 
 #[test]
 fn fork_inside_loop_completes_two_passes_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("fork_in_loop.awl");
     let reference = reference_module_at(&path, REF_FORK_IN_LOOP_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_in_loop", &reference)])?;

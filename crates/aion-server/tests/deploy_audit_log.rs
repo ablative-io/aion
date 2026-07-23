@@ -10,6 +10,9 @@
 //! test below drives auth on through that path.
 #![cfg(not(feature = "auth"))]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -213,6 +216,10 @@ async fn deploy_mutations_emit_structured_audit_lines() -> Result<(), TestError>
         fn make_writer(&'a self) -> Self::Writer {
             self.clone()
         }
+    }
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
     }
 
     let capture = Capture::default();

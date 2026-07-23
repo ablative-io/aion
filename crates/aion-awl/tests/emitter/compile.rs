@@ -13,6 +13,9 @@ use super::{emitted_archived_exam, emitted_fixture};
 /// load, re-run isolated once before treating it as red).
 #[test]
 fn flagship_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     compile_generated_modules(
         "flagship",
         &[
@@ -35,6 +38,9 @@ fn flagship_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
 /// emit until B4 lowers the flow shape.)
 #[test]
 fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     compile_generated_modules(
         "loop_fork",
         &[

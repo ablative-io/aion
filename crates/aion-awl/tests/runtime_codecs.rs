@@ -15,6 +15,9 @@
 //! FAIL). A final case executes the `AssertList` failure path and pins the
 //! badmatch SUBJECT (carried fix b).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "runtime_codecs/child_envelope.rs"]
 mod child_envelope;
 #[path = "runtime_codecs/concat.rs"]
@@ -205,6 +208,9 @@ pub fn awl_rt_execute() {
 
 #[test]
 fn nested_collection_predicates_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let reference = reference_module(
         "step-bodies/valid/collection_predicates.awl",
         REF_COLLECTION_PREDICATE_DRIVER,
@@ -234,6 +240,9 @@ fn nested_collection_predicates_execute_with_reference_parity() -> TestResult {
 
 #[test]
 fn fallible_predicates_execute_through_production_hosts_with_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let success_reference = reference_module(
         "step-bodies/valid/fallible_collection_predicates.awl",
         REF_EXECUTE_BOTH,
@@ -311,6 +320,9 @@ fn fallible_predicates_execute_through_production_hosts_with_parity() -> TestRes
 /// every round-trip/failure semantic must hold on BOTH sides.
 #[test]
 fn direct_codecs_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // Reference side: emit + append Gleam drivers + real gleam build.
     let ref_note = reference_module("schema-doors/valid/optional_shorthand.awl", REF_NOTE_DRIVER)?;
     let ref_triage = reference_module("header-types/valid/enum.awl", REF_TRIAGE_DRIVER)?;

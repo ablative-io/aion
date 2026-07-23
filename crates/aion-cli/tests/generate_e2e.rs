@@ -8,6 +8,9 @@
 //! is missing rather than skipping — a green run must mean the round-trip was
 //! actually proven.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -110,6 +113,9 @@ fn run_generate(project: &Path, check: bool) -> Result<(bool, String), TestError
 
 #[test]
 fn generate_round_trips_check_gates_and_invents_no_defaults() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (_temp, project) = stage_order_saga()?;
 
     // The authored types module must never be written by generation.
@@ -191,6 +197,9 @@ fn generate_round_trips_check_gates_and_invents_no_defaults() -> Result<(), Test
 /// tests; here it runs end-to-end through the built binary and the toolchain.
 #[test]
 fn generate_check_gates_workflow_toml_drift() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (_temp, project) = stage_order_saga()?;
 
     // A first generation establishes the schema-derived modules and a clean,

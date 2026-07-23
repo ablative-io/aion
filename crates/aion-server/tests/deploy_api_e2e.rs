@@ -3,6 +3,9 @@
 //! fixture versions (the #62 reload fixture, compiled at test time with
 //! `erlc` — same precedent as the engine reload suites).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -368,6 +371,9 @@ fn route_active_hashes(listing: &ProtoListVersionsResponse) -> Vec<&str> {
 /// D10 manifest-mismatch refusal — all against a really-executing engine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_deploy_lifecycle_over_a_running_engine() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (engine, state) = engine_state(enabled_deploy()).await?;
     let router = http_router(state)?;
 
@@ -432,6 +438,9 @@ async fn http_deploy_lifecycle_over_a_running_engine() -> Result<(), TestError> 
 /// route-to-unloaded `not_found`, and the D10 manifest-mismatch refusal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_unload_refusals_success_and_manifest_mismatch() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (engine, state) = engine_state(enabled_deploy()).await?;
     let router = http_router(state)?;
 
@@ -550,6 +559,9 @@ async fn http_drain_refuses_mutations_but_serves_listing() -> Result<(), TestErr
 #[cfg(not(feature = "auth"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deploy_metrics_count_operations_and_denials() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let mut config = auth_on_runtime_config(enabled_deploy());
     config.metrics = MetricsConfig { enabled: true };
     let state = ServerState::build_with_store(aion_store::InMemoryStore::default(), config).await?;
@@ -632,6 +644,10 @@ async fn deploy_metrics_count_operations_and_denials() -> Result<(), TestError> 
 async fn grpc_unload_route_active_carries_version_pinned_detail() -> Result<(), TestError> {
     use aion_proto::generated::deploy_service_client::DeployServiceClient;
     use tokio_stream::wrappers::TcpListenerStream;
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
 
     let (engine, state) = engine_state(enabled_deploy()).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

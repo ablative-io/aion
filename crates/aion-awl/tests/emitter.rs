@@ -7,6 +7,9 @@
 //! over the flagship and the loop/fork-heavy fixtures (#248 provenance
 //! protocol applies to those under parallel load).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

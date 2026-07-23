@@ -2,6 +2,9 @@
 //! live-reload seam (brief §4 tests 5, 6, 7): every restart path resolves a
 //! run's RECORDED package version, never a fresh "latest".
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/reload_fixture.rs"]
 mod reload_fixture;
 
@@ -37,6 +40,9 @@ fn two_versions(entry: &str) -> Result<(Package, Package), Box<dyn std::error::E
 /// prefix of the final history (#45 determinism-proof pattern).
 #[tokio::test]
 async fn old_version_run_replays_and_completes_on_v1_after_v2_loads() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("gated")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 
@@ -114,6 +120,9 @@ async fn old_version_run_replays_and_completes_on_v1_after_v2_loads() -> TestRes
 /// engine log); v2 runs recover and the engine builds.
 #[tokio::test]
 async fn missing_pinned_version_fails_only_that_workflow_and_engine_builds() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("gated")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 
@@ -167,6 +176,9 @@ fn envelope(seq: u64, workflow_id: &WorkflowId) -> EventEnvelope {
 /// path.
 #[tokio::test]
 async fn child_spawn_recovery_sweep_starts_the_recorded_version() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1_park = reload_package(&compile_reload_beam(1)?, "park")?;
     let v2_park = reload_package(&compile_reload_beam(2)?, "park")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -238,6 +250,9 @@ async fn child_spawn_recovery_sweep_starts_the_recorded_version() -> TestResult 
 /// and records that version durably in the successor's `WorkflowStarted`.
 #[tokio::test]
 async fn continue_as_new_sweep_starts_the_routed_version_and_records_it() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, v2) = two_versions("run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 

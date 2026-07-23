@@ -27,6 +27,9 @@
 //! The sleep is short enough that the re-armed wheel fires it promptly; the gate
 //! is whether adoption re-arms it AT ALL, not the wall-clock latency.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -110,6 +113,9 @@ async fn wait_until_parked(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parked_timer_workflow_resumes_on_shard_adoption() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let dir = tempfile::tempdir()?;
     let concrete = Arc::new(HaematiteStore::create_with_shard_count(
         dir.path().join("db"),

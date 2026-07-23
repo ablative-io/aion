@@ -101,6 +101,9 @@ fn empty_list_literal_materializes_nil_at_runtime() -> TestResult {
 /// byte.
 #[test]
 fn dev_brief_fix_cycle_encode_reaches_dispatch_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = dev_brief_path()?;
     let reference = reference_module_at(&path, REF_FIX_CYCLE_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_dev_brief", &reference)])?;

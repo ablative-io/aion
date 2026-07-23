@@ -7,6 +7,9 @@
 //! all in one generated project. The generated project lives under the
 //! workspace `target/` directory (never the system temp dir).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -108,6 +111,9 @@ fn is_multistep_distribute(relative: &str) -> bool {
 /// set `gleam build`s clean as one project.
 #[test]
 fn b4_flow_shape_fixtures_compile_under_gleam() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixtures_root = crate_root().join("tests/fixtures/rev2");
     let repo_root = repo_root()?;
     let project = repo_root.join("target/flow-vocab-b4-proof");

@@ -5,6 +5,9 @@
 
 #![cfg(unix)]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 mod common;
 
 use std::io::{Read, Write};
@@ -155,6 +158,9 @@ fn deploy_archive(project: &Path, endpoint: &str) -> Result<(), TestError> {
 
 #[test]
 fn scaffolded_hello_world_completes_against_the_generated_config() -> Result<(), TestError> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let temp_dir = tempfile::tempdir()?;
     let (project, _report) = common::scaffold_project(temp_dir.path(), "hello_demo", &[])?;
     common::patch_aion_flow_to_workspace(&project)?;

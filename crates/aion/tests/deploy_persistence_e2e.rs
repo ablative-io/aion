@@ -8,6 +8,9 @@
 //! recovery skipped them because the deployed package existed only in
 //! process memory.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/reload_fixture.rs"]
 mod reload_fixture;
 
@@ -161,6 +164,9 @@ impl PackageStore for PausingPackageStore {
 
 #[tokio::test]
 async fn failed_paused_persistence_never_publishes_a_startable_hash() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = reload_package(&compile_reload_beam(1)?, "run")?;
     let store_impl = PausingPackageStore::new();
     let store: Arc<dyn EventStore> = store_impl.clone();
@@ -245,6 +251,10 @@ fn grouped_package(
 #[tokio::test]
 async fn active_sibling_pins_whole_archive_group_across_restart() -> TestResult {
     const CHILD_TYPE: &str = "aion_internal_awl_child_reload_group_fan_0";
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = grouped_package(
         &reload_package(&compile_reload_beam(1)?, "run")?,
         CHILD_TYPE,
@@ -308,6 +318,10 @@ async fn active_sibling_pins_whole_archive_group_across_restart() -> TestResult 
 #[tokio::test]
 async fn group_redeploy_durably_supersedes_an_old_explicit_child_route() -> TestResult {
     const CHILD_TYPE: &str = "aion_internal_awl_child_reload_group_fan_0";
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = grouped_package(
         &reload_package(&compile_reload_beam(1)?, "run")?,
         CHILD_TYPE,
@@ -364,6 +378,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// recovers, accepts its remaining signal, and completes.
 #[tokio::test]
 async fn runtime_deployed_package_survives_restart_and_recovers_runs() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = reload_package(&compile_reload_beam(1)?, "gated")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 
@@ -422,6 +439,9 @@ async fn runtime_deployed_package_survives_restart_and_recovers_runs() -> TestRe
 /// the explicit-timeout version because it no longer matched its store key.
 #[tokio::test]
 async fn explicit_timeout_deploy_survives_restart_under_the_same_store_key() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let legacy = reload_package(&compile_reload_beam(1)?, "run")?;
     let mut manifest = legacy.manifest().clone();
     manifest.timeout = Some(Duration::new(7_200, 500_000_000));
@@ -461,6 +481,9 @@ async fn explicit_timeout_deploy_survives_restart_under_the_same_store_key() -> 
 /// the restarted engine routes new starts to v1, not the latest deploy.
 #[tokio::test]
 async fn route_pointer_survives_restart() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = reload_package(&compile_reload_beam(1)?, "run")?;
     let v2 = reload_package(&compile_reload_beam(2)?, "run")?;
     assert_ne!(v1.content_hash(), v2.content_hash());
@@ -506,6 +529,9 @@ async fn route_pointer_survives_restart() -> TestResult {
 /// the unloaded version is gone while the surviving version still loads.
 #[tokio::test]
 async fn unload_deletes_persisted_package() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = reload_package(&compile_reload_beam(1)?, "run")?;
     let v2 = reload_package(&compile_reload_beam(2)?, "run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -546,6 +572,9 @@ async fn unload_deletes_persisted_package() -> TestResult {
 /// an empty catalog (and no phantom persisted rows).
 #[tokio::test]
 async fn file_sourced_packages_are_not_persisted() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = reload_package(&compile_reload_beam(1)?, "run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 
@@ -570,6 +599,9 @@ async fn file_sourced_packages_are_not_persisted() -> TestResult {
 /// still reloads for pinned runs.
 #[tokio::test]
 async fn startup_file_source_route_wins_over_reloaded_deploys() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let v1 = reload_package(&compile_reload_beam(1)?, "run")?;
     let v2 = reload_package(&compile_reload_beam(2)?, "run")?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
