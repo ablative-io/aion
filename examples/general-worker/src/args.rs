@@ -17,6 +17,10 @@ pub struct Args {
     pub ready_file: Option<PathBuf>,
     /// Norn executable name or path.
     pub norn_bin: String,
+    /// Additional agent activity-type names served by the same `run_agent`
+    /// harness under distinct names, so callers can declare differently-typed
+    /// agent actions against one worker.
+    pub agent_activities: Vec<String>,
 }
 
 /// Loud command-line validation failure.
@@ -71,6 +75,7 @@ pub fn parse_args_from(
     let mut identity = "general-worker".to_owned();
     let mut ready_file = None;
     let mut norn_bin = default_norn_bin;
+    let mut agent_activities = Vec::new();
     let mut arguments = args.into_iter();
 
     while let Some(argument) = arguments.next() {
@@ -81,6 +86,9 @@ pub fn parse_args_from(
                 ready_file = Some(PathBuf::from(next_value(&mut arguments, "--ready-file")?));
             }
             "--norn-bin" => norn_bin = next_value(&mut arguments, "--norn-bin")?,
+            "--agent-activity" => {
+                agent_activities.push(next_value(&mut arguments, "--agent-activity")?);
+            }
             unknown => return Err(ArgsError::new(format!("unknown argument `{unknown}`"))),
         }
     }
@@ -99,6 +107,7 @@ pub fn parse_args_from(
         identity,
         ready_file,
         norn_bin,
+        agent_activities,
     })
 }
 

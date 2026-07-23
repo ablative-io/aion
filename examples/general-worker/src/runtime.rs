@@ -43,8 +43,17 @@ pub fn run() -> Result<()> {
     let agent_addresses = args.addresses.clone();
     let agent_norn_bin = args.norn_bin.clone();
     let agent_identity = format!("{}-agent", args.identity);
+    let agent_activities = args.agent_activities.clone();
     coordinate_connections(
-        move |stop| serve_agent(&agent_addresses, &agent_identity, &agent_norn_bin, stop),
+        move |stop| {
+            serve_agent(
+                &agent_addresses,
+                &agent_identity,
+                &agent_norn_bin,
+                &agent_activities,
+                stop,
+            )
+        },
         |stop| serve_shell(&args, stop),
     )
 }
@@ -133,11 +142,12 @@ fn serve_agent(
     addresses: &[String],
     identity: &str,
     norn_bin: &str,
+    agent_activities: &[String],
     stop: &AtomicBool,
 ) -> Result<()> {
     let config = build_worker_config(identity, AGENT_NODE)?;
     let registry = Arc::new(agent_registry());
-    let harness = agent_config(norn_bin);
+    let harness = agent_config(norn_bin, agent_activities);
     serve_with_redial(
         addresses.to_vec(),
         &config,
@@ -145,7 +155,7 @@ fn serve_agent(
         RedialTiming::new(REDIAL_INITIAL_BACKOFF, REDIAL_MAX_BACKOFF),
         stop,
         Some(&harness),
-        || tracing::info!("agent connection registered; serving run_agent"),
+        || tracing::info!("agent connection registered; serving run_agent and its aliases"),
     )
     .context("agent connection ended")
 }

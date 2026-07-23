@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "serde",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aion-integration-norn"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "aion-core",
  "aion-integrations",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "aion-integrations"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "aion-core",
  "aion-proto-generated",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto-generated"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "aion-core",
  "aion-integrations",
@@ -236,39 +236,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beamr"
-version = "0.13.0"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0244e6b7f0decb2c29949fa6d0fcf64874661014e6b293d9b329c6218db7bcc4"
-dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-jit",
- "cranelift-module",
- "cranelift-native",
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-queue",
- "dashmap",
- "flate2",
- "getrandom 0.4.3",
- "gleam-types",
- "io-uring",
- "libc",
- "md5",
- "num_cpus",
- "rand",
- "rustix",
- "tokio",
- "unicode-segmentation",
- "web-time",
- "zstd",
-]
-
-[[package]]
-name = "beamr"
-version = "0.15.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5686169aebff64e53c85a6b4ffb8a6cf4ac07a0d293d780a41cda0d21b1e12"
+checksum = "c4860a45d64945648c6cf64c5a44e09e0f52b40df67fca0635014253e48d4d60"
 dependencies = [
  "base64",
  "cranelift-codegen",
@@ -336,6 +306,15 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures",
+]
+
+[[package]]
+name = "block-buffer"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+dependencies = [
+ "hybrid-array",
 ]
 
 [[package]]
@@ -413,6 +392,12 @@ dependencies = [
  "wasm-bindgen",
  "windows-link",
 ]
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "constant_time_eq"
@@ -655,6 +640,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
+name = "crypto-common"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "dashmap"
 version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -673,6 +667,17 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer",
+ "const-oid",
+ "crypto-common",
+]
 
 [[package]]
 name = "displaydoc"
@@ -977,11 +982,11 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.4.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22d88ed035a72046294d2cdeb6ccc59ea14548e5e00f8ad1e954f8ca412a80f7"
+checksum = "6a92612160dc25dec762fa07d53518c8eb632b033c25fae74670524a33646d1c"
 dependencies = [
- "beamr 0.13.0",
+ "beamr",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -1095,6 +1100,15 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "hyper"
@@ -1390,13 +1404,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "liminal-rs"
-version = "0.2.5"
+name = "liminal-protocol"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708e4f2100764a0a0239b7baa40fc2bd82b047fe54f8a4c1f2a88b897c2ff451"
+checksum = "6cf93f2f956b6902f4e25e948392d5fb4724df59f469900712b1bc6cb4f0c931"
+
+[[package]]
+name = "liminal-rs"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "421ab77926966c9d99c09b165e55f10d58b604028e13cd9776d0f8fba5c8fda7"
 dependencies = [
  "async-trait",
- "beamr 0.15.2",
+ "beamr",
  "chrono",
  "haematite",
  "jsonschema",
@@ -1410,16 +1430,18 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.4"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62c1a8ccec19b90dddfba31cf2a6535775dd37484f76318ad96a2c2fa86283b4"
+checksum = "e451e9cbc11a88778d50248893ca621d38cff0b2a39be80e2227af28c6e0aedb"
 dependencies = [
  "futures-core",
+ "liminal-protocol",
  "liminal-rs",
  "serde",
  "serde_json",
  "spin",
  "thiserror",
+ "tungstenite",
 ]
 
 [[package]]
@@ -2094,6 +2116,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2494,6 +2527,28 @@ dependencies = [
  "syn",
  "termcolor",
 ]
+
+[[package]]
+name = "tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand",
+ "sha1",
+ "thiserror",
+]
+
+[[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unicase"

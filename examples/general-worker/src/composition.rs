@@ -53,11 +53,17 @@ pub fn agent_capabilities() -> InterventionCapabilities {
     ])
 }
 
-/// Build the agent harness advertisement for exactly `run_agent`.
+/// Build the agent harness advertisement for `run_agent` plus any
+/// operator-supplied aliases — every advertised name is served by the same
+/// harness with the same input contract, so a workflow can declare
+/// differently-typed agent actions against one worker.
 #[must_use]
-pub fn agent_config(norn_bin: &str) -> AgentHarnessConfig {
+pub fn agent_config(norn_bin: &str, agent_activities: &[String]) -> AgentHarnessConfig {
     let harness: Arc<dyn DynAgentHarness> = Arc::new(GeneralNornHarness::new(norn_bin));
-    AgentHarnessConfig::new(harness, [RUN_AGENT], agent_capabilities())
+    let advertised = std::iter::once(RUN_AGENT.to_owned())
+        .chain(agent_activities.iter().cloned())
+        .collect::<Vec<_>>();
+    AgentHarnessConfig::new(harness, advertised, agent_capabilities())
 }
 
 /// Build the shell registry containing exactly `run_command` and `parse_output`.

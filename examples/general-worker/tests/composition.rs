@@ -20,6 +20,7 @@ fn cli_defaults_are_explicit_and_norn_uses_the_injected_environment_default() ->
     assert_eq!(args.identity, "general-worker");
     assert_eq!(args.ready_file, None);
     assert_eq!(args.norn_bin, "env-norn");
+    assert_eq!(args.agent_activities, Vec::<String>::new());
     Ok(())
 }
 
@@ -37,6 +38,10 @@ fn cli_accepts_repeatable_addresses_and_all_overrides() -> TestResult {
             "/var/run/general.ready",
             "--norn-bin",
             "/opt/bin/norn",
+            "--agent-activity",
+            "select_wave",
+            "--agent-activity",
+            "land_wave",
         ]
         .into_iter()
         .map(str::to_owned),
@@ -49,6 +54,7 @@ fn cli_accepts_repeatable_addresses_and_all_overrides() -> TestResult {
         Some(std::path::PathBuf::from("/var/run/general.ready"))
     );
     assert_eq!(args.norn_bin, "/opt/bin/norn");
+    assert_eq!(args.agent_activities, vec!["select_wave", "land_wave"]);
     Ok(())
 }
 
@@ -98,7 +104,7 @@ fn activity_node_map_is_exact() -> TestResult {
 fn registries_and_agent_activity_advertisement_are_exact() -> TestResult {
     let agent_registry = agent_registry();
     let shell_registry = shell_registry(Shell::inherited())?;
-    let agent = agent_config("norn-test");
+    let agent = agent_config("norn-test", &[]);
 
     assert!(agent_registry.is_empty());
     assert_eq!(
@@ -108,6 +114,26 @@ fn registries_and_agent_activity_advertisement_are_exact() -> TestResult {
     assert_eq!(
         agent.agent_activity_types(),
         &BTreeSet::from([RUN_AGENT.to_owned()])
+    );
+    Ok(())
+}
+
+#[test]
+fn agent_activity_aliases_extend_the_advertisement_and_keep_run_agent() -> TestResult {
+    let aliases = ["select_wave".to_owned(), "land_wave".to_owned()];
+    let agent = agent_config("norn-test", &aliases);
+
+    let advertised = agent.agent_activity_types();
+    advertised
+        .get(RUN_AGENT)
+        .ok_or("run_agent must stay advertised alongside aliases")?;
+    assert_eq!(
+        advertised,
+        &BTreeSet::from([
+            RUN_AGENT.to_owned(),
+            "select_wave".to_owned(),
+            "land_wave".to_owned(),
+        ])
     );
     Ok(())
 }
