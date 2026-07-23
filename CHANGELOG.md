@@ -3,6 +3,49 @@
 All aion crates share one workspace version; entries below cover the
 whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
+## 0.10.0 — 2026-07-23
+
+Family convergence release: the whole stack moves to the current
+ablative family in one act — **beamr 0.15.4 → 0.16.0** (caret absorbs
+0.16.1), **haematite 0.5.0 → 0.7.0**, **liminal 0.3.0 → 0.4.0**
+(liminal-protocol 0.3.1) — restoring single-version dependency
+discipline across the tree. The resolved-graph duplicate census is
+committed in-repo (`gate-logs/convergence-duplicate-census.txt`): one
+beamr, one haematite, one liminal family. Verified GREEN end-to-end on
+a second machine (1498 tests / 0 failed across 108 suites).
+
+The 0.10.0 (breaking-slot) number follows from beamr being a public
+dependency: `beamr::native::NativeFn` and beamr term types sit in
+`aion-rs`/`aion-nif` public signatures, and beamr 0.16.0 is a breaking
+release upstream.
+
+- **beamr 0.16.0 uptake.** The retired `gleam_erlang_ffi` selector shadow
+  is no longer registered (beamr removed `register_selector_bifs`; the
+  selector family is served by loaded `gleam_erlang_ffi.beam` bytecode —
+  aion-hosted Gleam code using process selectors must ship that bytecode,
+  which modern `gleam_erlang` does). The last `spawn_link_dirty` call is
+  migrated to `spawn_link` and the call-site dirty branch removed: dirty
+  dispatch is a property of the registered native entry at 0.16.0, so the
+  spawn API is uniform (equivalence pinned upstream in beamr's
+  `dirty_scheduler` suite).
+- **haematite 0.7.0 uptake.** `DatabaseConfig` literals move from the
+  removed `sweep_interval` field to the new `executor_threads: Option<usize>`
+  (`None` = automatic sizing, semantically identical to prior behavior).
+  Aion uses none of the surfaces the 0.7.0 TreePolicy break changed
+  (no tree/branch mutation calls, no `fork_at`, no `run_indexed_parallel`);
+  existing v1 data directories open unchanged forever — no migration rides
+  this release.
+- **liminal 0.4.0 uptake.** Wire-compatible pin bump; no aion code
+  changes. Closes the pre-drop-drain transcript-tail exposure class on
+  clean worker stops (observability-channel publishes; durable outcomes
+  were never affected).
+- **Workspace-wide clippy 1.95 zero.** The full workspace passes
+  `cargo clippy --workspace --all-targets -- -D warnings` on the 1.95
+  toolchain with zero `#[allow]` additions; all changes are
+  behavior-preserving (match-guard collapses, zipped counter loops,
+  `is_ok_and`/`map_or`, whole-second `Duration` constructors, a named
+  tungstenite `Callback` impl in test support).
+
 ## 0.9.2 — 2026-07-20
 
 Out-of-box authoring, the central Aion home, security hardening of the
