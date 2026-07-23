@@ -28,6 +28,9 @@ export type ContentProps = WorkflowDetailProps & {
   isTerminal: boolean;
   terminalOutcome: LifecycleOutcome | null;
   isLive: boolean;
+  hasEarlier?: boolean;
+  isFetchingEarlier?: boolean;
+  onLoadEarlier?: () => void;
   onRetry?: () => void;
   /** Initial mode, overridable for tests (uncontrolled fallback). */
   initialMode?: ViewMode;
@@ -107,6 +110,9 @@ function WorkflowDetailViewContent({
   isTerminal,
   terminalOutcome,
   isLive,
+  hasEarlier = false,
+  isFetchingEarlier = false,
+  onLoadEarlier,
   onRetry,
   initialMode = 'swimlane',
   initialReopenOpen = false,
@@ -243,6 +249,19 @@ function WorkflowDetailViewContent({
           rather than a right-side panel that compresses the chart. */}
       <div className="space-y-3">
         <div className="min-w-0 space-y-3" ref={timelineRef}>
+          {hasEarlier ? (
+            <div className="flex justify-center">
+              <Button
+                className="h-8 px-3 text-xs"
+                disabled={isFetchingEarlier}
+                onClick={onLoadEarlier}
+                type="button"
+                variant="outline"
+              >
+                {isFetchingEarlier ? 'Loading earlier events…' : 'Load earlier events'}
+              </Button>
+            </div>
+          ) : null}
           {mode === 'swimlane' ? (
             <Swimlane
               entries={timeline}

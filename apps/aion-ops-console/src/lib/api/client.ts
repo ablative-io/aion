@@ -59,6 +59,8 @@ import type {
   WhoAmIResponse,
   WorkflowPageRequest,
 } from './client-types';
+import { requestHistoryWindow, requestWorkflowEvent } from './workflow-history-client';
+import type { HistoryWindow, HistoryWindowRequest } from './workflow-history-contract';
 
 export type { ServerErrorBody } from './api-error';
 export { ApiError } from './api-error';
@@ -84,6 +86,7 @@ export type {
   StartWorkflowParams,
   WorkflowPageRequest,
 } from './client-types';
+export type { HistoryWindow, HistoryWindowRequest } from './workflow-history-contract';
 
 const DEFAULT_LIMIT = 50;
 
@@ -127,6 +130,20 @@ export class ApiClient {
     );
 
     return normalizeHistory(response);
+  }
+
+  /** Fetch an elision-aware, ascending window of durable workflow history. */
+  async getHistoryWindow(
+    workflowId: WorkflowId,
+    window: HistoryWindowRequest,
+    options: RequestOptions
+  ): Promise<HistoryWindow> {
+    return requestHistoryWindow(this.transport, workflowId, window, options);
+  }
+
+  /** Fetch one full durable event. The server never elides this response. */
+  getEvent(workflowId: WorkflowId, seq: number, options: RequestOptions): Promise<Event> {
+    return requestWorkflowEvent(this.transport, workflowId, seq, options);
   }
 
   /**

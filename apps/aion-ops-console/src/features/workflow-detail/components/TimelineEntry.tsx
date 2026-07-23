@@ -1,8 +1,9 @@
-import { memo } from 'react';
+import { type CSSProperties, memo, type RefCallback } from 'react';
 import { EventIcon, type EventIconTone } from '@/components/EventIcon';
 import { Badge } from '@/components/ui';
 import { cn } from '@/lib/utils';
 
+import { eventContainingPayload } from '../lib/timeline';
 import type { TimelineEntry as TimelineEntryModel } from '../types';
 import { ActivityGroup } from './ActivityGroup';
 import { PayloadView } from './PayloadView';
@@ -11,17 +12,38 @@ type TimelineEntryProps = {
   entry: TimelineEntryModel;
   selected?: boolean | undefined;
   onSelect?: ((entry: TimelineEntryModel) => void) | undefined;
+  virtual?: {
+    index: number;
+    start: number;
+    measureElement: RefCallback<HTMLLIElement>;
+  };
 };
 
 const TimelineEntry = memo(function TimelineEntry({
   entry,
   selected = false,
   onSelect,
+  virtual,
 }: TimelineEntryProps) {
   const selectable = onSelect !== undefined;
+  const virtualStyle: CSSProperties | undefined =
+    virtual === undefined
+      ? undefined
+      : {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          transform: `translateY(${virtual.start}px)`,
+        };
 
   return (
-    <li className="relative flex gap-4 pb-6 last:pb-0">
+    <li
+      className="relative flex gap-4 pb-6 last:pb-0"
+      data-index={virtual?.index}
+      ref={virtual?.measureElement}
+      style={virtualStyle}
+    >
       <div className="absolute top-11 bottom-0 left-5 w-px bg-border last:hidden" />
       <div className="relative z-10">
         <EventIcon kind={entry.kind} tone={toneForEntry(entry)} />
@@ -65,7 +87,12 @@ function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
     return (
       <>
         <ActivityGroup entry={entry} />
-        {entry.payload === undefined ? null : <PayloadView payload={entry.payload} />}
+        {entry.payload === undefined ? null : (
+          <PayloadView
+            event={eventContainingPayload(entry.events, entry.payload)}
+            payload={entry.payload}
+          />
+        )}
       </>
     );
   }
@@ -79,7 +106,12 @@ function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
         >
           Open child workflow {entry.childWorkflowId}
         </a>
-        {entry.payload === undefined ? null : <PayloadView payload={entry.payload} />}
+        {entry.payload === undefined ? null : (
+          <PayloadView
+            event={eventContainingPayload(entry.events, entry.payload)}
+            payload={entry.payload}
+          />
+        )}
       </div>
     );
   }
@@ -93,12 +125,22 @@ function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
         >
           Open target workflow {entry.targetWorkflowId}
         </a>
-        {entry.payload === undefined ? null : <PayloadView payload={entry.payload} />}
+        {entry.payload === undefined ? null : (
+          <PayloadView
+            event={eventContainingPayload(entry.events, entry.payload)}
+            payload={entry.payload}
+          />
+        )}
       </div>
     );
   }
 
-  return entry.payload === undefined ? null : <PayloadView payload={entry.payload} />;
+  return entry.payload === undefined ? null : (
+    <PayloadView
+      event={eventContainingPayload(entry.events, entry.payload)}
+      payload={entry.payload}
+    />
+  );
 }
 
 /** A precise lane label: known generic variants surface their sub-kind family. */

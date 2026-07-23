@@ -30,13 +30,16 @@ function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
   return (
     <WorkflowDetailViewContent
       error={historyQuery.error}
+      hasEarlier={historyQuery.hasEarlier}
       history={live.events}
       isError={historyQuery.isError}
+      isFetchingEarlier={historyQuery.isFetchingEarlier}
       isLive={!live.isTerminal && namespace !== null}
       isLoading={historyQuery.isLoading || historyQuery.isPending}
       isTerminal={live.isTerminal}
       mode={selection.mode}
       namespace={namespace}
+      onLoadEarlier={() => void historyQuery.loadEarlier()}
       onModeChange={selection.setMode}
       onRetry={() => void historyQuery.refetch()}
       onScrubChange={selection.setScrub}

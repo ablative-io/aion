@@ -6,6 +6,8 @@ export type {
   CreateNamespaceResult,
   EventSearchQuery,
   EventSearchResult,
+  HistoryWindow,
+  HistoryWindowRequest,
   InterveneParams,
   JsonRecord,
   LoadPackageResult,
@@ -37,6 +39,7 @@ export type {
   RetainedStreamHead,
   TranscriptFetchParams,
   TranscriptReadOptions,
+  TranscriptWindow,
 } from './transcript-read';
 export {
   TRANSCRIPT_READ,

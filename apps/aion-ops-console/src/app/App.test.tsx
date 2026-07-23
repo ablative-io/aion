@@ -103,8 +103,10 @@ function seedList(queryClient: QueryClient) {
 }
 
 function seedHistory(queryClient: QueryClient) {
-  queryClient.setQueryData(
-    ['workflow-history', 'default', workflow.workflow_id],
-    [workflowStartedEvent]
-  );
+  queryClient.setQueryData(['workflow-history', 'default', workflow.workflow_id], {
+    events: [workflowStartedEvent],
+    headSeq: 1,
+    loadedFromSeq: 0,
+    nextFromSeq: null,
+  });
 }

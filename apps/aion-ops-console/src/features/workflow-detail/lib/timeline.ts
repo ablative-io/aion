@@ -20,7 +20,15 @@ import { eventEnvelope, eventRecordedAt, eventSequence } from './timelineEvents'
 import { classifyKnownEvent, genericSummary } from './timelineVariants';
 
 // Stable re-export so existing consumers keep their `../lib/timeline` import path.
-export { decodePayload, isPayloadBytes, payloadSummary } from './payload';
+export {
+  decodePayload,
+  eventContainingPayload,
+  findPayloadElision,
+  formatPayloadKilobytes,
+  isPayloadBytes,
+  isPayloadElision,
+  payloadSummary,
+} from './payload';
 export {
   eventEnvelope,
   eventRecordedAt,

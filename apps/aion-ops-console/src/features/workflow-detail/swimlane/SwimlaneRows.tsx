@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react';
+import { type CSSProperties, memo, type RefCallback, useCallback, useMemo } from 'react';
 import { EventIcon, type EventIconKind } from '@/components/EventIcon';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
@@ -92,6 +92,12 @@ export function Axis({ axis, labelWidth }: { axis: AxisLayout | null; labelWidth
   );
 }
 
+type VirtualRow = {
+  index: number;
+  start: number;
+  measureElement: RefCallback<HTMLLIElement>;
+};
+
 type LaneRowProps = {
   lane: SwimlaneLane;
   depth: number;
@@ -109,6 +115,7 @@ type LaneRowProps = {
   onToggleChild: (() => void) | null;
   onToggleTimerGroup: (() => void) | null;
   onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
+  virtual?: VirtualRow;
 };
 
 export const LaneRow = memo(function LaneRow({
@@ -127,6 +134,7 @@ export const LaneRow = memo(function LaneRow({
   onToggleChild,
   onToggleTimerGroup,
   onSelect,
+  virtual,
 }: LaneRowProps) {
   const items = useMemo(
     () =>
@@ -152,9 +160,26 @@ export const LaneRow = memo(function LaneRow({
     (bar: SwimlaneBar, originX: number) => onSelect(bar, originX, [bar.sequence]),
     [onSelect]
   );
+  const virtualStyle: CSSProperties | undefined =
+    virtual === undefined
+      ? undefined
+      : {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          transform: `translateY(${virtual.start}px)`,
+        };
 
   return (
-    <li className="flex items-stretch" data-depth={depth} data-workflow-id={workflowId}>
+    <li
+      className="flex items-stretch"
+      data-depth={depth}
+      data-index={virtual?.index}
+      data-workflow-id={workflowId}
+      ref={virtual?.measureElement}
+      style={virtualStyle}
+    >
       <div className="flex w-[168px] shrink-0 items-stretch">
         <button
           aria-expanded={!collapsed}
@@ -267,12 +292,31 @@ function TimerGroupToggle({
 export function NoticeRow({
   row,
   labelWidth,
+  virtual,
 }: {
   row: Extract<LaneTreeRow, { kind: 'notice' }>;
   labelWidth: number;
+  virtual?: VirtualRow;
 }) {
+  const virtualStyle: CSSProperties | undefined =
+    virtual === undefined
+      ? undefined
+      : {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          transform: `translateY(${virtual.start}px)`,
+        };
   return (
-    <li className="flex h-9 items-center" data-depth={row.depth} data-notice={row.notice}>
+    <li
+      className="flex h-9 items-center"
+      data-depth={row.depth}
+      data-index={virtual?.index}
+      data-notice={row.notice}
+      ref={virtual?.measureElement}
+      style={virtualStyle}
+    >
       <div
         className="shrink-0 truncate text-muted-foreground text-xs"
         style={{ width: labelWidth, paddingLeft: 12 + row.depth * DEPTH_INDENT }}

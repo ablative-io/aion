@@ -56,12 +56,12 @@ function capturingClient(body: unknown, calls: Request[], status = 200): Transcr
 test('fetchTranscript posts the stream identity with scoped headers and returns the retained events', async () => {
   const calls: Request[] = [];
   const events = [retainedEvent(0), retainedEvent(1)];
-  const client = capturingClient({ events }, calls);
+  const client = capturingClient({ events, next_from_seq: null, head_seq: 1 }, calls);
 
   const result = await client.fetchTranscript(target);
 
-  expect(result).toEqual(events);
-  expect(result.map((event) => event.store_seq)).toEqual([0, 1]);
+  expect(result).toEqual({ events, nextFromSeq: null, headSeq: 1 });
+  expect(result.events.map((event) => event.store_seq)).toEqual([0, 1]);
   expect(calls).toHaveLength(1);
   expect(calls[0]?.url).toBe('https://aion.example/workflows/transcript');
   expect(calls[0]?.method).toBe('POST');
@@ -80,7 +80,7 @@ test('fetchTranscript posts the stream identity with scoped headers and returns 
 
 test('fetchTranscript carries from_seq when resuming', async () => {
   const calls: Request[] = [];
-  const client = capturingClient({ events: [] }, calls);
+  const client = capturingClient({ events: [], next_from_seq: null, head_seq: 3 }, calls);
 
   await client.fetchTranscript({ ...target, fromSeq: 3 });
 
@@ -90,6 +90,25 @@ test('fetchTranscript carries from_seq when resuming', async () => {
     activity_id: 3,
     attempt: 1,
     from_seq: 3,
+  });
+});
+
+test('fetchTranscript carries limit and tail fields and decodes a truncated cursor', async () => {
+  const calls: Request[] = [];
+  const client = capturingClient({ events: [], next_from_seq: 20, head_seq: 99 }, calls);
+
+  await expect(client.fetchTranscript({ ...target, last: 10, limit: 5 })).resolves.toEqual({
+    events: [],
+    nextFromSeq: 20,
+    headSeq: 99,
+  });
+  await expect(calls[0]?.json()).resolves.toEqual({
+    namespace,
+    workflow_id: workflowId,
+    activity_id: 3,
+    attempt: 1,
+    limit: 5,
+    last: 10,
   });
 });
 
@@ -149,14 +168,18 @@ test('the default fetch is invoked without a client-bound `this` (browser "Illeg
       throw new TypeError('Illegal invocation');
     }
     return Promise.resolve(
-      new Response(JSON.stringify({ events: [] }), {
+      new Response(JSON.stringify({ events: [], next_from_seq: null, head_seq: 0 }), {
         headers: { 'content-type': 'application/json' },
       })
     );
   } as unknown as typeof fetch;
   try {
     const client = new TranscriptReadClient({ baseUrl: 'https://aion.example' });
-    expect(await client.fetchTranscript(target)).toEqual([]);
+    expect(await client.fetchTranscript(target)).toEqual({
+      events: [],
+      nextFromSeq: null,
+      headSeq: 0,
+    });
   } finally {
     globalThis.fetch = realFetch;
   }

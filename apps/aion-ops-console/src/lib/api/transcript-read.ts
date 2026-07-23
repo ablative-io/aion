@@ -39,8 +39,20 @@ export type TranscriptReadOptions = {
   credentials?: ApiCredentials;
 };
 
-/** Fetch params: the stream identity plus an optional `from_seq` resume cursor. */
-export type TranscriptFetchParams = TranscriptTarget & { fromSeq?: number | undefined };
+/** `last` and `from_seq` are mutually exclusive on the wire. */
+export type TranscriptFetchParams = TranscriptTarget &
+  (
+    | { fromSeq?: number; last?: never; limit?: number }
+    | { fromSeq?: never; last: number; limit?: number }
+  );
+
+export type TranscriptWindow = {
+  events: ActivityEvent[];
+  /** Store sequence to resume from when the requested limit truncated the read. */
+  nextFromSeq: number | null;
+  /** Retained stream head at read time. */
+  headSeq: number;
+};
 
 /** One retained stream head from the enumeration endpoint. */
 export type RetainedStreamHead = {
@@ -67,23 +79,38 @@ export class TranscriptReadClient {
 
   /**
    * Fetch the retained transcript of one stream, in `store_seq` order. Events
-   * are returned verbatim (the ts-rs `ActivityEvent`, `store_seq` included).
-   * An empty array is the honest pre-retention answer.
+   * are returned verbatim alongside the always-present window cursors. An empty
+   * events array is the honest pre-retention answer.
    */
-  async fetchTranscript(params: TranscriptFetchParams): Promise<ActivityEvent[]> {
+  async fetchTranscript(params: TranscriptFetchParams): Promise<TranscriptWindow> {
     const body = {
       namespace: params.namespace,
       workflow_id: params.workflowId,
       activity_id: params.activityId,
       attempt: params.attempt,
       ...(params.fromSeq === undefined ? {} : { from_seq: params.fromSeq }),
+      ...(params.limit === undefined ? {} : { limit: params.limit }),
+      ...(params.last === undefined ? {} : { last: params.last }),
     };
     const responseBody = await this.post(TRANSCRIPT_READ.fetch, body);
-    const events = isRecord(responseBody) ? responseBody.events : undefined;
-    if (!Array.isArray(events)) {
+    const responseRecord = isRecord(responseBody) ? responseBody : null;
+    const events = responseRecord?.events;
+    if (responseRecord === null || !Array.isArray(events)) {
       throw new ApiError(200, 'workflows/transcript response missing an events array');
     }
-    return events as ActivityEvent[];
+    const nextFromSeq = responseRecord.next_from_seq;
+    const headSeq = responseRecord.head_seq;
+    if (nextFromSeq !== null && !isSequence(nextFromSeq)) {
+      throw new ApiError(200, 'workflows/transcript response has an invalid next_from_seq');
+    }
+    if (!isSequence(headSeq)) {
+      throw new ApiError(200, 'workflows/transcript response has an invalid head_seq');
+    }
+    return {
+      events: events as ActivityEvent[],
+      nextFromSeq,
+      headSeq,
+    };
   }
 
   /** Enumerate a workflow's retained transcript streams (may be empty). */
@@ -128,6 +155,10 @@ function readStreamHead(row: unknown): RetainedStreamHead {
     throw new ApiError(200, 'workflows/transcripts stream row missing activity_id/attempt/head');
   }
   return { activityId, attempt, head };
+}
+
+function isSequence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
