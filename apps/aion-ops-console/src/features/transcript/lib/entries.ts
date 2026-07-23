@@ -1,6 +1,14 @@
 import type { ActivityEvent } from '@/types';
 
 import { parseReasoningItem } from './reasoning';
+import {
+  type DecodedToolCall,
+  type DecodedToolResult,
+  decodeToolDelta,
+  decodeToolEvent,
+  type StreamKind,
+  streamKind,
+} from './toolEvents';
 
 /**
  * Transcript entry model + pure fold logic (NOI-7).
@@ -47,7 +55,32 @@ export type TranscriptStreamEntry = {
   messageId: string;
   /** The text accumulated so far. */
   text: string;
+  /** Text is foreground content; thinking is a deliberately muted preview. */
+  streamKind?: StreamKind;
   /** The latest constituent delta (attribution + ephemeral flag for rendering). */
+  event: ActivityEvent;
+};
+
+/** A finalized tool call paired with its eventual result. */
+export type TranscriptToolEntry = {
+  type: 'tool';
+  key: string;
+  callId: string;
+  call: DecodedToolCall | null;
+  result: DecodedToolResult | null;
+  /** Call attribution when known, otherwise the result attribution. */
+  event: ActivityEvent;
+};
+
+/** A cheap, single-row projection of streamed tool arguments before finalization. */
+export type TranscriptToolStreamEntry = {
+  type: 'tool-stream';
+  key: string;
+  itemId: string;
+  callId: string | null;
+  name: string | null;
+  kind: string | null;
+  argumentsText: string;
   event: ActivityEvent;
 };
 
@@ -69,8 +102,13 @@ export type TranscriptNoteRunEntry = {
   event: ActivityEvent;
 };
 
-/** A rendered transcript entry: one event, one live stream, or one note run. */
-export type TranscriptEntry = TranscriptEventEntry | TranscriptStreamEntry | TranscriptNoteRunEntry;
+/** A rendered transcript entry after content-oriented coalescing and pairing. */
+export type TranscriptEntry =
+  | TranscriptEventEntry
+  | TranscriptStreamEntry
+  | TranscriptToolEntry
+  | TranscriptToolStreamEntry
+  | TranscriptNoteRunEntry;
 
 /**
  * Fold one incoming event into the ordered, deduplicated, coalesced entry list.
@@ -92,14 +130,26 @@ export function foldTranscriptEvent(
   event: ActivityEvent,
   deltaId: number
 ): TranscriptEntry[] {
-  if (event.kind.kind === 'Delta') {
-    return foldDelta(entries, event, event.kind.message_id, event.kind.text_fragment);
-  }
-
   const storeSeq = event.store_seq;
   if (typeof storeSeq === 'number' && hasStoreSeq(entries, storeSeq)) {
-    // A reconnect race re-delivered this persisted event: drop the duplicate.
     return entries;
+  }
+
+  const toolEvent = decodeToolEvent(event);
+  if (toolEvent?.type === 'call') {
+    return foldToolCall(entries, toolEvent, deltaId);
+  }
+  if (toolEvent?.type === 'result') {
+    return foldToolResult(entries, toolEvent, deltaId);
+  }
+
+  const toolDelta = decodeToolDelta(event);
+  if (toolDelta !== null) {
+    return foldToolDelta(entries, event, toolDelta, deltaId);
+  }
+
+  if (event.kind.kind === 'Delta') {
+    return foldDelta(entries, event, event.kind.message_id, event.kind.text_fragment);
   }
 
   if (event.kind.kind === 'Progress' && event.kind.detail.detail === 'Note') {
@@ -131,10 +181,133 @@ function foldDelta(
   const index = entries.findLastIndex((entry) => entry.type === 'stream' && entry.key === key);
   const current = index === -1 ? undefined : entries[index];
   if (current === undefined || current.type !== 'stream') {
-    return [...entries, { type: 'stream', key, messageId, text: fragment, event }];
+    return [
+      ...entries,
+      { type: 'stream', key, messageId, text: fragment, streamKind: streamKind(event), event },
+    ];
   }
   const next = [...entries];
-  next[index] = { ...current, text: current.text + fragment, event };
+  next[index] = {
+    ...current,
+    text: current.text + fragment,
+    streamKind: current.streamKind === 'thinking' ? 'thinking' : streamKind(event),
+    event,
+  };
+  return next;
+}
+
+function foldToolCall(
+  entries: TranscriptEntry[],
+  call: DecodedToolCall,
+  deltaId: number
+): TranscriptEntry[] {
+  const withoutDelta = entries.filter(
+    (entry) =>
+      entry.type !== 'tool-stream' ||
+      !(
+        entry.event.agent_id === call.event.agent_id &&
+        (entry.callId === call.callId || (entry.callId === null && entry.name === call.name))
+      )
+  );
+  const index = findToolEntry(withoutDelta, call.callId);
+  if (index !== -1) {
+    const current = withoutDelta[index];
+    if (current?.type === 'tool') {
+      const next = [...withoutDelta];
+      next[index] = { ...current, call, event: call.event };
+      next.sort(comparePersistedThenArrival);
+      return next;
+    }
+  }
+  return sortedWith(withoutDelta, {
+    type: 'tool',
+    key: toolKey(call.callId, call.event, deltaId),
+    callId: call.callId,
+    call,
+    result: null,
+    event: call.event,
+  });
+}
+
+function foldToolResult(
+  entries: TranscriptEntry[],
+  result: DecodedToolResult,
+  deltaId: number
+): TranscriptEntry[] {
+  const index = findToolEntry(entries, result.callId);
+  if (index !== -1) {
+    const current = entries[index];
+    if (current?.type === 'tool') {
+      const next = [...entries];
+      next[index] = { ...current, result };
+      next.sort(comparePersistedThenArrival);
+      return next;
+    }
+  }
+  return sortedWith(entries, {
+    type: 'tool',
+    key: toolKey(result.callId, result.event, deltaId),
+    callId: result.callId,
+    call: null,
+    result,
+    event: result.event,
+  });
+}
+
+function foldToolDelta(
+  entries: TranscriptEntry[],
+  event: ActivityEvent,
+  delta: NonNullable<ReturnType<typeof decodeToolDelta>>,
+  deltaId: number
+): TranscriptEntry[] {
+  const identity = delta.itemId || delta.callId || `${event.agent_id}:${deltaId}`;
+  const key = `tool-stream:${identity}`;
+  const index = entries.findLastIndex((entry) => entry.type === 'tool-stream' && entry.key === key);
+  const current = index === -1 ? undefined : entries[index];
+  if (current === undefined || current.type !== 'tool-stream') {
+    return [
+      ...entries,
+      {
+        type: 'tool-stream',
+        key,
+        itemId: delta.itemId,
+        callId: delta.callId,
+        name: delta.name,
+        kind: delta.kind,
+        argumentsText: delta.argumentsDelta,
+        event,
+      },
+    ];
+  }
+  const next = [...entries];
+  next[index] = {
+    ...current,
+    callId: delta.callId ?? current.callId,
+    name: delta.name ?? current.name,
+    kind: delta.kind ?? current.kind,
+    argumentsText: current.argumentsText + delta.argumentsDelta,
+    event,
+  };
+  return next;
+}
+
+function findToolEntry(entries: TranscriptEntry[], callId: string): number {
+  if (callId === '') {
+    return -1;
+  }
+  return entries.findIndex((entry) => entry.type === 'tool' && entry.callId === callId);
+}
+
+function toolKey(callId: string, event: ActivityEvent, deltaId: number): string {
+  if (callId !== '') {
+    return `tool:${callId}`;
+  }
+  return typeof event.store_seq === 'number' ? `seq:${event.store_seq}` : `live:${deltaId}`;
+}
+
+function sortedWith(entries: TranscriptEntry[], entry: TranscriptEntry): TranscriptEntry[] {
+  const next = [...entries, entry];
+  next.sort(comparePersistedThenArrival);
   return next;
 }
 
@@ -210,11 +383,15 @@ function withoutStreams(
 
 /** Whether `storeSeq` is already represented (as an entry or inside a note run). */
 function hasStoreSeq(entries: TranscriptEntry[], storeSeq: number): boolean {
-  return entries.some((entry) =>
-    entry.type === 'notes'
-      ? entry.seqs.includes(storeSeq)
-      : entry.type === 'event' && entry.event.store_seq === storeSeq
-  );
+  return entries.some((entry) => {
+    if (entry.type === 'notes') {
+      return entry.seqs.includes(storeSeq);
+    }
+    if (entry.type === 'tool') {
+      return entry.call?.event.store_seq === storeSeq || entry.result?.event.store_seq === storeSeq;
+    }
+    return entry.event.store_seq === storeSeq;
+  });
 }
 
 /** The sequence an entry sorts by: its own, or a note run's first absorbed one. */
@@ -224,6 +401,15 @@ function entrySeq(entry: TranscriptEntry): number | null {
   }
   if (entry.type === 'stream') {
     return null;
+  }
+  if (entry.type === 'tool-stream') {
+    return null;
+  }
+  if (entry.type === 'tool') {
+    const callSeq = entry.call?.event.store_seq;
+    const resultSeq = entry.result?.event.store_seq;
+    const seqs = [callSeq, resultSeq].filter((seq): seq is number => typeof seq === 'number');
+    return seqs.length === 0 ? null : Math.min(...seqs);
   }
   return entry.event.store_seq;
 }

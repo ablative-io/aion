@@ -33,6 +33,8 @@ export type {
   TranscriptEventEntry,
   TranscriptNoteRunEntry,
   TranscriptStreamEntry,
+  TranscriptToolEntry,
+  TranscriptToolStreamEntry,
 } from '../lib/entries';
 export { backfillEntries, foldTranscriptEvent } from '../lib/entries';
 
