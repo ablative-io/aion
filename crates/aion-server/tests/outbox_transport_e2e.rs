@@ -173,7 +173,7 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
             mode: NamespaceMode::SharedEngine,
         },
         worker: WorkerConfig {
-            heartbeat_window: Duration::from_millis(30_000),
+            heartbeat_window: Duration::from_secs(30),
         },
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
@@ -199,7 +199,7 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
         },
         observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
-        query_timeout: Some(Duration::from_millis(10_000)),
+        query_timeout: Some(Duration::from_secs(10)),
         default_namespace: NAMESPACE.to_owned(),
         auto_create: aion_server::config::AutoCreate::Open,
         max_in_flight_activities: aion_server::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
@@ -219,7 +219,7 @@ fn outbox_dispatcher_config() -> OutboxDispatcherConfig {
         max_attempts: 5,
         backoff_base: Duration::from_millis(50),
         backoff_multiplier: 2,
-        backoff_max: Duration::from_millis(1_000),
+        backoff_max: Duration::from_secs(1),
     }
 }
 

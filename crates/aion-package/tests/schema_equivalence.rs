@@ -156,8 +156,7 @@ fn gleam_available() -> bool {
     Command::new("gleam")
         .arg("--version")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Copies `examples/order-saga` into a temp dir with the `aion_flow` path

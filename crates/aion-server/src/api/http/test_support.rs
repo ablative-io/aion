@@ -140,7 +140,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
             mode: NamespaceMode::SharedEngine,
         },
         worker: WorkerConfig {
-            heartbeat_window: std::time::Duration::from_millis(30_000),
+            heartbeat_window: std::time::Duration::from_secs(30),
         },
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
@@ -154,7 +154,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         outbox: crate::config::OutboxConfig::default(),
         observability: crate::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
-        query_timeout: Some(std::time::Duration::from_millis(10_000)),
+        query_timeout: Some(std::time::Duration::from_secs(10)),
         default_namespace: "default".to_owned(),
         auto_create: crate::config::AutoCreate::Open,
         max_in_flight_activities: crate::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,

@@ -98,13 +98,13 @@ const ATTEMPT_ECHO: &str = "attempt-echo";
 const DOOMED: &str = "doomed-provision";
 /// The default production heartbeat window, used by tests that don't exercise
 /// expiry.
-const DEFAULT_WINDOW: Duration = Duration::from_millis(30_000);
+const DEFAULT_WINDOW: Duration = Duration::from_secs(30);
 /// A deliberately short window so the over-window test spans several sweep
 /// ticks (and several missed windows) in about two seconds.
 const SHORT_WINDOW: Duration = Duration::from_millis(500);
 /// How long the SLOW handler runs: four heartbeat windows, so an unbeaten
 /// dispatch would be expired several times over before it completes.
-const SLOW_RUNTIME: Duration = Duration::from_millis(2_000);
+const SLOW_RUNTIME: Duration = Duration::from_secs(2);
 
 fn test_error(message: impl std::fmt::Display) -> TestError {
     message.to_string().into()
@@ -288,7 +288,7 @@ fn runtime_config(heartbeat_window: Duration) -> RuntimeConfig {
         },
         observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
-        query_timeout: Some(Duration::from_millis(10_000)),
+        query_timeout: Some(Duration::from_secs(10)),
         default_namespace: NAMESPACE.to_owned(),
         auto_create: aion_server::config::AutoCreate::Open,
         max_in_flight_activities: aion_server::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,

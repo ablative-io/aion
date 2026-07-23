@@ -374,10 +374,8 @@ pub(crate) fn live_timers_in_active_segment(history: &[Event]) -> Vec<TimerId> {
     let mut live: Vec<TimerId> = Vec::new();
     for event in &history[segment_start..] {
         match event {
-            Event::TimerStarted { timer_id, .. } => {
-                if !live.contains(timer_id) {
-                    live.push(timer_id.clone());
-                }
+            Event::TimerStarted { timer_id, .. } if !live.contains(timer_id) => {
+                live.push(timer_id.clone());
             }
             Event::TimerFired { timer_id, .. } | Event::TimerCancelled { timer_id, .. } => {
                 live.retain(|id| id != timer_id);

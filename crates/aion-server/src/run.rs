@@ -944,7 +944,7 @@ mod tests {
                 mode: NamespaceMode::SharedEngine,
             },
             worker: WorkerConfig {
-                heartbeat_window: Duration::from_millis(30_000),
+                heartbeat_window: Duration::from_secs(30),
             },
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
@@ -958,7 +958,7 @@ mod tests {
             outbox: OutboxConfig::default(),
             observability: crate::config::ObservabilityConfig::default(),
             scheduler_threads: 1,
-            query_timeout: Some(Duration::from_millis(10_000)),
+            query_timeout: Some(Duration::from_secs(10)),
             default_namespace: "default".to_owned(),
             auto_create: crate::config::AutoCreate::Open,
             max_in_flight_activities: crate::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,

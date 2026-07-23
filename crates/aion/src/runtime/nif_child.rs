@@ -292,14 +292,13 @@ fn await_child_step(
     match state.pending_awaits.get(&pid).map(|entry| entry.clone()) {
         Some(PendingAwait::Child {
             child_workflow_id: pinned,
-        }) => {
-            if pinned != *child_workflow_id {
-                return Err(format!(
-                    "process is pinned to a pending await for child {pinned}, \
-                     not {child_workflow_id}"
-                ));
-            }
+        }) if pinned != *child_workflow_id => {
+            return Err(format!(
+                "process is pinned to a pending await for child {pinned}, \
+                 not {child_workflow_id}"
+            ));
         }
+        Some(PendingAwait::Child { .. }) | None => {}
         Some(PendingAwait::Sleep { .. }) => {
             return Err("process is pinned to a pending sleep await".to_owned());
         }
@@ -309,7 +308,6 @@ fn await_child_step(
         Some(PendingAwait::Collect { .. }) => {
             return Err("process is pinned to a pending collect await".to_owned());
         }
-        None => {}
     }
 
     let mut nif = new_context(bridge, pid)?;

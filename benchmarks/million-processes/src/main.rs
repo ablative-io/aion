@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mem_after = resident_memory_bytes();
     let mem_delta = mem_after.saturating_sub(mem_before);
-    let per_process = if count > 0 { mem_delta / count } else { 0 };
+    let per_process = mem_delta.checked_div(count).unwrap_or(0);
 
     println!("\nMemory:");
     println!("  Before:           {}", human_bytes(mem_before));
@@ -87,8 +87,7 @@ fn resident_memory_bytes() -> usize {
         std::fs::read_to_string("/proc/self/statm")
             .ok()
             .and_then(|s| s.split_whitespace().nth(1)?.parse::<usize>().ok())
-            .map(|pages| pages * 4096)
-            .unwrap_or(0)
+            .map_or(0, |pages| pages * 4096)
     }
 }
 

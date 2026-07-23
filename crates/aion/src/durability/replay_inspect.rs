@@ -263,7 +263,7 @@ pub fn inspect_run(history: Vec<Event>, run_id: &RunId) -> Result<RunInspection,
 
     let mut steps = Vec::with_capacity(segment.len());
 
-    for (event, correlation_key) in segment.iter().zip(keys.into_iter()) {
+    for (event, correlation_key) in segment.iter().zip(keys) {
         let projection = match command_for_event(event) {
             CommandSlot::Issues => {
                 let Some(command) = commands.get(command_index).cloned() else {
@@ -449,7 +449,7 @@ fn reconstruct_commands(segment: &[Event]) -> Vec<Command> {
     let keys = correlation_keys_for_history(segment);
     let mut commands = Vec::new();
 
-    for (event, key) in segment.iter().zip(keys.into_iter()) {
+    for (event, key) in segment.iter().zip(keys) {
         match event {
             Event::ActivityScheduled {
                 activity_type,

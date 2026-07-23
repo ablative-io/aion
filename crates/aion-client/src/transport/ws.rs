@@ -698,6 +698,31 @@ ICo9Vooy83Vq0mVVYmWRSVMZ4AtTrLY+7h3pIVrGLLl/
         Drop,
     }
 
+    /// Handshake callback capturing request headers into the shared map; a
+    /// named `Callback` impl because the trait fixes the (large)
+    /// `ErrorResponse` error type in its signature.
+    struct CaptureHeaders(Arc<std::sync::Mutex<HashMap<String, String>>>);
+
+    impl tokio_tungstenite::tungstenite::handshake::server::Callback for CaptureHeaders {
+        fn on_request(
+            self,
+            request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+            response: tokio_tungstenite::tungstenite::handshake::server::Response,
+        ) -> Result<
+            tokio_tungstenite::tungstenite::handshake::server::Response,
+            tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+        > {
+            if let Ok(mut headers) = self.0.lock() {
+                for (name, value) in request.headers() {
+                    if let Ok(value) = value.to_str() {
+                        headers.insert(name.as_str().to_owned(), value.to_owned());
+                    }
+                }
+            }
+            Ok(response)
+        }
+    }
+
     async fn accept_one(
         listener: &TcpListener,
         responses: Vec<Message>,
@@ -707,18 +732,7 @@ ICo9Vooy83Vq0mVVYmWRSVMZ4AtTrLY+7h3pIVrGLLl/
         let captured: Arc<std::sync::Mutex<HashMap<String, String>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
         let sink = Arc::clone(&captured);
-        let callback = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                             response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            if let Ok(mut headers) = sink.lock() {
-                for (name, value) in request.headers() {
-                    if let Ok(value) = value.to_str() {
-                        headers.insert(name.as_str().to_owned(), value.to_owned());
-                    }
-                }
-            }
-            Ok(response)
-        };
-        let mut socket = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, CaptureHeaders(sink)).await?;
         let first = socket
             .next()
             .await

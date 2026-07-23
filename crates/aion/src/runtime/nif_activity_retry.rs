@@ -373,7 +373,7 @@ mod tests {
                 backoff: Backoff::Exponential {
                     initial: Duration::from_millis(100),
                     multiplier: 2.0,
-                    max: Duration::from_millis(1000),
+                    max: Duration::from_secs(1),
                 },
             })
         );
