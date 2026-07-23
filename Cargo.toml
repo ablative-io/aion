@@ -88,9 +88,9 @@ haematite = "0.7.0"
 # 0.2.4 carries the park-flip (idle connections park on fd readiness — retires
 # the embedded front door's per-connection busy-spin measured 2026-07-13) and
 # G7's push-reply contract restoration (receive = pure wait quantum).
-liminal = { package = "liminal-rs", version = "0.3.0" }
-liminal-sdk = "0.3.0"
-liminal-server = "0.3.0"
+liminal = { package = "liminal-rs", version = "0.4.0" }
+liminal-sdk = "0.4.0"
+liminal-server = "0.4.0"
 tempfile = "3.27.0"
 tokio-stream = "0.1.18"
 ts-rs = { version = "12.0.1", features = ["chrono-impl", "uuid-impl", "no-serde-warnings"] }
