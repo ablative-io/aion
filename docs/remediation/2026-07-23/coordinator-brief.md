@@ -21,7 +21,7 @@ You are the coordinator for a remediation packet: a set of lane briefs, each des
 
 ## Per-lane loop
 
-1. Dispatch the lane's `dev_brief` input (`aion start dev_brief --input-file <lane>.json`). The workflow provisions the worktree, drives the developer, runs the gates, and fans out adversarial review lenses. Do not duplicate its work.
+1. Emit the lane as a `select_wave` entry; the workflow dispatches one `lane_run` child per entry. The child provisions the worktree, drives the developer, runs the gates, and fans out adversarial review lenses. Do not duplicate its work, and do not dispatch lanes any other way.
 2. When it completes, FIRST push the lane's branch to origin (`git push origin dev/<lane-id>`) — before judging, before recording the lane as done. Work that exists only on one box does not exist: mid-flight claims must be verifiable from origin, and a lane that dies must not take its evidence with it. This is per-lane, at the completion boundary, never deferred to the wave boundary. Then read the result: disposition, dev report, gate evidence, every lens verdict.
 3. Judge it yourself before merging — the lenses are advisory to you, not a substitute for you. Read the diff. Check the acceptance criteria are actually met, scope_out was respected, and the diff contains nothing beyond the brief. Use `git -c diff.external= diff --no-ext-diff` for anything you grep — the estate diff driver emits no `+`/`-` prefixes and grep on it passes vacuously.
 4. **small lane, satisfied:** merge (below). **deep_tear lane, satisfied:** escalate to Vesper with branch, evidence summary, and your own read; block until her verdict; merge on APPROVE, loop the lane on CHANGES with her findings as feedback.
