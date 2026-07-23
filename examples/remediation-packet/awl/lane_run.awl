@@ -1,0 +1,178 @@
+//! lane_run: one remediation lane — a development brief goes in; an
+//! adversarially reviewed branch and an honest disposition come out. This is
+//! the dev_brief flow repackaged for a coordinator parent: exhaustion is a
+//! DISPOSITION on the success route, never a workflow failure, so the
+//! coordinator always receives the lane's evidence and decides what happens
+//! next itself.
+//!
+//! Each round: the developer takes a turn in the lane's worktree, the gates
+//! run, one review_round child per lens judges the diff (a red gate skips
+//! the reviewer and rejects with a skip reason), the worktree is reset, and
+//! fold_round packs the round into the one loop-carried state. The loop
+//! accepts only when every lens genuinely accepts; the cap bounds every
+//! developer turn. Verification runs only for an accepted round with
+//! verify_gates configured, and can never change the disposition. Cleanup
+//! removes the worktree but keeps the branch and its commits — nothing is
+//! pushed; the coordinator judges and merges.
+//!
+//! Operator notes: brief.id must be a git-ref-safe slug (it names the
+//! branch); config.lenses must be non-empty or no round can ever accept.
+workflow lane_run
+  timeout 7d
+  input lane_id: String
+  input brief: Brief
+  input config: RunConfig
+  outcome done: type LaneResult, route success
+
+/// The development brief: what to build and how acceptance is judged.
+type Brief {
+  id: String,
+  title: String,
+  objective: String,
+  context: String,
+  pointers: [String],
+  scope_in: [String],
+  scope_out: [String],
+  acceptance: [String],
+  notes: String,
+}
+
+type GateCommand { name: String, argv: [String] }
+
+/// One review lens: a name and the charter the reviewer argues from.
+type Lens { name: String, charter: String }
+
+/// Run configuration. Every field is explicit — this document applies no
+/// defaults, so the dispatching coordinator states exactly what the lane
+/// will do.
+type RunConfig {
+  repo_root: String,
+  base_branch: String,
+  gates: [GateCommand],
+  verify_gates: [GateCommand],
+  max_fix_cycles: Int,
+  lenses: [Lens],
+}
+
+type WorkspaceInfo { workspace_path: String, branch: String, base_commit: String }
+
+type GateRun { name: String, argv: [String], exit_code: Int, passed: Bool, output_tail: String }
+
+type GateOutcome { pass: Bool, runs: [GateRun], diff: String, diagnostics: String }
+
+type AcceptanceClaim { criterion: String, how: String }
+type Deviation       { what: String, why: String }
+
+/// The developer's structured report for one round.
+type DevReport {
+  brief_id: String,
+  summary: String,
+  commits: [String],
+  acceptance_claims: [AcceptanceClaim],
+  deviations: [Deviation],
+}
+
+type Finding { severity: String, title: String, evidence: String }
+
+/// One lens verdict: severity is "blocking" or "advisory", overall is
+/// "accept" or "reject".
+type LensVerdict {
+  lens: String,
+  findings: [Finding],
+  overall: String,
+  /// Present when the verdict rejects.
+  reject_reason: String?,
+}
+
+type ResetOutcome   { was_clean: Bool, droppings: [String], detail: String }
+type CleanupOutcome { removed: Bool, detail: String }
+
+type VerifyOutcome {
+  pass: Bool,
+  pre_clean: Bool,
+  post_clean: Bool,
+  runs: [GateRun],
+  log_path: String,
+  detail: String,
+}
+
+/// The one value the round loop threads: the latest report, gate, and
+/// verdicts, plus the run's accumulated adverse evidence.
+type RoundState {
+  report: DevReport?,
+  gate: GateOutcome?,
+  verdicts: [LensVerdict],
+  evidence: String,
+}
+
+/// The lane's handoff to the coordinator: disposition is "accepted" or
+/// "exhausted"; the branch and its evidence survive either way.
+type LaneResult {
+  lane_id: String,
+  disposition: String,
+  branch: String,
+  rounds: Int,
+  first_pass: Bool,
+  report: DevReport?,
+  gate: GateOutcome?,
+  verdicts: [LensVerdict],
+  evidence: String,
+  workspace_removed: Bool,
+  verification: VerifyOutcome?,
+}
+
+worker dev_brief
+  action provision_workspace(repo_root: String, base_branch: String, branch: String, workspace_path: String) -> WorkspaceInfo
+    node shell
+  action developer(brief: Brief, gate: GateOutcome?, verdicts: [LensVerdict], workspace_path: String, gates: [GateCommand]) -> DevReport
+    node developer
+  action run_gates(workspace_path: String, base_commit: String, gates: [GateCommand]) -> GateOutcome
+    node shell
+  action reset_workspace(repo_root: String, workspace_path: String) -> ResetOutcome
+    node shell
+  action fold_round(report: DevReport, gate: GateOutcome, verdicts: [LensVerdict], prior_evidence: String, droppings: [String]) -> RoundState
+    node shell
+  action verify_gates(workspace_path: String, base_commit: String, gates: [GateCommand], log_path: String) -> VerifyOutcome
+    node shell
+  action cleanup_workspace(repo_root: String, workspace_path: String) -> CleanupOutcome
+    node shell
+
+child review_round(lens: Lens, brief: Brief, report: DevReport, gate: GateOutcome, workspace_path: String, base_commit: String) -> LensVerdict
+
+step provision
+  provision_workspace(repo_root: config.repo_root, base_branch: config.base_branch, branch: "dev/" + brief.id, workspace_path: config.repo_root + "/.yggdrasil-worktrees/dev-brief/" + workflow.id) -> workspace
+
+step fix_cycle
+  loop state = RoundState(verdicts: [], evidence: "") counting rounds
+    developer(brief: brief, gate: state.gate, verdicts: state.verdicts, workspace_path: workspace.workspace_path, gates: config.gates) -> report
+    run_gates(workspace_path: workspace.workspace_path, base_commit: workspace.base_commit, gates: config.gates) -> gate
+    fork lens in config.lenses
+      review_round(lens: lens, brief: brief, report: report, gate: gate, workspace_path: workspace.workspace_path, base_commit: workspace.base_commit)
+    join -> verdicts
+    reset_workspace(repo_root: config.repo_root, workspace_path: workspace.workspace_path) -> swept
+    fold_round(report: report, gate: gate, verdicts: verdicts, prior_evidence: state.evidence, droppings: swept.droppings) -> state
+    verdicts |> all(.overall == "accept" and not .findings |> any(.severity == "blocking")) -> round_clean
+    until not verdicts is empty and round_clean
+    max config.max_fix_cycles
+
+  state.verdicts |> all(.overall == "accept" and not .findings |> any(.severity == "blocking")) -> final_clean
+
+  outcome green: when not state.verdicts is empty and final_clean, route check_verify
+  outcome spent: otherwise, route wrap_exhausted
+
+step check_verify
+  outcome with_verify: when not config.verify_gates is empty, route verify
+  outcome plain: otherwise, route finish_plain
+
+step verify
+  verify_gates(workspace_path: workspace.workspace_path, base_commit: workspace.base_commit, gates: config.verify_gates, log_path: config.repo_root + "/.yggdrasil-worktrees/dev-brief/logs/" + workflow.id + "-verify.log") -> verification
+  cleanup_workspace(repo_root: config.repo_root, workspace_path: workspace.workspace_path) -> swept_verified
+  route done(lane_id: lane_id, disposition: "accepted", branch: workspace.branch, rounds: rounds, first_pass: rounds == 1, report: state.report, gate: state.gate, verdicts: state.verdicts, evidence: state.evidence, workspace_removed: swept_verified.removed, verification: verification)
+
+step finish_plain
+  cleanup_workspace(repo_root: config.repo_root, workspace_path: workspace.workspace_path) -> swept_plain
+  route done(lane_id: lane_id, disposition: "accepted", branch: workspace.branch, rounds: rounds, first_pass: rounds == 1, report: state.report, gate: state.gate, verdicts: state.verdicts, evidence: state.evidence, workspace_removed: swept_plain.removed)
+
+step wrap_exhausted
+  cleanup_workspace(repo_root: config.repo_root, workspace_path: workspace.workspace_path) -> swept_spent
+  route done(lane_id: lane_id, disposition: "exhausted", branch: workspace.branch, rounds: rounds, first_pass: rounds == 1, report: state.report, gate: state.gate, verdicts: state.verdicts, evidence: state.evidence, workspace_removed: swept_spent.removed)

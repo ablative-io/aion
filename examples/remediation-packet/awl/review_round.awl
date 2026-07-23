@@ -1,0 +1,74 @@
+//! One adversarial review lens over one developer round, in its own child
+//! workflow so the reviewer gets its own session and execution id.
+//! On a red gate the lens is skipped honestly: the verdict rejects with a
+//! skip reason and zero findings, so a red round can never read as accepted
+//! and the developer's next turn sees why review did not run.
+workflow review_round
+  timeout 24h
+  input lens: Lens
+  input brief: Brief
+  input report: DevReport
+  input gate: GateOutcome
+  input workspace_path: String
+  input base_commit: String
+  outcome judged: type LensVerdict, route success
+
+/// One review lens: a name and the charter the reviewer argues from.
+type Lens { name: String, charter: String }
+
+/// The development brief under review, verbatim from the parent run.
+type Brief {
+  id: String,
+  title: String,
+  objective: String,
+  context: String,
+  pointers: [String],
+  scope_in: [String],
+  scope_out: [String],
+  acceptance: [String],
+  notes: String,
+}
+
+type AcceptanceClaim { criterion: String, how: String }
+type Deviation       { what: String, why: String }
+
+/// The developer's structured report for the round under review.
+type DevReport {
+  brief_id: String,
+  summary: String,
+  commits: [String],
+  acceptance_claims: [AcceptanceClaim],
+  deviations: [Deviation],
+}
+
+type GateRun { name: String, argv: [String], exit_code: Int, passed: Bool, output_tail: String }
+
+/// The round's gate evidence: pass verdict, per-command runs, and the diff
+/// the lens reviews.
+type GateOutcome { pass: Bool, runs: [GateRun], diff: String, diagnostics: String }
+
+type Finding { severity: String, title: String, evidence: String }
+
+/// The lens verdict on the wire the dev-brief worker speaks: severity is
+/// "blocking" or "advisory", overall is "accept" or "reject".
+type LensVerdict {
+  lens: String,
+  findings: [Finding],
+  overall: String,
+  /// Present when the verdict rejects.
+  reject_reason: String?,
+}
+
+worker dev_brief
+  action review_lens(lens: Lens, brief: Brief, diff: String, report: DevReport, gate_runs: [GateRun], workspace_path: String, base_commit: String) -> LensVerdict
+    node reviewer
+
+step decide
+  outcome red: when not gate.pass,
+    route judged(lens: lens.name, findings: [], overall: "reject",
+      reject_reason: "gates failed - review skipped this round")
+  outcome green: otherwise, route examine
+
+step examine
+  review_lens(lens: lens, brief: brief, diff: gate.diff, report: report, gate_runs: gate.runs, workspace_path: workspace_path, base_commit: base_commit) -> judged
+  route judged

@@ -1,0 +1,198 @@
+//! remediation_packet: a packet of lane briefs goes in; every lane lands on
+//! main or is honestly reported unlandable. A driven coordinator agent plans
+//! waves, dispatches one lane_run child per lane, judges and merges the
+//! results, and escalates deep-tear lanes to the reviewing operator, who
+//! answers with the `ruling` signal.
+//!
+//! The packet itself is data on disk: `config.packet_dir` holds PACKET.md
+//! (the lane manifest), coordinator-brief.md (the coordinator's charter),
+//! and lanes/*.md (one dev-brief input per lane). The workflow carries no
+//! lane content — the coordinator reads the files and emits typed wave
+//! selections, so the committed packet stays the single source of truth.
+//!
+//! Operator notes: the run finishes only when a select turn returns zero
+//! entries; every cycle passes through `select`, which carries the
+//! `max config.max_waves visits` bound. Deep-tear escalations block on the
+//! `ruling` signal: `aion signal <run-id> ruling --payload '{"rulings":[...]}'`.
+workflow remediation_packet
+  timeout 30d
+  input config: PacketConfig
+  signal ruling: RulingBatch
+  outcome finished: type PacketResult, route success
+  outcome halted:   type PacketHalt,   route failure
+
+/// Where the packet lives and how every lane runs. `repo_root` is the
+/// coordinator's integration checkout; lane worktrees are provisioned
+/// beneath it by the lane_run children.
+type PacketConfig {
+  repo_root: String,
+  packet_dir: String,
+  base_branch: String,
+  gates: [GateCommand],
+  verify_gates: [GateCommand],
+  max_fix_cycles: Int,
+  lenses: [Lens],
+  max_waves: Int,
+  meridian_as: String,
+  meridian_to: String,
+}
+
+type GateCommand { name: String, argv: [String] }
+
+/// One review lens: a name and the charter the reviewer argues from.
+type Lens { name: String, charter: String }
+
+/// The development brief a lane_run child receives — same shape the
+/// dev-brief worker speaks. The coordinator slims each brief on dispatch:
+/// a summary objective plus a mandatory read-first pointer at the lane's
+/// full brief file, which travels into the worktree with the repo.
+type Brief {
+  id: String,
+  title: String,
+  objective: String,
+  context: String,
+  pointers: [String],
+  scope_in: [String],
+  scope_out: [String],
+  acceptance: [String],
+  notes: String,
+}
+
+/// Per-lane run configuration; `base_branch` is the parent lane's branch
+/// for stacked lanes, the packet base otherwise.
+type RunConfig {
+  repo_root: String,
+  base_branch: String,
+  gates: [GateCommand],
+  verify_gates: [GateCommand],
+  max_fix_cycles: Int,
+  lenses: [Lens],
+}
+
+/// One lane the coordinator has readied for dispatch.
+type LaneDispatch { lane_id: String, risk: String, brief: Brief, config: RunConfig }
+
+/// A select turn: the lanes to build next. Zero entries means the packet
+/// has nothing left to dispatch and the run wraps up.
+type WaveSelection { wave_label: String, note: String, entries: [LaneDispatch] }
+
+type GateRun         { name: String, argv: [String], exit_code: Int, passed: Bool, output_tail: String }
+type GateOutcome     { pass: Bool, runs: [GateRun], diff: String, diagnostics: String }
+type AcceptanceClaim { criterion: String, how: String }
+type Deviation       { what: String, why: String }
+
+type DevReport {
+  brief_id: String,
+  summary: String,
+  commits: [String],
+  acceptance_claims: [AcceptanceClaim],
+  deviations: [Deviation],
+}
+
+type Finding { severity: String, title: String, evidence: String }
+
+type LensVerdict { lens: String, findings: [Finding], overall: String, reject_reason: String? }
+
+type VerifyOutcome {
+  pass: Bool,
+  pre_clean: Bool,
+  post_clean: Bool,
+  runs: [GateRun],
+  log_path: String,
+  detail: String,
+}
+
+/// What one lane_run child hands back: a disposition, never a failure —
+/// exhaustion is data for the coordinator, not a workflow error.
+type LaneResult {
+  lane_id: String,
+  disposition: String,
+  branch: String,
+  rounds: Int,
+  first_pass: Bool,
+  report: DevReport?,
+  gate: GateOutcome?,
+  verdicts: [LensVerdict],
+  evidence: String,
+  workspace_removed: Bool,
+  verification: VerifyOutcome?,
+}
+
+/// One deep-tear lane held for the reviewing operator's verdict.
+type Escalation { lane_id: String, branch: String, reason: String }
+
+/// A land turn: what merged, what loops back for rework, what is held for
+/// a ruling, and whether the packet is complete. `halt` is the coordinator's
+/// own stop: something it must not push past without the operator.
+type LandReport {
+  wave_label: String,
+  merged: [String],
+  rework: [String],
+  escalations: [Escalation],
+  battery_pass: Bool,
+  pushed: Bool,
+  packet_complete: Bool,
+  halt: Bool,
+  summary: String,
+}
+
+/// The operator's verdict on one escalated lane: decision is "approve" or
+/// "changes"; notes carry findings back to the lane's next round.
+type Ruling      { lane_id: String, decision: String, notes: String }
+type RulingBatch { rulings: [Ruling] }
+
+/// An apply turn after a ruling batch: approved lanes merged, changes
+/// queued as rework for the next select.
+type AppliedReport { summary: String, merged: [String], rework: [String] }
+
+/// The closing turn: the packet's final ledger.
+type ClosingReport { summary: String, landed: [String], unlanded: [String], waves: Int }
+
+type PacketResult { landed: [String], unlanded: [String], waves: Int, summary: String }
+type PacketHalt   { reason: String, summary: String }
+
+worker general
+  action select_wave(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> WaveSelection
+    node agent
+  action land_wave(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> LandReport
+    node agent
+  action apply_rulings(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> AppliedReport
+    node agent
+  action close_packet(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> ClosingReport
+    node agent
+
+child lane_run(lane_id: String, brief: Brief, config: RunConfig) -> LaneResult
+
+step select
+  select_wave(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace - read it before anything else on your first turn, and obey it for the whole packet. The lane manifest is " + config.packet_dir + "/PACKET.md; lane briefs are in " + config.packet_dir + "/lanes/. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "Select the next wave. On your first turn: read the charter, the manifest, and every lane brief; plan the full wave sequence; post the plan to meridian; then emit wave 1. On later turns: account for what has landed, been ruled on, or needs rework, and emit the next wave - rework lanes carry the feedback you were given. Emit ZERO entries only when every dispatchable lane has landed or is terminally reported. For each entry: echo the lane's dev-brief input from its lane file, slimmed per the charter's dispatch convention (summary objective plus mandatory read-first pointer at the lane brief file); set config.base_branch to the parent lane's branch for stacked lanes, otherwise " + config.base_branch + "; repo_root is " + config.repo_root + ".", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"wave_label\",\"note\",\"entries\"],\"properties\":{\"wave_label\":{\"type\":\"string\"},\"note\":{\"type\":\"string\"},\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"lane_id\",\"risk\",\"brief\",\"config\"],\"properties\":{\"lane_id\":{\"type\":\"string\"},\"risk\":{\"type\":\"string\"},\"brief\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"title\",\"objective\",\"context\",\"pointers\",\"scope_in\",\"scope_out\",\"acceptance\",\"notes\"],\"properties\":{\"id\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"objective\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"pointers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"scope_in\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"scope_out\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"acceptance\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"notes\":{\"type\":\"string\"}}},\"config\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"repo_root\",\"base_branch\",\"gates\",\"verify_gates\",\"max_fix_cycles\",\"lenses\"],\"properties\":{\"repo_root\":{\"type\":\"string\"},\"base_branch\":{\"type\":\"string\"},\"gates\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"argv\"],\"properties\":{\"name\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"verify_gates\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"argv\"],\"properties\":{\"name\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"max_fix_cycles\":{\"type\":\"integer\"},\"lenses\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"name\",\"charter\"],\"properties\":{\"name\":{\"type\":\"string\"},\"charter\":{\"type\":\"string\"}}}}}}}}}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> wave
+
+  outcome empty: when wave.entries is empty, route close
+  outcome build: otherwise, route build_wave
+  max config.max_waves visits
+
+step build_wave
+  fork entry in wave.entries
+    lane_run(lane_id: entry.lane_id, brief: entry.brief, config: entry.config)
+  join -> lane_results
+
+  land_wave(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "The wave's lane runs are complete; their results are recorded in this run's history and each lane's branch and evidence are in the repository. Land the wave per your charter: judge each branch yourself at the diff, merge satisfied small-risk lanes one at a time in your planned order, queue unsatisfied lanes as rework with your findings, and hold every deep-tear lane as an escalation - never merge one without a recorded approve ruling. After the wave's last merge run the full battery at the wave-tail tree; push only green. Post the wave report to meridian, and if you escalate, say exactly what you need ruled. Set packet_complete only when nothing dispatchable remains after this wave; set halt only for a state your charter forbids you to push past.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"wave_label\",\"merged\",\"rework\",\"escalations\",\"battery_pass\",\"pushed\",\"packet_complete\",\"halt\",\"summary\"],\"properties\":{\"wave_label\":{\"type\":\"string\"},\"merged\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"rework\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"escalations\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"lane_id\",\"branch\",\"reason\"],\"properties\":{\"lane_id\":{\"type\":\"string\"},\"branch\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}}}},\"battery_pass\":{\"type\":\"boolean\"},\"pushed\":{\"type\":\"boolean\"},\"packet_complete\":{\"type\":\"boolean\"},\"halt\":{\"type\":\"boolean\"},\"summary\":{\"type\":\"string\"}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> land
+
+  outcome stop: when land.halt, route wrap_halt
+  outcome escalated: when not land.escalations is empty, route hold_ruling
+  outcome more: when not land.packet_complete, route select
+  outcome done: otherwise, route close
+
+step hold_ruling
+  wait ruling -> rulings
+
+  apply_rulings(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "A ruling batch has arrived for your held escalations; it is recorded in this run's history. Apply it per your charter: merge each approved lane (battery at the new tree, push only green), queue each changes ruling as rework carrying the ruling's notes verbatim, and post the outcome to meridian. Lanes escalated but absent from the batch stay held - re-escalate them on your next report.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"summary\",\"merged\",\"rework\"],\"properties\":{\"summary\":{\"type\":\"string\"},\"merged\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"rework\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> applied
+
+  route select
+
+step close
+  close_packet(instructions: "You are the remediation packet coordinator. Your charter is " + config.packet_dir + "/coordinator-brief.md in this workspace. Meridian: use the collective CLI as identity " + config.meridian_as + ", addressing " + config.meridian_to + ".", prompt: "The packet is complete. Reconcile the final ledger against the repository and the manifest: every lane landed on the base branch, or listed unlanded with its terminal reason. Verify the base branch is pushed. Post the closing report to meridian. Report the ledger exactly as it is - an unlanded lane is stated, never smoothed over.", output_schema: "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"summary\",\"landed\",\"unlanded\",\"waves\"],\"properties\":{\"summary\":{\"type\":\"string\"},\"landed\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"unlanded\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"waves\":{\"type\":\"integer\"}}}", session_key: workflow.id + "-coordinator", workspace_path: config.repo_root, disallowed_tools: "") -> closing
+
+  route finished(landed: closing.landed, unlanded: closing.unlanded, waves: closing.waves, summary: closing.summary)
+
+step wrap_halt
+  route halted(reason: land.summary, summary: land.wave_label + ": halted by the coordinator - see the run history and meridian for the full state")
