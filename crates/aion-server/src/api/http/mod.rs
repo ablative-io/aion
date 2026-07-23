@@ -23,6 +23,7 @@ mod deploy;
 mod dev_ui;
 mod error;
 mod events;
+mod history;
 mod intervene;
 mod payload;
 mod router;
@@ -35,6 +36,10 @@ mod workflows;
 #[cfg(test)]
 mod events_filter_integration_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod transcripts_tests;
 
 pub use router::{http_router, workflow_router};

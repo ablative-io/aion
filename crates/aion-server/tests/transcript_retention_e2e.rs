@@ -313,7 +313,10 @@ async fn a_run_with_no_retained_transcript_reads_empty() -> Result<(), TestError
         )
         .await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched, json!({ "events": [] }));
+    assert_eq!(
+        fetched,
+        json!({ "events": [], "next_from_seq": null, "head_seq": 0 })
+    );
     Ok(())
 }
 
