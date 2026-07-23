@@ -1,3 +1,4 @@
+import { eventContainingPayload } from '../lib/timeline';
 import type { TimelineEntry as TimelineEntryModel } from '../types';
 import { PayloadView } from './PayloadView';
 
@@ -14,6 +15,8 @@ type DetailPanelBodyProps = {
  */
 function DetailPanelBody({ entry }: DetailPanelBodyProps) {
   const lastEvent = entry.events.at(-1) ?? entry.events[0];
+  const payload = entry.payload ?? lastEvent?.data ?? null;
+  const payloadEvent = eventContainingPayload(entry.events, payload);
   const eventType = lastEvent?.type ?? entry.kind;
 
   return (
@@ -32,7 +35,7 @@ function DetailPanelBody({ entry }: DetailPanelBodyProps) {
         <h3 className="mb-2 font-medium text-secondary-foreground text-xs uppercase tracking-wide">
           Payload
         </h3>
-        <PayloadView label="Decoded payload" payload={entry.payload ?? lastEvent?.data ?? null} />
+        <PayloadView event={payloadEvent} label="Decoded payload" payload={payload} />
       </div>
     </div>
   );

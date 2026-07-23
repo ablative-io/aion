@@ -26,6 +26,7 @@ export type {
   Namespace,
   NamespacePlacementWire,
   Payload,
+  PayloadElision,
   ProgressDetail,
   RunId,
   StopKind,

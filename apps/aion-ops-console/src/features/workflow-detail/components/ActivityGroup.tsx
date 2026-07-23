@@ -41,7 +41,7 @@ function ActivityGroup({ entry }: ActivityGroupProps) {
               <div className="font-medium text-danger text-sm">
                 Failed attempt {failure.attempt} at sequence {failure.sequence}
               </div>
-              <PayloadView label="Failure payload" payload={failure.error} />
+              <PayloadView event={failure.event} label="Failure payload" payload={failure.error} />
             </div>
           ))}
           <LifecycleLine label="Completed" present={entry.completed !== null} />

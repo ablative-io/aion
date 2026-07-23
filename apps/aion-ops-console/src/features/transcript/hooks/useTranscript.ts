@@ -78,8 +78,11 @@ export function targetKey(target: TranscriptTarget | null): string {
 }
 
 /** Default retained-transcript fetch: the configured lane-#229 REST client. */
-function defaultFetchRetained(target: TranscriptTarget): Promise<ActivityEvent[]> {
-  return createConfiguredTranscriptReader({ namespace: target.namespace }).fetchTranscript(target);
+async function defaultFetchRetained(target: TranscriptTarget): Promise<ActivityEvent[]> {
+  const window = await createConfiguredTranscriptReader({
+    namespace: target.namespace,
+  }).fetchTranscript(target);
+  return window.events;
 }
 
 /** Default manager factory: the configured WS stream, cursor-seeded. */

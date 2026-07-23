@@ -7,11 +7,13 @@ import type { WorkflowId } from '@/types';
 import type { TimelineEntry } from '../types';
 import { ChildTimelineLoader } from './ChildTimelineLoader';
 import { layoutSwimlane, type SwimlaneBar, type SwimlaneLane } from './laneLayout';
+import { toggleSetMember, withoutPathAndDescendants } from './laneSet';
 import { type ChildTimelineState, childNodePath, flattenLaneTree } from './laneTree';
 import { Scrubber } from './Scrubber';
 import { Axis, ChartToolbar, LaneRow, NoticeRow } from './SwimlaneRows';
 import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo, snapGlobalRank } from './scrub';
 import { type AxisMode, buildAxisLayout, type LaneScrubClip } from './timeLayout';
+import { useVirtualizedLaneRows } from './useVirtualizedLaneRows';
 
 export const LANE_LABEL_WIDTH = 168;
 const NO_EXPANDED_CHILDREN: readonly string[] = [];
@@ -247,6 +249,11 @@ function Swimlane({
     }
     return handlers;
   }, [onSelect, timelinesByPath, toggleChild, toggleRow, tree.rows]);
+  const { rowScrollRef, rowVirtualizer } = useVirtualizedLaneRows(
+    tree.rows,
+    selectedWorkflowId,
+    selectedSequence
+  );
   const handleScrub = useCallback(
     (position: number | null) => onScrubChange?.(position),
     [onScrubChange]
@@ -276,44 +283,67 @@ function Swimlane({
         <ChartToolbar axisMode={axisMode} onChange={setMode} />
         <div style={{ minWidth: innerWidth }}>
           <Axis axis={axis} labelWidth={LANE_LABEL_WIDTH} />
-          <ul aria-label="Lanes" className="divide-y divide-border">
-            {tree.rows.map((row) => {
-              if (row.kind === 'notice') {
-                return <NoticeRow key={row.id} labelWidth={LANE_LABEL_WIDTH} row={row} />;
-              }
-              const lane =
-                cuts === null ? row.lane : scrubLanesByPath.get(row.path)?.get(row.lane.id);
-              const handlers = rowHandlers.get(row.id);
-              if (lane === undefined || axis === null || handlers === undefined) {
-                return null;
-              }
-              const childId = row.lane.childWorkflowId;
-              const childPath = childId === null ? null : childNodePath(row.path, childId);
-              const childExpanded =
-                childId !== null &&
-                childPath !== null &&
-                !collapsedPaths.has(childPath) &&
-                (expandedPaths.has(childPath) || initialExpandedIds.has(childId));
-              return (
-                <LaneRow
-                  axis={axis}
-                  childExpanded={childExpanded}
-                  collapsed={collapsedRows.has(row.id)}
-                  depth={row.depth}
-                  key={row.id}
-                  lane={lane}
-                  onSelect={handlers.onSelect}
-                  onToggle={handlers.onToggle}
-                  onToggleChild={handlers.onToggleChild}
-                  scrubClip={scrubClipsByPath.get(row.path) ?? null}
-                  selectedSequence={selectedSequence}
-                  selectedWorkflowId={selectedWorkflowId}
-                  trackWidth={trackWidth}
-                  workflowId={row.workflowId}
-                />
-              );
-            })}
-          </ul>
+          <div className="max-h-[432px] overflow-y-auto overscroll-contain" ref={rowScrollRef}>
+            <ul
+              aria-label="Lanes"
+              className="relative divide-y divide-border"
+              style={{ height: rowVirtualizer.getTotalSize() }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const row = tree.rows[virtualRow.index];
+                const virtual = {
+                  index: virtualRow.index,
+                  measureElement: rowVirtualizer.measureElement,
+                  start: virtualRow.start,
+                };
+                if (row === undefined) {
+                  return null;
+                }
+                if (row.kind === 'notice') {
+                  return (
+                    <NoticeRow
+                      key={row.id}
+                      labelWidth={LANE_LABEL_WIDTH}
+                      row={row}
+                      virtual={virtual}
+                    />
+                  );
+                }
+                const lane =
+                  cuts === null ? row.lane : scrubLanesByPath.get(row.path)?.get(row.lane.id);
+                const handlers = rowHandlers.get(row.id);
+                if (lane === undefined || axis === null || handlers === undefined) {
+                  return null;
+                }
+                const childId = row.lane.childWorkflowId;
+                const childPath = childId === null ? null : childNodePath(row.path, childId);
+                const childExpanded =
+                  childId !== null &&
+                  childPath !== null &&
+                  !collapsedPaths.has(childPath) &&
+                  (expandedPaths.has(childPath) || initialExpandedIds.has(childId));
+                return (
+                  <LaneRow
+                    axis={axis}
+                    childExpanded={childExpanded}
+                    collapsed={collapsedRows.has(row.id)}
+                    depth={row.depth}
+                    key={row.id}
+                    lane={lane}
+                    onSelect={handlers.onSelect}
+                    onToggle={handlers.onToggle}
+                    onToggleChild={handlers.onToggleChild}
+                    scrubClip={scrubClipsByPath.get(row.path) ?? null}
+                    selectedSequence={selectedSequence}
+                    selectedWorkflowId={selectedWorkflowId}
+                    trackWidth={trackWidth}
+                    virtual={virtual}
+                    workflowId={row.workflowId}
+                  />
+                );
+              })}
+            </ul>
+          </div>
         </div>
         <Scrubber axis={axis} mode={axisMode} onScrub={handleScrub} scrubPosition={scrubPosition} />
       </section>
@@ -341,25 +371,6 @@ function timelineForPath(
     return rootEntries;
   }
   return children.get(path)?.entries ?? [];
-}
-
-function toggleSetMember(current: ReadonlySet<string>, id: string): ReadonlySet<string> {
-  const next = new Set(current);
-  if (next.has(id)) {
-    next.delete(id);
-  } else {
-    next.add(id);
-  }
-  return next;
-}
-
-function withoutPathAndDescendants(
-  current: ReadonlySet<string>,
-  path: string
-): ReadonlySet<string> {
-  return new Set(
-    [...current].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}>`))
-  );
 }
 
 function useObservedWidth(ref: { current: HTMLElement | null }): number {

@@ -9,6 +9,8 @@ export const AW_REST_CONTRACT = {
     workflowsPlain: '/workflows',
     workflowsCount: '/workflows/count',
     history: '/workflows/describe',
+    historyWindow: '/workflows/history',
+    workflowEvent: '/workflows/event',
     namespaces: '/namespaces',
     // `POST /namespaces` is the explicit operator namespace-create; it shares the
     // `/namespaces` path with the list `GET`, distinguished by method below.
@@ -39,6 +41,8 @@ export const AW_REST_CONTRACT = {
   methods: {
     workflows: 'POST',
     history: 'POST',
+    historyWindow: 'POST',
+    workflowEvent: 'POST',
     namespaces: 'GET',
     namespaceCreate: 'POST',
     namespaceRecords: 'GET',

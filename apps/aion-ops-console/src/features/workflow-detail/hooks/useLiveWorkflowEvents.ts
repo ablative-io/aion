@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { type EventSubscriptionManager, useBatchedEventSubscription } from '@/features/live-feed';
 import { isSelectedNamespace, useNamespace } from '@/features/namespace';
@@ -40,14 +40,20 @@ export function useLiveWorkflowEvents({
 }: LiveWorkflowEventsOptions): LiveWorkflowEvents {
   const { selectedNamespace } = useNamespace();
   const queryClient = useQueryClient();
-  const resetKey = `${selectedNamespace ?? ''}:${workflowId}:${history.length}`;
-  const [liveEvents, setLiveEvents] = useState<Event[]>([]);
-  const lastResetKey = useRef(resetKey);
+  const identityKey = `${selectedNamespace ?? ''}:${workflowId}`;
+  const [liveState, setLiveState] = useState<{ identityKey: string; events: Event[] }>(() => ({
+    identityKey,
+    events: [],
+  }));
+  const liveEvents = liveState.identityKey === identityKey ? liveState.events : [];
+  const currentIdentity = useRef(identityKey);
+  currentIdentity.current = identityKey;
 
-  if (lastResetKey.current !== resetKey) {
-    lastResetKey.current = resetKey;
-    setLiveEvents([]);
-  }
+  useEffect(() => {
+    setLiveState((current) =>
+      current.identityKey === identityKey ? current : { identityKey, events: [] }
+    );
+  }, [identityKey]);
 
   const mergedEvents = useMemo(
     () => mergeEventsBySequence(history, liveEvents),
@@ -74,7 +80,16 @@ export function useLiveWorkflowEvents({
     manager,
     flushAfter: isTerminalWorkflowEvent,
     onEvents: (events) => {
-      setLiveEvents((current) => mergeEventsBySequence(current, events));
+      if (currentIdentity.current !== identityKey) {
+        return;
+      }
+      setLiveState((current) => ({
+        identityKey,
+        events: mergeEventsBySequence(
+          current.identityKey === identityKey ? current.events : [],
+          events
+        ),
+      }));
     },
     onResync: async (context) => {
       if (isSelectedNamespace(selectedNamespace)) {
