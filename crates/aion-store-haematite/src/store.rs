@@ -252,7 +252,7 @@ impl HaematiteStore {
         let database = Database::create(DatabaseConfig {
             data_dir: data_dir.into(),
             shard_count,
-            sweep_interval: None,
+            executor_threads: None,
             distributed: None,
         })
         .map_err(|error| database_error(&error))?;
@@ -424,7 +424,7 @@ impl HaematiteStore {
             Database::create(DatabaseConfig {
                 data_dir: data_dir.to_path_buf(),
                 shard_count,
-                sweep_interval: None,
+                executor_threads: None,
                 distributed: None,
             })
             .map_err(|error| database_error(&error))?

@@ -87,7 +87,7 @@ fn config_for(path: &Path) -> DatabaseConfig {
     DatabaseConfig {
         data_dir: path.to_path_buf(),
         shard_count: 1,
-        sweep_interval: None,
+        executor_threads: None,
         distributed: None,
     }
 }

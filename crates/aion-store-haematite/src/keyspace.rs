@@ -456,7 +456,7 @@ mod tests {
         let database = haematite::Database::create(haematite::DatabaseConfig {
             data_dir: dir,
             shard_count,
-            sweep_interval: None,
+            executor_threads: None,
             distributed: None,
         })?;
         for shard in 0..shard_count {

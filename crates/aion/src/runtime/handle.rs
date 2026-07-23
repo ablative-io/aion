@@ -320,20 +320,13 @@ impl RuntimeHandle {
         self.release_dead_spawn_heaps();
         self.ensure_live_pid(parent_pid)?;
         self.wait_for_process_ready(parent_pid)?;
-        let arity = input.arity();
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
         let pid = self.spawn_with_exit_ownership(|| {
-            if self.is_dirty_with_arity(deployed_module, function, arity) {
-                self.scheduler
-                    .spawn_link_dirty(parent_pid, module, function_atom, terms)
-                    .map_err(runtime_error_from_display)
-            } else {
-                self.scheduler
-                    .spawn_link(parent_pid, module, function_atom, terms)
-                    .map_err(runtime_error_from_display)
-            }
+            self.scheduler
+                .spawn_link(parent_pid, module, function_atom, terms)
+                .map_err(runtime_error_from_display)
         })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
