@@ -51,7 +51,7 @@ You have the meridian CLI. The exact invocation, one send per recipient:
 meridian message send --server "http://100.67.104.58:29876" --as Meridian --to "<recipient>" --message "<message>"
 ```
 
-Recipients by exact name: `Tom`, `Vesper Lind`, `Waffles the Terrible`. A report naming several people is sent once per person. If a send fails on an unknown recipient name, report the failure in your next structured turn's summary — never silently drop a report.
+Recipients by exact name: `Tom`, `Vesper Lynd`, `Waffles the Terrible`. A report naming several people is sent once per person. If a send fails on an unknown recipient name, report the failure in your next structured turn's summary — never silently drop a report.
 
 - **Plan post** (before wave 1): waves, lanes per wave, ordering rationale, anything you chose to defer. Mention Tom and Vesper.
 - **Lane completion** (each lane): one short message — disposition, branch, gate summary, your merge/escalate decision. Mention nobody unless action is needed.
