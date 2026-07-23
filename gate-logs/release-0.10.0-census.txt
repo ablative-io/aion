@@ -1,0 +1,35 @@
+=== aion 0.10.0 release census (2026-07-23, release/aion-0.10.0) ===
+
+CLOSURE: the same 21-crate workspace-unified family as every prior aion
+release (12 published versions per crate on the registry, latest 0.9.2,
+zero yanked — verified at the sparse index). Workspace version.workspace
+inheritance means one bump covers all 21; zero crates carry
+publish = false.
+
+VERSION: 0.10.0 (breaking slot). Rule: beamr is a PUBLIC dependency —
+beamr::native::NativeFn and beamr term types appear in aion-rs/aion-nif
+public signatures — and beamr 0.15.4 -> 0.16.0 is a breaking upstream
+release. Same public-dependency reasoning as liminal's 0.4.0-over-0.3.4
+ruling (2026-07-23).
+
+PIN TRUTH at this commit (root Cargo.toml [workspace.dependencies]):
+  beamr    = 0.16.0  (caret; absorbs the 0.16.1 NoCaller fix)
+  haematite = 0.7.0
+  liminal (liminal-rs) / liminal-sdk / liminal-server = 0.4.0
+Intra-family: every path dep carries version = "0.10.0"; a workspace-wide
+grep for "0.9.2" in manifests returns zero rows.
+
+MANIFEST-SUBSTANCE (tarball half):
+  aion-core-0.10.0.crate packaged locally (--no-verify); its rewritten
+  Cargo.toml carries name aion-core / version 0.10.0 with concrete dep
+  versions — the workspace-inheritance rewrite works at these bytes.
+  The remaining 20 packaged manifests CANNOT materialize pre-publish:
+  cargo package resolves intra-family deps against the registry, where
+  0.10.0 does not exist until the crates go up in dependency order. The
+  per-crate substance check therefore rides the publish itself, in
+  order, on the publishing machine (the liminal-0.4.0 sweep shape).
+
+CODE BYTES: identical to aion main 015c520f (the tree Tom's second
+machine greened at 1498/0 across 108 suites). This branch adds only:
+manifest version bumps, CHANGELOG entry, lockfile sync (21 intra-family
+packages moved, nothing else), and this census.
