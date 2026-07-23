@@ -38,11 +38,13 @@ The one confirmed determinism-boundary violation in the engine: workflow-visible
       "Workspace laws: no unwrap/expect/panic (tests included), no #[allow], typed errors, files ≤500 lines"
     ],
     "acceptance": [
+      "CHARACTERIZE BEFORE BUILDING: the first commit on the lane is a characterization suite pinning the CURRENT (buggy) behavior at the base bytes — probe the exact divergence, record the observed values as test assertions, and state predictions in the dev report BEFORE any fix code exists; the fix then flips those pinned assertions to the correct semantics in a reviewable diff",
       "The replay-divergence regression test exists, is demonstrated to FAIL against the pre-fix code (evidence in the dev report: the failing run output), and passes after the fix",
       "Successive now() calls observe position-correct, non-decreasing values equal to replay_inspect's per-step now at every step (test evidence)",
       "The nif_timer.rs site serves the same positional value as the nif_determinism.rs site (test evidence)",
       "replay_inspect's 'exactly the value the production now() NIF serves' claim is true at every step, not only the final one",
       "Caller analysis for last_recorded_at / now-NIF reliance on tail semantics is in the dev report with a conclusion per caller",
+      "BLAST-RADIUS STATEMENT: the dev report explicitly states the fix's effect on existing recorded histories and in-flight runs (replay-equals-live is the engine's core promise and downstream acceptance suites lean on it); if the analysis concludes any migration or history-versioning question exists, that is a STOP — the lane halts as an escalation to the operator seats, never a unilateral call",
       "Full existing determinism, replay, recovery, and timer suites green"
     ],
     "notes": "DEEP TEAR LANE: after gates pass, the coordinator does NOT merge — it escalates to Vesper Lynd with the branch, the dev report, the failing-then-passing regression evidence, and every lens verdict, and blocks on her recorded verdict. The demonstrated-red-then-green requirement on the regression test is non-negotiable — a regression test that never failed proves nothing."
