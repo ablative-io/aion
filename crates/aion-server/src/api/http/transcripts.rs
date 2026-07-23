@@ -19,7 +19,8 @@
 //! run recorded before retention existed, never an error.
 
 use aion_core::{ActivityEvent, ActivityId, WorkflowId};
-use aion_store::ActivityStreamKey;
+use aion_proto::WireError;
+use aion_store::{ActivityRecord, ActivityStreamKey};
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 
@@ -28,9 +29,11 @@ use super::error::HttpWireError;
 use crate::ServerState;
 use crate::stream::gate_transcript_workflow;
 
+const MAX_WINDOW_LIMIT: u32 = 2_000;
+
 /// The transcript-fetch request body: the target stream's full identity plus
-/// the namespace the workflow runs under (the auth scope), and an optional
-/// resume cursor.
+/// the namespace the workflow runs under (the auth scope), an optional resume
+/// cursor, and optional bounded-window selectors.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct TranscriptFetchRequest {
     /// The namespace the target workflow runs under (the auth scope).
@@ -45,6 +48,13 @@ pub(crate) struct TranscriptFetchRequest {
     /// retained transcript from `store_seq == 0`.
     #[serde(default)]
     pub from_seq: Option<u64>,
+    /// Maximum records to return. Omitted preserves the unbounded legacy read.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Return only the last `n` retained records. Mutually exclusive with
+    /// `from_seq`.
+    #[serde(default)]
+    pub last: Option<u32>,
 }
 
 /// The transcript-fetch response body: the retained events, in `store_seq`
@@ -54,6 +64,10 @@ pub(crate) struct TranscriptFetchRequest {
 pub(crate) struct TranscriptFetchResponse {
     /// The retained transcript events in `store_seq` order.
     pub events: Vec<ActivityEvent>,
+    /// First omitted `store_seq` when `limit` truncated the response.
+    pub next_from_seq: Option<u64>,
+    /// Stream head at read time: the next durable `store_seq`.
+    pub head_seq: u64,
 }
 
 /// The stream-enumeration request body: the workflow whose retained transcript
@@ -90,8 +104,9 @@ pub(crate) struct TranscriptStreamsResponse {
 /// Namespace-gates the caller (byte-identical to the transcript WS
 /// subscription), then reads the retained `O` tail of the addressed stream
 /// from `from_seq` (default `0`). An unknown or pre-retention stream returns
-/// `200 { "events": [] }` — the honest answer, never an error; only an
-/// authorization failure or a store fault is an HTTP error.
+/// `200` with empty `events`, a null `next_from_seq`, and `head_seq == 0` — the
+/// honest answer, never an error; only an authorization failure or a store fault
+/// is an HTTP error.
 pub(crate) async fn fetch_transcript(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
@@ -100,15 +115,63 @@ pub(crate) async fn fetch_transcript(
     gate_transcript_workflow(&state, &caller, &request.namespace, &request.workflow_id)
         .await
         .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    if request.from_seq.is_some() && request.last.is_some() {
+        return Err(HttpWireError(WireError::invalid_input(
+            "transcript from_seq and last are mutually exclusive",
+        )));
+    }
     let key = ActivityStreamKey::new(request.workflow_id, request.activity_id, request.attempt);
-    let records = state
+    let from_seq = request.from_seq.map_or(0, |seq| seq);
+    let read_from = request.last.map_or(from_seq, |_last| 0);
+    let ranged = state
         .transcript_publisher()
-        .replay_from(&key, request.from_seq.unwrap_or(0))
+        .replay_from(&key, read_from)
         .await
         .map_err(|error| HttpWireError(crate::ServerError::from(error).to_wire_error()))?;
+    let mut records = if ranged.is_empty() && read_from != 0 {
+        state
+            .transcript_publisher()
+            .replay_from(&key, 0)
+            .await
+            .map_err(|error| HttpWireError(crate::ServerError::from(error).to_wire_error()))?
+    } else {
+        ranged
+    };
+    let head_seq = transcript_head(&records)?;
+    if request.last.is_none() && read_from != 0 {
+        records.retain(|record| record.store_seq >= read_from);
+    }
+    if let Some(last) = request.last {
+        let last = usize::try_from(last).map_err(|error| {
+            HttpWireError(WireError::invalid_input(format!(
+                "transcript last is too large: {error}"
+            )))
+        })?;
+        let first = records.len().saturating_sub(last);
+        drop(records.drain(..first));
+    }
+    let limit = request
+        .limit
+        .map(|limit| limit.clamp(1, MAX_WINDOW_LIMIT) as usize);
+    let next_from_seq = limit.and_then(|limit| records.get(limit).map(|record| record.store_seq));
+    if let Some(limit) = limit {
+        records.truncate(limit);
+    }
     Ok(Json(TranscriptFetchResponse {
         events: records.into_iter().map(|record| record.event).collect(),
+        next_from_seq,
+        head_seq,
     }))
+}
+
+fn transcript_head(records: &[ActivityRecord]) -> Result<u64, HttpWireError> {
+    records.last().map_or(Ok(0), |record| {
+        record.store_seq.checked_add(1).ok_or_else(|| {
+            HttpWireError(WireError::backend(
+                "transcript store_seq exhausted the u64 sequence space",
+            ))
+        })
+    })
 }
 
 /// `POST /workflows/transcripts`.
@@ -150,22 +213,28 @@ mod tests {
 
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     /// The fetch request carries the full stream identity + auth scope and
     /// round-trips through serde; `from_seq` is optional and defaults absent.
     #[test]
-    fn fetch_request_round_trips_and_from_seq_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    fn fetch_request_round_trips_and_from_seq_defaults() -> TestResult {
         let request = TranscriptFetchRequest {
             namespace: "tenant-a".to_owned(),
             workflow_id: WorkflowId::new(Uuid::nil()),
             activity_id: ActivityId::from_sequence_position(3),
             attempt: 1,
             from_seq: Some(7),
+            limit: Some(25),
+            last: None,
         };
         let json = serde_json::to_string(&request)?;
         let decoded: TranscriptFetchRequest = serde_json::from_str(&json)?;
         assert_eq!(decoded.namespace, "tenant-a");
         assert_eq!(decoded.attempt, 1);
         assert_eq!(decoded.from_seq, Some(7));
+        assert_eq!(decoded.limit, Some(25));
+        assert_eq!(decoded.last, None);
         // `activity_id` crosses the wire as a plain number.
         let value: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(value["activity_id"], serde_json::json!(3));
@@ -178,13 +247,15 @@ mod tests {
             "attempt": 0,
         }))?;
         assert_eq!(minimal.from_seq, None);
+        assert_eq!(minimal.limit, None);
+        assert_eq!(minimal.last, None);
         Ok(())
     }
 
     /// The fetch response carries the retained events (with their stamped
     /// `store_seq`) and round-trips, including the empty honest answer.
     #[test]
-    fn fetch_response_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    fn fetch_response_round_trips() -> TestResult {
         let response = TranscriptFetchResponse {
             events: vec![ActivityEvent {
                 workflow_id: WorkflowId::new(Uuid::nil()),
@@ -201,13 +272,18 @@ mod tests {
                     text: "steer".to_owned(),
                 },
             }],
+            next_from_seq: Some(5),
+            head_seq: 8,
         };
         let json = serde_json::to_string(&response)?;
         let decoded: TranscriptFetchResponse = serde_json::from_str(&json)?;
         assert_eq!(decoded.events.len(), 1);
         assert_eq!(decoded.events[0].store_seq, Some(4));
+        assert_eq!(decoded.next_from_seq, Some(5));
+        assert_eq!(decoded.head_seq, 8);
 
-        let empty: TranscriptFetchResponse = serde_json::from_str(r#"{"events":[]}"#)?;
+        let empty: TranscriptFetchResponse =
+            serde_json::from_str(r#"{"events":[],"next_from_seq":null,"head_seq":0}"#)?;
         assert!(empty.events.is_empty());
         Ok(())
     }
@@ -215,7 +291,7 @@ mod tests {
     /// The enumeration request/response round-trip, including the empty list
     /// for a workflow with no retained transcript.
     #[test]
-    fn streams_request_and_response_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn streams_request_and_response_round_trip() -> TestResult {
         let request = TranscriptStreamsRequest {
             namespace: "tenant-a".to_owned(),
             workflow_id: WorkflowId::new(Uuid::nil()),
