@@ -67,15 +67,12 @@ fn bump_nif(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
 }
 
 fn counter_for(key: &str) -> i64 {
-    COUNTERS
-        .lock()
-        .map(|counters| {
-            counters
-                .get(format!("\"{key}\"").as_bytes())
-                .copied()
-                .unwrap_or(0)
-        })
-        .unwrap_or(-1)
+    COUNTERS.lock().map_or(-1, |counters| {
+        counters
+            .get(format!("\"{key}\"").as_bytes())
+            .copied()
+            .unwrap_or(0)
+    })
 }
 
 fn unique_key(prefix: &str) -> String {

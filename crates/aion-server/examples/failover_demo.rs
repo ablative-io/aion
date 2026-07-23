@@ -216,8 +216,7 @@ fn act_witness(runtime: &tokio::runtime::Runtime, cluster: &Cluster) -> DemoResu
 fn store_sees_peer(cluster: &Cluster, from: usize, peer: usize) -> bool {
     cluster
         .live(from)
-        .map(|node| node.store.peer_connected(NODE_NAMES[peer]))
-        .unwrap_or(false)
+        .is_ok_and(|node| node.store.peer_connected(NODE_NAMES[peer]))
 }
 
 fn banner() {
@@ -269,7 +268,7 @@ impl Node {
         let database = Database::create(DatabaseConfig {
             data_dir: dir.join("db"),
             shard_count: SHARD_COUNT,
-            sweep_interval: None,
+            executor_threads: None,
             distributed: None,
         })?
         .with_distribution(endpoint);

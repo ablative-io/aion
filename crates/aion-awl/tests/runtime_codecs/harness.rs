@@ -20,7 +20,6 @@ use beamr::native::{
     gleam_ffi::register_gleam_ffi_bifs,
     otp_stubs::{init_otp_atoms, register_otp_stubs},
     process_bifs::register_gate2_bifs,
-    selector_ffi::register_selector_bifs,
     stdlib_stubs::register_stdlib_stubs,
 };
 use beamr::process::ExitReason;
@@ -401,7 +400,6 @@ pub(crate) fn build_vm(ebins: &[PathBuf], direct: &[Vec<u8>]) -> Result<Vm, Box<
     register_gate2_bifs(&bifs, &atoms).map_err(|error| error.to_string())?;
     register_gate3_bifs(&bifs, &atoms).map_err(|error| error.to_string())?;
     register_stdlib_stubs(&bifs, &atoms).map_err(|error| error.to_string())?;
-    register_selector_bifs(&bifs, &atoms).map_err(|error| error.to_string())?;
     register_gleam_ffi_bifs(&bifs, &atoms).map_err(|error| error.to_string())?;
     init_otp_atoms(&atoms);
     register_otp_stubs(&bifs, &atoms).map_err(|error| error.to_string())?;

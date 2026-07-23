@@ -1,0 +1,1149 @@
+aes v0.8.4
+└── libsql_replication v0.9.30
+    └── libsql v0.9.30
+        └── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql)
+            [dev-dependencies]
+            ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion)
+            │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+            │   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client)
+            │   │   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+            │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server)
+            │   │   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+            │   └── million-processes v0.1.0 (/Users/tom/Developer/ablative/aion/benchmarks/million-processes)
+            └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+        [dev-dependencies]
+        └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+
+aes v0.9.1
+└── zip v8.6.0
+    └── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package)
+        ├── aion-awl-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-package)
+        │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+        │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+        │   [dev-dependencies]
+        │   └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+        ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+        ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+        ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+        └── aion-toolchain v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-toolchain)
+            ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+            └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+        [dev-dependencies]
+        ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+        └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    [dev-dependencies]
+    └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+
+axum v0.6.20
+└── tonic v0.11.0
+    ├── libsql v0.9.30 (*)
+    ├── libsql_replication v0.9.30 (*)
+    └── tonic-web v0.11.0
+        └── libsql v0.9.30 (*)
+
+axum v0.8.9
+├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+└── tonic v0.14.6
+    ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+    ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+    ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto)
+    │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+    │   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+    │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    │   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker)
+    │       └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+    │       [dev-dependencies]
+    │       ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+    │       └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    ├── aion-proto-generated v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto-generated)
+    │   └── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+    ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+    └── tonic-prost v0.14.5
+        ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+        └── aion-proto-generated v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto-generated) (*)
+
+axum-core v0.3.4
+└── axum v0.6.20 (*)
+
+axum-core v0.5.6
+└── axum v0.8.9 (*)
+
+base64 v0.21.7
+├── libsql v0.9.30 (*)
+├── libsql-hrana v0.9.30
+│   └── libsql v0.9.30 (*)
+├── tonic v0.11.0 (*)
+└── tonic-web v0.11.0 (*)
+
+base64 v0.22.1
+├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+├── axum v0.8.9 (*)
+├── beamr v0.16.0
+│   ├── aion-awl v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl)
+│   │   ├── aion-awl-lsp v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-lsp)
+│   │   │   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-awl-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-package) (*)
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   [dev-dependencies]
+│   │   └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   ├── aion-nif v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-nif)
+│   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   ├── haematite v0.7.0
+│   │   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite)
+│   │   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   │   [dev-dependencies]
+│   │   │   └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   ├── liminal-rs v0.4.0
+│   │   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   │   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   │   │   ├── liminal-sdk v0.4.0
+│   │   │   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   │   │   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   │   │   └── liminal-server v0.4.0
+│   │   │       └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   └── liminal-server v0.4.0 (*)
+│   │   [dev-dependencies]
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── liminal-rs v0.4.0 (*)
+│   └── liminal-server v0.4.0 (*)
+│   [dev-dependencies]
+│   ├── aion-awl-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-package) (*)
+│   └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+├── hyper-util v0.1.20
+│   ├── axum v0.8.9 (*)
+│   ├── hyper-rustls v0.27.9
+│   │   └── reqwest v0.13.4
+│   │       [dev-dependencies]
+│   │       └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── hyper-timeout v0.5.2
+│   │   └── tonic v0.14.6 (*)
+│   ├── reqwest v0.13.4 (*)
+│   └── tonic v0.14.6 (*)
+├── reqwest v0.13.4 (*)
+└── tonic v0.14.6 (*)
+
+bitflags v1.3.2
+├── axum v0.6.20 (*)
+├── fluent-uri v0.1.4
+│   └── lsp-types v0.97.0
+│       └── aion-awl-lsp v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-lsp) (*)
+├── lsp-types v0.97.0 (*)
+└── region v3.0.2
+    └── cranelift-jit v0.131.2
+        └── beamr v0.16.0 (*)
+
+bitflags v2.13.0
+├── bindgen v0.66.1
+│   [build-dependencies]
+│   └── libsql-ffi v0.9.30
+│       ├── libsql-rusqlite v0.9.30
+│       │   ├── libsql-sys v0.9.30
+│       │   │   ├── libsql v0.9.30 (*)
+│       │   │   └── libsql_replication v0.9.30 (*)
+│       │   └── libsql_replication v0.9.30 (*)
+│       └── libsql-sys v0.9.30 (*)
+├── exacl v0.13.0
+│   [dev-dependencies]
+│   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+├── libsql v0.9.30 (*)
+├── libsql-rusqlite v0.9.30 (*)
+├── libsql-sqlite3-parser v0.13.0
+│   └── libsql v0.9.30 (*)
+├── notify v8.2.0
+│   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+├── notify-types v2.1.0
+│   └── notify v8.2.0 (*)
+├── pulldown-cmark v0.13.4
+│   ├── prost-build v0.14.3
+│   │   └── tonic-prost-build v0.14.5
+│   │       [build-dependencies]
+│   │       └── aion-proto-generated v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto-generated) (*)
+│   └── pulldown-cmark-to-cmark v22.0.0
+│       └── prost-build v0.14.3 (*)
+├── rustix v0.38.44
+│   └── which v4.4.2
+│       └── bindgen v0.66.1 (*)
+├── rustix v1.1.4
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── beamr v0.16.0 (*)
+│   ├── cap-primitives v4.0.2
+│   │   ├── cap-fs-ext v4.0.2
+│   │   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   └── cap-std v4.0.2
+│   │       ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │       └── cap-fs-ext v4.0.2 (*)
+│   ├── cap-std v4.0.2 (*)
+│   ├── fs-set-times v0.20.3
+│   │   └── cap-primitives v4.0.2 (*)
+│   ├── fs4 v1.1.0
+│   │   [dev-dependencies]
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   └── tempfile v3.27.0
+│       ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│       ├── aion-toolchain v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-toolchain) (*)
+│       ├── haematite v0.7.0 (*)
+│       ├── liminal-rs v0.4.0 (*)
+│       ├── prost-build v0.14.3 (*)
+│       └── tonic-prost-build v0.14.5 (*)
+│       [dev-dependencies]
+│       ├── aion-awl-lsp v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-lsp) (*)
+│       ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│       ├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+│       ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│       ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│       └── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+├── security-framework v2.11.1
+│   └── rustls-native-certs v0.7.3
+│       └── hyper-rustls v0.25.0
+│           └── libsql v0.9.30 (*)
+├── security-framework v3.7.0
+│   └── rustls-platform-verifier v0.7.0
+│       └── reqwest v0.13.4 (*)
+├── tower-http v0.4.4
+│   ├── libsql v0.9.30 (*)
+│   └── tonic-web v0.11.0 (*)
+└── tower-http v0.6.11
+    ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    └── reqwest v0.13.4 (*)
+
+block-buffer v0.10.4
+└── digest v0.10.7
+    ├── sha1 v0.10.6
+    │   ├── axum v0.8.9 (*)
+    │   └── tungstenite v0.29.0
+    │       └── tokio-tungstenite v0.29.0
+    │           ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+    │           └── axum v0.8.9 (*)
+    │           [dev-dependencies]
+    │           └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+    └── sha2 v0.10.9
+        └── rust-embed-utils v8.11.0
+            ├── rust-embed v8.11.0
+            │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+            └── rust-embed-impl v8.11.0 (proc-macro)
+                └── rust-embed v8.11.0 (*)
+
+block-buffer v0.12.0
+└── digest v0.11.3
+    ├── hmac v0.13.0
+    │   ├── pbkdf2 v0.13.0
+    │   │   └── zip v8.6.0 (*)
+    │   └── zip v8.6.0 (*)
+    ├── pbkdf2 v0.13.0 (*)
+    ├── sha1 v0.11.0
+    │   ├── tungstenite v0.30.0
+    │   │   ├── liminal-sdk v0.4.0 (*)
+    │   │   └── liminal-server v0.4.0 (*)
+    │   └── zip v8.6.0 (*)
+    └── sha2 v0.11.0
+        ├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+        ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+        ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+        └── lzma-rust2 v0.16.4
+            └── zip v8.6.0 (*)
+        [dev-dependencies]
+        └── aion-awl-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-package) (*)
+
+bytes v1.11.1
+└── prost v0.14.3
+    ├── prost-build v0.14.3 (*)
+    └── prost-types v0.14.3
+        ├── prost-build v0.14.3 (*)
+        └── tonic-prost-build v0.14.5 (*)
+
+bytes v1.11.1
+├── axum v0.6.20 (*)
+├── axum v0.8.9 (*)
+├── axum-core v0.3.4 (*)
+├── axum-core v0.5.6 (*)
+├── h2 v0.3.27
+│   ├── hyper v0.14.32
+│   │   ├── axum v0.6.20 (*)
+│   │   ├── hyper-rustls v0.25.0 (*)
+│   │   ├── hyper-timeout v0.4.1
+│   │   │   └── tonic v0.11.0 (*)
+│   │   ├── libsql v0.9.30 (*)
+│   │   ├── tonic v0.11.0 (*)
+│   │   └── tonic-web v0.11.0 (*)
+│   └── tonic v0.11.0 (*)
+├── h2 v0.4.14
+│   ├── hyper v1.10.1
+│   │   ├── axum v0.8.9 (*)
+│   │   ├── hyper-rustls v0.27.9 (*)
+│   │   ├── hyper-timeout v0.5.2 (*)
+│   │   ├── hyper-util v0.1.20 (*)
+│   │   ├── reqwest v0.13.4 (*)
+│   │   └── tonic v0.14.6 (*)
+│   └── tonic v0.14.6 (*)
+├── http v0.2.12
+│   ├── axum v0.6.20 (*)
+│   ├── axum-core v0.3.4 (*)
+│   ├── h2 v0.3.27 (*)
+│   ├── http-body v0.4.6
+│   │   ├── axum v0.6.20 (*)
+│   │   ├── axum-core v0.3.4 (*)
+│   │   ├── hyper v0.14.32 (*)
+│   │   ├── tonic v0.11.0 (*)
+│   │   ├── tonic-web v0.11.0 (*)
+│   │   └── tower-http v0.4.4 (*)
+│   ├── hyper v0.14.32 (*)
+│   ├── hyper-rustls v0.25.0 (*)
+│   ├── libsql v0.9.30 (*)
+│   ├── tonic v0.11.0 (*)
+│   ├── tonic-web v0.11.0 (*)
+│   └── tower-http v0.4.4 (*)
+├── http v1.4.1
+│   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   ├── axum v0.8.9 (*)
+│   ├── axum-core v0.5.6 (*)
+│   ├── h2 v0.4.14 (*)
+│   ├── http-body v1.0.1
+│   │   ├── axum v0.8.9 (*)
+│   │   ├── axum-core v0.5.6 (*)
+│   │   ├── http-body-util v0.1.3
+│   │   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   │   ├── axum v0.8.9 (*)
+│   │   │   ├── axum-core v0.5.6 (*)
+│   │   │   ├── reqwest v0.13.4 (*)
+│   │   │   └── tonic v0.14.6 (*)
+│   │   ├── hyper v1.10.1 (*)
+│   │   ├── hyper-util v0.1.20 (*)
+│   │   ├── reqwest v0.13.4 (*)
+│   │   ├── tonic v0.14.6 (*)
+│   │   └── tower-http v0.6.11 (*)
+│   ├── http-body-util v0.1.3 (*)
+│   ├── hyper v1.10.1 (*)
+│   ├── hyper-rustls v0.27.9 (*)
+│   ├── hyper-util v0.1.20 (*)
+│   ├── reqwest v0.13.4 (*)
+│   ├── tonic v0.14.6 (*)
+│   ├── tower-http v0.6.11 (*)
+│   ├── tungstenite v0.29.0 (*)
+│   └── tungstenite v0.30.0 (*)
+├── http-body v0.4.6 (*)
+├── http-body v1.0.1 (*)
+├── http-body-util v0.1.3 (*)
+├── hyper v0.14.32 (*)
+├── hyper v1.10.1 (*)
+├── hyper-util v0.1.20 (*)
+├── libsql v0.9.30 (*)
+├── libsql-hrana v0.9.30 (*)
+├── libsql-sys v0.9.30 (*)
+├── libsql_replication v0.9.30 (*)
+├── prost v0.12.6
+│   ├── libsql-hrana v0.9.30 (*)
+│   ├── libsql_replication v0.9.30 (*)
+│   └── tonic v0.11.0 (*)
+├── prost v0.14.3
+│   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+│   ├── aion-proto-generated v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto-generated) (*)
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   └── tonic-prost v0.14.5 (*)
+├── reqwest v0.13.4 (*)
+├── tokio v1.52.3
+│   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn)
+│   │   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── aion-integrations v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integrations)
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   │   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   │   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   │   [dev-dependencies]
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+│   ├── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+│   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   ├── axum v0.8.9 (*)
+│   ├── beamr v0.16.0 (*)
+│   ├── h2 v0.3.27 (*)
+│   ├── h2 v0.4.14 (*)
+│   ├── haematite v0.7.0 (*)
+│   ├── hyper v0.14.32 (*)
+│   ├── hyper v1.10.1 (*)
+│   ├── hyper-rustls v0.25.0 (*)
+│   ├── hyper-rustls v0.27.9 (*)
+│   ├── hyper-timeout v0.4.1 (*)
+│   ├── hyper-timeout v0.5.2 (*)
+│   ├── hyper-util v0.1.20 (*)
+│   ├── libsql v0.9.30 (*)
+│   ├── libsql_replication v0.9.30 (*)
+│   ├── liminal-server v0.4.0 (*)
+│   ├── reqwest v0.13.4 (*)
+│   ├── tokio-io-timeout v1.2.1
+│   │   └── hyper-timeout v0.4.1 (*)
+│   ├── tokio-rustls v0.25.0
+│   │   └── hyper-rustls v0.25.0 (*)
+│   ├── tokio-rustls v0.26.4
+│   │   ├── hyper-rustls v0.27.9 (*)
+│   │   ├── reqwest v0.13.4 (*)
+│   │   ├── tokio-tungstenite v0.29.0 (*)
+│   │   └── tonic v0.14.6 (*)
+│   ├── tokio-stream v0.1.18
+│   │   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   │   ├── libsql v0.9.30 (*)
+│   │   ├── libsql_replication v0.9.30 (*)
+│   │   ├── tonic v0.11.0 (*)
+│   │   ├── tonic v0.14.6 (*)
+│   │   └── tonic-web v0.11.0 (*)
+│   │   [dev-dependencies]
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   ├── tokio-tungstenite v0.29.0 (*)
+│   ├── tokio-util v0.7.18
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   ├── h2 v0.3.27 (*)
+│   │   ├── h2 v0.4.14 (*)
+│   │   ├── libsql v0.9.30 (*)
+│   │   ├── libsql_replication v0.9.30 (*)
+│   │   ├── tower v0.4.13
+│   │   │   ├── axum v0.6.20 (*)
+│   │   │   ├── libsql v0.9.30 (*)
+│   │   │   ├── tonic v0.11.0 (*)
+│   │   │   └── tower-http v0.4.4 (*)
+│   │   └── tower v0.5.3
+│   │       ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │       ├── axum v0.8.9 (*)
+│   │       ├── reqwest v0.13.4 (*)
+│   │       ├── tonic v0.14.6 (*)
+│   │       └── tower-http v0.6.11 (*)
+│   ├── tonic v0.11.0 (*)
+│   ├── tonic v0.14.6 (*)
+│   ├── tower v0.4.13 (*)
+│   └── tower v0.5.3 (*)
+│   [dev-dependencies]
+│   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   ├── aion-integrations v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integrations) (*)
+│   ├── aion-store v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store)
+│   │   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+│   │   └── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+│   │   [dev-dependencies]
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+│   ├── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+│   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+├── tokio-util v0.7.18 (*)
+├── tonic v0.11.0 (*)
+├── tonic v0.14.6 (*)
+├── tonic-prost v0.14.5 (*)
+├── tonic-web v0.11.0 (*)
+├── tower-http v0.4.4 (*)
+├── tower-http v0.6.11 (*)
+├── tungstenite v0.29.0 (*)
+└── tungstenite v0.30.0 (*)
+
+cipher v0.4.4
+├── aes v0.8.4 (*)
+└── cbc v0.1.2
+    └── libsql_replication v0.9.30 (*)
+
+cipher v0.5.2
+└── aes v0.9.1 (*)
+
+core-foundation v0.9.4
+└── security-framework v2.11.1 (*)
+
+core-foundation v0.10.1
+├── rustls-platform-verifier v0.7.0 (*)
+└── security-framework v3.7.0 (*)
+
+cpufeatures v0.2.17
+├── aes v0.8.4 (*)
+├── sha1 v0.10.6 (*)
+└── sha2 v0.10.9 (*)
+
+cpufeatures v0.3.0
+├── aes v0.9.1 (*)
+├── sha1 v0.11.0 (*)
+└── sha2 v0.11.0 (*)
+
+crypto-common v0.1.7
+├── cipher v0.4.4 (*)
+└── digest v0.10.7 (*)
+
+crypto-common v0.2.2
+├── cipher v0.5.2 (*)
+└── digest v0.11.3 (*)
+
+digest v0.10.7 (*)
+
+digest v0.11.3 (*)
+
+errno v0.3.14
+├── rustix v1.1.4 (*)
+└── signal-hook-registry v1.4.8
+    ├── signal-hook v0.3.18
+    │   └── liminal-server v0.4.0 (*)
+    └── tokio v1.52.3 (*)
+
+errno v0.3.14
+└── rustix v0.38.44 (*)
+
+fallible-iterator v0.2.0
+└── libsql-rusqlite v0.9.30 (*)
+
+fallible-iterator v0.3.0
+├── libsql v0.9.30 (*)
+└── libsql-sqlite3-parser v0.13.0 (*)
+
+fluent-uri v0.1.4 (*)
+
+fluent-uri v0.4.1
+└── referencing v0.46.6
+    └── jsonschema v0.46.6
+        ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+        └── liminal-rs v0.4.0 (*)
+
+foldhash v0.1.5
+├── hashbrown v0.15.5
+│   └── lru v0.12.5
+│       └── haematite v0.7.0 (*)
+└── hashbrown v0.15.5
+    └── petgraph v0.8.3
+        └── prost-build v0.14.3 (*)
+
+foldhash v0.2.0
+└── hashbrown v0.16.1
+    ├── cranelift-codegen v0.131.2
+    │   ├── beamr v0.16.0 (*)
+    │   ├── cranelift-frontend v0.131.2
+    │   │   └── beamr v0.16.0 (*)
+    │   ├── cranelift-jit v0.131.2 (*)
+    │   ├── cranelift-module v0.131.2
+    │   │   ├── beamr v0.16.0 (*)
+    │   │   └── cranelift-jit v0.131.2 (*)
+    │   └── cranelift-native v0.131.2
+    │       ├── beamr v0.16.0 (*)
+    │       └── cranelift-jit v0.131.2 (*)
+    ├── gimli v0.33.0
+    │   └── cranelift-codegen v0.131.2 (*)
+    ├── referencing v0.46.6 (*)
+    └── wasmtime-internal-core v44.0.2
+        ├── cranelift-bforest v0.131.2
+        │   └── cranelift-codegen v0.131.2 (*)
+        ├── cranelift-bitset v0.131.2
+        │   ├── cranelift-codegen v0.131.2 (*)
+        │   └── cranelift-entity v0.131.2
+        │       ├── cranelift-bforest v0.131.2 (*)
+        │       ├── cranelift-codegen v0.131.2 (*)
+        │       └── cranelift-jit v0.131.2 (*)
+        ├── cranelift-codegen v0.131.2 (*)
+        ├── cranelift-entity v0.131.2 (*)
+        └── wasmtime-internal-jit-icache-coherence v44.0.2
+            └── cranelift-jit v0.131.2 (*)
+
+getrandom v0.2.17
+├── rand_core v0.6.4
+│   ├── rand v0.8.6
+│   │   └── tower v0.4.13 (*)
+│   └── rand_chacha v0.3.1
+│       └── rand v0.8.6 (*)
+└── ring v0.17.14
+    ├── rustls v0.22.4
+    │   ├── hyper-rustls v0.25.0 (*)
+    │   └── tokio-rustls v0.25.0 (*)
+    └── rustls-webpki v0.102.8
+        └── rustls v0.22.4 (*)
+
+getrandom v0.3.4
+├── ahash v0.8.12
+│   ├── hashbrown v0.14.5
+│   │   ├── dashmap v6.2.1
+│   │   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   │   ├── beamr v0.16.0 (*)
+│   │   │   └── haematite v0.7.0 (*)
+│   │   └── hashlink v0.8.4
+│   │       └── libsql-rusqlite v0.9.30 (*)
+│   ├── jsonschema v0.46.6 (*)
+│   └── referencing v0.46.6 (*)
+└── rand_core v0.9.5
+    ├── rand v0.9.4
+    │   └── tungstenite v0.29.0 (*)
+    └── rand_chacha v0.9.0
+        └── rand v0.9.4 (*)
+
+getrandom v0.4.2
+├── rand v0.10.2
+│   ├── beamr v0.16.0 (*)
+│   ├── liminal-rs v0.4.0 (*)
+│   └── tungstenite v0.30.0 (*)
+├── tempfile v3.27.0 (*)
+├── uuid v1.23.4
+│   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   ├── aion-core v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-core)
+│   │   ├── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   │   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│   │   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   │   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   │   ├── aion-integrations v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integrations) (*)
+│   │   ├── aion-nif v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-nif)
+│   │   ├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+│   │   ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+│   │   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   │   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   │   ├── aion-store v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store) (*)
+│   │   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+│   │   ├── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+│   │   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   │   [dev-dependencies]
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-darwin-acl v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-darwin-acl)
+│   │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   ├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+│   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-store v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store) (*)
+│   ├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+│   ├── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+│   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   ├── exacl v0.13.0 (*)
+│   ├── libsql v0.9.30 (*)
+│   ├── libsql_replication v0.9.30 (*)
+│   ├── liminal-rs v0.4.0 (*)
+│   └── ts-rs v12.0.1
+│       └── aion-core v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-core) (*)
+│   [dev-dependencies]
+│   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   └── aion-integrations v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integrations) (*)
+└── zip v8.6.0 (*)
+
+h2 v0.3.27 (*)
+
+h2 v0.4.14 (*)
+
+hashbrown v0.12.3
+└── indexmap v1.9.3
+    └── tower v0.4.13 (*)
+
+hashbrown v0.14.5 (*)
+
+hashbrown v0.15.5 (*)
+
+hashbrown v0.15.5 (*)
+
+hashbrown v0.16.1 (*)
+
+hashbrown v0.17.1
+├── indexmap v2.14.0
+│   ├── gimli v0.33.0 (*)
+│   ├── h2 v0.3.27 (*)
+│   ├── h2 v0.4.14 (*)
+│   ├── libsql-sqlite3-parser v0.13.0 (*)
+│   ├── toml_edit v0.22.27
+│   │   └── toml v0.8.23
+│   │       └── liminal-server v0.4.0 (*)
+│   ├── toml_edit v0.23.10+spec-1.0.0
+│   │   └── aion-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-cli)
+│   ├── tower v0.5.3 (*)
+│   └── zip v8.6.0 (*)
+├── indexmap v2.14.0
+│   └── petgraph v0.8.3 (*)
+└── regalloc2 v0.15.1
+    └── cranelift-codegen v0.131.2 (*)
+
+http v0.2.12 (*)
+
+http v1.4.1 (*)
+
+http-body v0.4.6 (*)
+
+http-body v1.0.1 (*)
+
+hyper v0.14.32 (*)
+
+hyper v1.10.1 (*)
+
+hyper-rustls v0.25.0 (*)
+
+hyper-rustls v0.27.9 (*)
+
+hyper-timeout v0.4.1 (*)
+
+hyper-timeout v0.5.2 (*)
+
+indexmap v1.9.3 (*)
+
+indexmap v2.14.0 (*)
+
+indexmap v2.14.0 (*)
+
+inout v0.1.4
+└── cipher v0.4.4 (*)
+
+inout v0.2.2
+└── cipher v0.5.2 (*)
+
+io-lifetimes v2.0.4
+└── fs-set-times v0.20.3 (*)
+
+io-lifetimes v3.0.1
+├── cap-fs-ext v4.0.2 (*)
+├── cap-primitives v4.0.2 (*)
+├── cap-std v4.0.2 (*)
+└── io-extras v0.19.0
+    ├── cap-primitives v4.0.2 (*)
+    └── cap-std v4.0.2 (*)
+
+itertools v0.12.1
+└── prost-derive v0.12.6 (proc-macro)
+    └── prost v0.12.6 (*)
+
+itertools v0.14.0
+├── prost-build v0.14.3 (*)
+└── prost-derive v0.14.3 (proc-macro)
+    ├── prost v0.14.3 (*)
+    └── prost v0.14.3 (*)
+
+libc v0.2.186
+├── cc v1.2.63
+│   └── cmake v0.1.58
+│       [build-dependencies]
+│       ├── aws-lc-sys v0.41.0
+│       │   └── aws-lc-rs v1.17.0
+│       │       ├── rustls v0.23.40
+│       │       │   ├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+│       │       │   ├── hyper-rustls v0.27.9 (*)
+│       │       │   ├── reqwest v0.13.4 (*)
+│       │       │   ├── rustls-platform-verifier v0.7.0 (*)
+│       │       │   ├── tokio-rustls v0.26.4 (*)
+│       │       │   ├── tokio-tungstenite v0.29.0 (*)
+│       │       │   └── tungstenite v0.29.0 (*)
+│       │       └── rustls-webpki v0.103.13
+│       │           └── rustls v0.23.40 (*)
+│       └── libsql-ffi v0.9.30 (*)
+│   [build-dependencies]
+│   ├── aws-lc-sys v0.41.0 (*)
+│   ├── blake3 v1.8.5
+│   │   ├── haematite v0.7.0 (*)
+│   │   └── liminal-server v0.4.0 (*)
+│   ├── libsql-ffi v0.9.30 (*)
+│   ├── libsql-sqlite3-parser v0.13.0 (*)
+│   ├── ring v0.17.14 (*)
+│   └── zstd-sys v2.0.16+zstd.1.5.7
+│       └── zstd-safe v7.2.4
+│           └── zstd v0.13.3
+│               ├── beamr v0.16.0 (*)
+│               ├── haematite v0.7.0 (*)
+│               └── zip v8.6.0 (*)
+│               [build-dependencies]
+│               └── beamr v0.16.0 (*)
+├── clang-sys v1.8.1
+│   └── bindgen v0.66.1 (*)
+├── errno v0.3.14 (*)
+├── jobserver v0.1.34
+│   └── cc v1.2.63 (*)
+└── rustix v0.38.44 (*)
+
+libc v0.2.186
+├── aion-darwin-acl v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-darwin-acl) (*)
+├── beamr v0.16.0 (*)
+├── core-foundation v0.9.4 (*)
+├── core-foundation v0.10.1 (*)
+├── cpufeatures v0.2.17 (*)
+├── cpufeatures v0.3.0 (*)
+├── cranelift-jit v0.131.2 (*)
+├── errno v0.3.14 (*)
+├── fsevent-sys v4.1.0
+│   └── notify v8.2.0 (*)
+├── getrandom v0.2.17 (*)
+├── getrandom v0.3.4 (*)
+├── getrandom v0.4.2 (*)
+├── hostname v0.4.2
+│   └── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+├── hyper-util v0.1.20 (*)
+├── mach2 v0.4.3
+│   └── region v3.0.2 (*)
+├── mio v1.2.1
+│   ├── beamr v0.16.0 (*)
+│   └── tokio v1.52.3 (*)
+├── notify v8.2.0 (*)
+├── num_cpus v1.17.0
+│   └── beamr v0.16.0 (*)
+├── parking_lot_core v0.9.12
+│   ├── dashmap v6.2.1 (*)
+│   └── parking_lot v0.12.5
+│       ├── libsql v0.9.30 (*)
+│       ├── libsql_replication v0.9.30 (*)
+│       ├── prometheus v0.14.0
+│       │   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│       ├── referencing v0.46.6 (*)
+│       └── tokio v1.52.3 (*)
+├── rand v0.8.6 (*)
+├── region v3.0.2 (*)
+├── ring v0.17.14 (*)
+├── rustix v1.1.4 (*)
+├── security-framework v2.11.1 (*)
+├── security-framework v3.7.0 (*)
+├── security-framework-sys v2.17.0
+│   ├── rustls-platform-verifier v0.7.0 (*)
+│   ├── security-framework v2.11.1 (*)
+│   └── security-framework v3.7.0 (*)
+├── signal-hook v0.3.18 (*)
+├── signal-hook-registry v1.4.8 (*)
+├── socket2 v0.5.10
+│   └── hyper v0.14.32 (*)
+├── socket2 v0.6.4
+│   ├── hyper-util v0.1.20 (*)
+│   ├── tokio v1.52.3 (*)
+│   └── tonic v0.14.6 (*)
+├── tokio v1.52.3 (*)
+├── users v0.11.0
+│   [dev-dependencies]
+│   └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+└── wasmtime-internal-jit-icache-coherence v44.0.2 (*)
+
+log v0.4.32
+├── bindgen v0.66.1 (*)
+└── prost-build v0.14.3 (*)
+
+log v0.4.32
+├── cranelift-codegen v0.131.2 (*)
+├── cranelift-frontend v0.131.2 (*)
+├── cranelift-jit v0.131.2 (*)
+├── exacl v0.13.0 (*)
+├── haematite v0.7.0 (*)
+├── hyper-rustls v0.25.0 (*)
+├── libsql-sqlite3-parser v0.13.0 (*)
+├── lsp-server v0.8.0
+│   └── aion-awl-lsp v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-lsp) (*)
+├── mio v1.2.1 (*)
+├── notify v8.2.0 (*)
+├── regalloc2 v0.15.1 (*)
+├── reqwest v0.13.4 (*)
+├── rustls v0.22.4 (*)
+├── rustls v0.23.40 (*)
+├── rustls-platform-verifier v0.7.0 (*)
+├── tokio-tungstenite v0.29.0 (*)
+├── tracing v0.1.44
+│   ├── aion-integration-cli v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-cli)
+│   ├── aion-integration-norn v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integration-norn) (*)
+│   ├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   ├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+│   ├── axum v0.8.9 (*)
+│   ├── axum-core v0.5.6 (*)
+│   ├── h2 v0.3.27 (*)
+│   ├── h2 v0.4.14 (*)
+│   ├── hyper v0.14.32 (*)
+│   ├── hyper-util v0.1.20 (*)
+│   ├── libsql v0.9.30 (*)
+│   ├── libsql-sys v0.9.30 (*)
+│   ├── libsql_replication v0.9.30 (*)
+│   ├── liminal-rs v0.4.0 (*)
+│   ├── liminal-server v0.4.0 (*)
+│   ├── tonic v0.11.0 (*)
+│   ├── tonic v0.14.6 (*)
+│   ├── tonic-web v0.11.0 (*)
+│   ├── tower v0.4.13 (*)
+│   ├── tower v0.5.3 (*)
+│   ├── tower-http v0.4.4 (*)
+│   └── tracing-subscriber v0.3.23
+│       └── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│       [dev-dependencies]
+│       └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+│   [dev-dependencies]
+│   ├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+│   └── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+├── tracing-log v0.2.0
+│   └── tracing-subscriber v0.3.23 (*)
+├── tungstenite v0.29.0 (*)
+├── tungstenite v0.30.0 (*)
+└── zopfli v0.8.3
+    └── zip v8.6.0 (*)
+
+matchit v0.7.3
+└── axum v0.6.20 (*)
+
+matchit v0.8.4
+└── axum v0.8.9 (*)
+
+nom v5.1.3
+└── saffron v0.1.0
+    └── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+
+nom v7.1.3
+└── cexpr v0.6.0
+    └── bindgen v0.66.1 (*)
+
+phf_shared v0.11.3
+├── phf_codegen v0.11.3
+│   [build-dependencies]
+│   └── libsql-sqlite3-parser v0.13.0 (*)
+└── phf_generator v0.11.3
+    └── phf_codegen v0.11.3 (*)
+[build-dependencies]
+└── libsql-sqlite3-parser v0.13.0 (*)
+
+phf_shared v0.11.3
+└── phf v0.11.3
+    └── libsql-sqlite3-parser v0.13.0 (*)
+
+prost v0.12.6 (*)
+
+prost v0.14.3 (*)
+
+prost v0.14.3 (*)
+
+prost-derive v0.12.6 (proc-macro) (*)
+
+prost-derive v0.14.3 (proc-macro) (*)
+
+rand v0.8.6 (*)
+
+rand v0.8.6
+└── phf_generator v0.11.3 (*)
+
+rand v0.9.4 (*)
+
+rand v0.10.2 (*)
+
+rand_chacha v0.3.1 (*)
+
+rand_chacha v0.9.0 (*)
+
+rand_chacha v0.10.0
+└── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+
+rand_core v0.6.4
+└── rand v0.8.6 (*)
+
+rand_core v0.6.4 (*)
+
+rand_core v0.9.5 (*)
+
+rand_core v0.10.1
+├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+├── chacha20 v0.10.0
+│   └── rand v0.10.2 (*)
+├── getrandom v0.4.2 (*)
+├── rand v0.10.2 (*)
+└── rand_chacha v0.10.0 (*)
+
+regex v1.12.3
+└── jsonschema v0.46.6 (*)
+
+regex v1.12.3
+├── bindgen v0.66.1 (*)
+└── prost-build v0.14.3 (*)
+
+regex-automata v0.4.14
+├── fancy-regex v0.18.0
+│   └── jsonschema v0.46.6 (*)
+├── matchers v0.2.0
+│   └── tracing-subscriber v0.3.23 (*)
+├── regex v1.12.3 (*)
+└── tracing-subscriber v0.3.23 (*)
+
+regex-automata v0.4.14
+└── regex v1.12.3 (*)
+
+regex-syntax v0.8.10
+├── fancy-regex v0.18.0 (*)
+├── jsonschema v0.46.6 (*)
+├── regex v1.12.3 (*)
+└── regex-automata v0.4.14 (*)
+
+regex-syntax v0.8.10
+├── regex v1.12.3 (*)
+└── regex-automata v0.4.14 (*)
+
+rustc-hash v1.1.0
+└── bindgen v0.66.1 (*)
+
+rustc-hash v2.1.2
+├── cranelift-codegen v0.131.2 (*)
+└── regalloc2 v0.15.1 (*)
+
+rustix v0.38.44 (*)
+
+rustix v1.1.4 (*)
+
+rustls v0.22.4 (*)
+
+rustls v0.23.40 (*)
+
+rustls-webpki v0.102.8 (*)
+
+rustls-webpki v0.103.13 (*)
+
+security-framework v2.11.1 (*)
+
+security-framework v3.7.0 (*)
+
+serde_spanned v0.6.9
+├── toml v0.8.23 (*)
+└── toml_edit v0.22.27 (*)
+
+serde_spanned v1.1.1
+├── toml v1.1.2+spec-1.1.0
+│   ├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+│   ├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+│   └── aion-toolchain v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-toolchain) (*)
+└── toml_edit v0.23.10+spec-1.0.0 (*)
+
+sha1 v0.10.6 (*)
+
+sha1 v0.11.0 (*)
+
+sha2 v0.10.9 (*)
+
+sha2 v0.11.0 (*)
+
+shlex v1.3.0
+└── bindgen v0.66.1 (*)
+
+shlex v2.0.1
+└── cc v1.2.63 (*)
+
+socket2 v0.5.10 (*)
+
+socket2 v0.6.4 (*)
+
+sync_wrapper v0.1.2
+└── axum v0.6.20 (*)
+
+sync_wrapper v1.0.2
+├── axum v0.8.9 (*)
+├── axum-core v0.5.6 (*)
+├── reqwest v0.13.4 (*)
+├── tonic v0.14.6 (*)
+└── tower v0.5.3 (*)
+
+thiserror v1.0.69
+├── libsql v0.9.30 (*)
+├── libsql_replication v0.9.30 (*)
+├── protobuf v3.7.2
+│   └── prometheus v0.14.0 (*)
+└── protobuf-support v3.7.2
+    └── protobuf v3.7.2 (*)
+
+thiserror v2.0.18
+├── aion-awl v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl) (*)
+├── aion-awl-lsp v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-lsp) (*)
+├── aion-awl-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-awl-package) (*)
+├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+├── aion-core v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-core) (*)
+├── aion-integrations v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-integrations) (*)
+├── aion-package v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-package) (*)
+├── aion-proto v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-proto) (*)
+├── aion-rs v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion) (*)
+├── aion-server v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-server) (*)
+├── aion-store v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store) (*)
+├── aion-store-haematite v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-haematite) (*)
+├── aion-store-libsql v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-store-libsql) (*)
+├── aion-toolchain v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-toolchain) (*)
+├── aion-worker v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-worker) (*)
+├── liminal-rs v0.4.0 (*)
+├── liminal-sdk v0.4.0 (*)
+├── liminal-server v0.4.0 (*)
+├── prometheus v0.14.0 (*)
+├── ts-rs v12.0.1 (*)
+├── tungstenite v0.29.0 (*)
+└── tungstenite v0.30.0 (*)
+
+thiserror-impl v1.0.69 (proc-macro)
+└── thiserror v1.0.69 (*)
+
+thiserror-impl v2.0.18 (proc-macro)
+└── thiserror v2.0.18 (*)
+
+tokio-rustls v0.25.0 (*)
+
+tokio-rustls v0.26.4 (*)
+
+toml v0.8.23 (*)
+
+toml v1.1.2+spec-1.1.0 (*)
+
+toml_datetime v0.6.11
+├── toml v0.8.23 (*)
+└── toml_edit v0.22.27 (*)
+
+toml_datetime v0.7.5+spec-1.1.0
+└── toml_edit v0.23.10+spec-1.0.0 (*)
+
+toml_datetime v1.1.1+spec-1.1.0
+└── toml v1.1.2+spec-1.1.0 (*)
+
+toml_edit v0.22.27 (*)
+
+toml_edit v0.23.10+spec-1.0.0 (*)
+
+tonic v0.11.0 (*)
+
+tonic v0.14.6 (*)
+
+tower v0.4.13 (*)
+
+tower v0.5.3 (*)
+
+tower-http v0.4.4 (*)
+
+tower-http v0.6.11 (*)
+
+tungstenite v0.29.0 (*)
+
+tungstenite v0.30.0 (*)
+
+webpki-roots v0.26.11
+├── hyper-rustls v0.25.0 (*)
+└── tokio-tungstenite v0.29.0 (*)
+
+webpki-roots v1.0.7
+├── aion-client v0.9.2 (/Users/tom/Developer/ablative/aion/crates/aion-client) (*)
+├── tonic v0.14.6 (*)
+└── webpki-roots v0.26.11 (*)
+
+winnow v0.7.15
+├── toml_edit v0.22.27 (*)
+└── toml_edit v0.23.10+spec-1.0.0 (*)
+
+winnow v1.0.3
+├── toml v1.1.2+spec-1.1.0 (*)
+└── toml_parser v1.1.2+spec-1.1.0
+    ├── toml v1.1.2+spec-1.1.0 (*)
+    └── toml_edit v0.23.10+spec-1.0.0 (*)
+
+zerocopy v0.7.35
+├── libsql v0.9.30 (*)
+├── libsql-sys v0.9.30 (*)
+└── libsql_replication v0.9.30 (*)
+
+zerocopy v0.8.50
+├── ahash v0.8.12 (*)
+└── ppv-lite86 v0.2.21
+    ├── rand_chacha v0.3.1 (*)
+    ├── rand_chacha v0.9.0 (*)
+    └── rand_chacha v0.10.0 (*)
+
+=== convergence census verdict (2026-07-23, dev/family-convergence) ===
+cargo tree -d at the converged lock: NO beamr, haematite, or liminal family crate appears as a duplicated package. Resolved graph carries exactly: beamr v0.16.0, haematite v0.7.0, liminal-rs v0.4.0, liminal-sdk v0.4.0, liminal-server v0.4.0, liminal-protocol v0.3.1. Lock sync moved exactly 6 packages (the family), nothing else.

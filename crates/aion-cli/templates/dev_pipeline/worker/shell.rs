@@ -177,8 +177,7 @@ fn is_executable_file(candidate: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     candidate
         .metadata()
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]

@@ -102,17 +102,16 @@ pub(super) fn needs_child_witness(statements: &[Statement], emitter: &Emitter<'_
             Statement::Spawn(spawn) if emitter.children.contains_key(spawn.call.name.as_str()) => {
                 return true;
             }
-            Statement::Fork(fork) if matches!(fork.header, ForkHeader::Collection { .. }) => {
-                if single_unbound_call(&fork.body)
-                    .is_some_and(|call| emitter.children.contains_key(call.call.name.as_str()))
-                {
-                    return true;
-                }
+            Statement::Fork(fork)
+                if matches!(fork.header, ForkHeader::Collection { .. })
+                    && single_unbound_call(&fork.body).is_some_and(|call| {
+                        emitter.children.contains_key(call.call.name.as_str())
+                    }) =>
+            {
+                return true;
             }
-            Statement::Loop(looped) => {
-                if needs_child_witness(&looped.body, emitter) {
-                    return true;
-                }
+            Statement::Loop(looped) if needs_child_witness(&looped.body, emitter) => {
+                return true;
             }
             Statement::Route(_) => break,
             Statement::Pipe(pipe) => {

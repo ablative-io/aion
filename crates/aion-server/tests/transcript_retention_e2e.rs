@@ -104,7 +104,7 @@ fn runtime_config(observability: ObservabilityConfig) -> RuntimeConfig {
             mode: NamespaceMode::SharedEngine,
         },
         worker: WorkerConfig {
-            heartbeat_window: Duration::from_millis(30_000),
+            heartbeat_window: Duration::from_secs(30),
         },
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
@@ -118,7 +118,7 @@ fn runtime_config(observability: ObservabilityConfig) -> RuntimeConfig {
         outbox: aion_server::config::OutboxConfig::default(),
         observability,
         scheduler_threads: 1,
-        query_timeout: Some(Duration::from_millis(10_000)),
+        query_timeout: Some(Duration::from_secs(10)),
         default_namespace: TENANT_A.to_owned(),
         auto_create: aion_server::config::AutoCreate::Open,
         max_in_flight_activities: aion_server::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,

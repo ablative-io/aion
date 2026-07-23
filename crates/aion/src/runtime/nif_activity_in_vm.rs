@@ -25,8 +25,10 @@
 //!
 //! Scheduling note: the child is a preemptively-scheduled bytecode process, so
 //! pure-Gleam runners cannot starve the schedulers; only a blocking NIF called
-//! INSIDE a runner can occupy a scheduler thread (beamr's dirty pool is still
-//! scaffolded — `spawn_link_dirty` aliases `spawn_link`). A runtime-wide
+//! INSIDE a runner can occupy a scheduler thread (dirty scheduling is a
+//! property of the registered native entry, not the spawn: a dirty-registered
+//! native is dispatched to beamr's dirty pool at its call site, and
+//! `spawn_link` is the single spawn API). A runtime-wide
 //! drainer consumes beamr exits; in-VM completion tasks wait on its cached
 //! per-process fan-out records without consuming scheduler outcomes.
 

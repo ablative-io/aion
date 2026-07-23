@@ -13,8 +13,7 @@ impl WorkflowCatalog {
     #[cfg(test)]
     pub(crate) fn has_registered_module(&self, deployed_name: &str) -> bool {
         self.current()
-            .map(|snapshot| snapshot.registered_modules.contains_key(deployed_name))
-            .unwrap_or(false)
+            .is_ok_and(|snapshot| snapshot.registered_modules.contains_key(deployed_name))
     }
 
     /// Records a loaded workflow entry without runtime registration for tests.

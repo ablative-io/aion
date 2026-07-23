@@ -196,7 +196,7 @@ async fn register_completes_on_register_ack_and_captures_ack_payload() -> Result
         .ok_or_else(|| failure("registered session must expose the RegisterAck payload"))?;
     assert_eq!(info.worker_id, 7);
     assert_eq!(info.namespace, "default-queue");
-    assert_eq!(info.heartbeat_window, Duration::from_millis(30_000));
+    assert_eq!(info.heartbeat_window, Duration::from_secs(30));
 
     let captured = registrations
         .recv()

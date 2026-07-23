@@ -383,7 +383,7 @@ impl Node {
         let database = Database::create(DatabaseConfig {
             data_dir: dir.join("db"),
             shard_count: SHARD_COUNT,
-            sweep_interval: None,
+            executor_threads: None,
             distributed: None,
         })
         .map_err(demo_error)?

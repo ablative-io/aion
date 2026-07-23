@@ -67,7 +67,7 @@ fn config_for(path: &std::path::Path) -> DatabaseConfig {
         // Enough shards that owned/declared shards are a real subset, so a
         // non-owned shard genuinely consults the directory rather than own-all.
         shard_count: 3,
-        sweep_interval: None,
+        executor_threads: None,
         distributed: None,
     }
 }

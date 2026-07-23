@@ -252,7 +252,7 @@ impl HaematiteStore {
         let database = Database::create(DatabaseConfig {
             data_dir: data_dir.into(),
             shard_count,
-            sweep_interval: None,
+            executor_threads: None,
             distributed: None,
         })
         .map_err(|error| database_error(&error))?;
@@ -424,7 +424,7 @@ impl HaematiteStore {
             Database::create(DatabaseConfig {
                 data_dir: data_dir.to_path_buf(),
                 shard_count,
-                sweep_interval: None,
+                executor_threads: None,
                 distributed: None,
             })
             .map_err(|error| database_error(&error))?
@@ -1352,15 +1352,13 @@ fn append_blocking(
     }
 
     // Validate Aion's contiguity contract before any write (matches libSQL/in-memory).
-    let mut next_seq = expected_seq + 1;
-    for event in events {
+    for (next_seq, event) in (expected_seq + 1..).zip(events.iter()) {
         if event.seq() != next_seq {
             return Err(StoreError::Backend(format!(
                 "event sequence must be contiguous: expected {next_seq}, got {}",
                 event.seq()
             )));
         }
-        next_seq += 1;
     }
 
     if events.is_empty() && !has_outbox {

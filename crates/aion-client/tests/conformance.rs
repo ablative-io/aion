@@ -1141,7 +1141,7 @@ impl StreamCollector {
     }
 
     fn len(&self) -> usize {
-        self.events.lock().map(|events| events.len()).unwrap_or(0)
+        self.events.lock().map_or(0, |events| events.len())
     }
 
     fn failure(&self) -> Option<ClientError> {

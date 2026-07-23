@@ -79,7 +79,7 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
             mode: NamespaceMode::SharedEngine,
         },
         worker: WorkerConfig {
-            heartbeat_window: Duration::from_millis(30_000),
+            heartbeat_window: Duration::from_secs(30),
         },
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
@@ -93,7 +93,7 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
         outbox: OutboxConfig::default(),
         observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
-        query_timeout: Some(Duration::from_millis(5_000)),
+        query_timeout: Some(Duration::from_secs(5)),
         default_namespace: "default".to_owned(),
         auto_create: aion_server::config::AutoCreate::Open,
         max_in_flight_activities: aion_server::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,

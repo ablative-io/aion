@@ -134,6 +134,7 @@ mod tests {
         assert_eq!(nif.arity(), 1);
         assert!(!nif.is_dirty());
         assert_eq!(nif.determinism(), Determinism::Pure);
-        assert_eq!(nif.native() as usize, identity_native as usize);
+        let expected: beamr::native::NativeFn = identity_native;
+        assert_eq!(nif.native() as usize, expected as usize);
     }
 }

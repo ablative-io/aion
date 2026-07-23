@@ -50,8 +50,7 @@ fn tool_on_path(tool: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 fn reserve_port() -> Result<u16, TestError> {
@@ -128,7 +127,7 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if self.child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
+        if self.child.try_wait().is_ok_and(|s| s.is_none()) {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }

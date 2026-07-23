@@ -136,7 +136,7 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if self.child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
+        if self.child.try_wait().is_ok_and(|s| s.is_none()) {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
