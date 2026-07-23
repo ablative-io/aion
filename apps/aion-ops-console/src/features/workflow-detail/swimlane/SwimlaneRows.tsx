@@ -102,10 +102,12 @@ type LaneRowProps = {
   selectedSequence: number | null;
   selectedWorkflowId: WorkflowId | null;
   childExpanded: boolean;
+  timerGroupExpanded: boolean | null;
   /** Active scrub cursor + the lane's untruncated entries; null when live. */
   scrubClip?: LaneScrubClip | null;
   onToggle: () => void;
   onToggleChild: (() => void) | null;
+  onToggleTimerGroup: (() => void) | null;
   onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
 };
 
@@ -119,9 +121,11 @@ export const LaneRow = memo(function LaneRow({
   selectedSequence,
   selectedWorkflowId,
   childExpanded,
+  timerGroupExpanded,
   scrubClip = null,
   onToggle,
   onToggleChild,
+  onToggleTimerGroup,
   onSelect,
 }: LaneRowProps) {
   const items = useMemo(
@@ -168,6 +172,11 @@ export const LaneRow = memo(function LaneRow({
             </span>
           </span>
         </button>
+        <TimerGroupToggle
+          expanded={timerGroupExpanded}
+          onToggle={onToggleTimerGroup}
+          workflowId={workflowId}
+        />
         {onToggleChild === null ? null : (
           <button
             aria-expanded={childExpanded}
@@ -227,6 +236,33 @@ export const LaneRow = memo(function LaneRow({
     </li>
   );
 });
+
+function TimerGroupToggle({
+  expanded,
+  onToggle,
+  workflowId,
+}: {
+  expanded: boolean | null;
+  onToggle: (() => void) | null;
+  workflowId: string;
+}) {
+  if (expanded === null || onToggle === null) {
+    return null;
+  }
+
+  return (
+    <button
+      aria-expanded={expanded}
+      aria-label={`${expanded ? 'Collapse' : 'Expand'} timer lanes`}
+      className="shrink-0 rounded px-1 text-muted-foreground text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-testid={`toggle-timer-lanes:${workflowId}`}
+      onClick={onToggle}
+      type="button"
+    >
+      {expanded ? '▾' : '▸'}
+    </button>
+  );
+}
 
 export function NoticeRow({
   row,

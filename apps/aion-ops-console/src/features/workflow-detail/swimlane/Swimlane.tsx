@@ -7,7 +7,12 @@ import type { WorkflowId } from '@/types';
 import type { TimelineEntry } from '../types';
 import { ChildTimelineLoader } from './ChildTimelineLoader';
 import { layoutSwimlane, type SwimlaneBar, type SwimlaneLane } from './laneLayout';
-import { type ChildTimelineState, childNodePath, flattenLaneTree } from './laneTree';
+import {
+  type ChildTimelineState,
+  childNodePath,
+  flattenLaneTree,
+  timerGroupPath,
+} from './laneTree';
 import { Scrubber } from './Scrubber';
 import { Axis, ChartToolbar, LaneRow, NoticeRow } from './SwimlaneRows';
 import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo, snapGlobalRank } from './scrub';
@@ -55,6 +60,7 @@ type LaneRowHandlers = {
   onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
   onToggle: () => void;
   onToggleChild: (() => void) | null;
+  onToggleTimerGroup: (() => void) | null;
 };
 
 /**
@@ -164,11 +170,13 @@ function Swimlane({
       const pathWorkflowId = workflowIdByPath.get(path);
       const cut = pathWorkflowId === undefined ? undefined : cuts.get(pathWorkflowId);
       const visibleEntries = cut === null || cut === undefined ? [] : prefixUpTo(timeline, cut);
-      const lanes = layoutSwimlane(visibleEntries).lanes;
+      const lanes = layoutSwimlane(visibleEntries, {
+        expandTimers: expandedPaths.has(timerGroupPath(path)),
+      }).lanes;
       lanesByPath.set(path, new Map(lanes.map((lane) => [lane.id, lane])));
     }
     return lanesByPath;
-  }, [cuts, timelinesByPath, tree.rows]);
+  }, [cuts, expandedPaths, timelinesByPath, tree.rows]);
   /** The clip cursor in the active axis coordinate: ms in time, rank in stepped. */
   const scrubCursor =
     scrubPosition === null || axis === null
@@ -228,6 +236,9 @@ function Swimlane({
     },
     [collapsedPaths, expandedPaths, initialExpandedIds]
   );
+  const toggleTimerGroup = useCallback((path: string) => {
+    setExpandedPaths((current) => toggleSetMember(current, timerGroupPath(path)));
+  }, []);
   const rowHandlers = useMemo(() => {
     const handlers = new Map<string, LaneRowHandlers>();
     for (const row of tree.rows) {
@@ -243,10 +254,12 @@ function Swimlane({
           }),
         onToggle: () => toggleRow(row.id),
         onToggleChild: childId === null ? null : () => toggleChild(row.path, childId),
+        onToggleTimerGroup:
+          row.timerGroupExpanded === null ? null : () => toggleTimerGroup(row.path),
       });
     }
     return handlers;
-  }, [onSelect, timelinesByPath, toggleChild, toggleRow, tree.rows]);
+  }, [onSelect, timelinesByPath, toggleChild, toggleRow, toggleTimerGroup, tree.rows]);
   const handleScrub = useCallback(
     (position: number | null) => onScrubChange?.(position),
     [onScrubChange]
@@ -305,9 +318,11 @@ function Swimlane({
                   onSelect={handlers.onSelect}
                   onToggle={handlers.onToggle}
                   onToggleChild={handlers.onToggleChild}
+                  onToggleTimerGroup={handlers.onToggleTimerGroup}
                   scrubClip={scrubClipsByPath.get(row.path) ?? null}
                   selectedSequence={selectedSequence}
                   selectedWorkflowId={selectedWorkflowId}
+                  timerGroupExpanded={row.timerGroupExpanded}
                   trackWidth={trackWidth}
                   workflowId={row.workflowId}
                 />

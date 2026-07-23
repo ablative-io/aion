@@ -67,6 +67,11 @@ export type SwimlaneLayout = {
   sequences: number[];
 };
 
+export type SwimlaneLayoutOptions = {
+  /** Show the underlying one-lane-per-timer layout instead of the timer aggregate. */
+  expandTimers?: boolean;
+};
+
 /**
  * Build a dense-rank index over every sequence carried by the entries (each entry
  * may carry several correlated events, e.g. an activity's schedule/start/terminal).
@@ -92,7 +97,10 @@ export function buildRankIndex(entries: readonly TimelineEntry[]): Map<number, n
 }
 
 /** Assemble the full lane layout from a projected timeline. */
-export function layoutSwimlane(entries: readonly TimelineEntry[]): SwimlaneLayout {
+export function layoutSwimlane(
+  entries: readonly TimelineEntry[],
+  { expandTimers = false }: SwimlaneLayoutOptions = {}
+): SwimlaneLayout {
   const rankIndex = buildRankIndex(entries);
   const sequences = [...rankIndex.entries()]
     .sort((left, right) => left[1] - right[1])
@@ -159,7 +167,12 @@ export function layoutSwimlane(entries: readonly TimelineEntry[]): SwimlaneLayou
     });
   }
   lanes.push(...sortLanes(activityLanes));
-  lanes.push(...sortLanes(timerLanes));
+  const sortedTimerLanes = sortLanes(timerLanes);
+  if (expandTimers) {
+    lanes.push(...sortedTimerLanes);
+  } else if (sortedTimerLanes.length > 0) {
+    lanes.push(aggregateTimerLanes(sortedTimerLanes));
+  }
   lanes.push(...sortLanes(childLanes));
   if (signalBars.length > 0) {
     lanes.push({
@@ -211,6 +224,25 @@ function appendBar(
   }
 
   lane.bars.push(bar);
+}
+
+function aggregateTimerLanes(lanes: readonly SwimlaneLane[]): SwimlaneLane {
+  const bars = lanes
+    .flatMap((lane) => lane.bars)
+    .sort(
+      (left, right) =>
+        left.startRank - right.startRank ||
+        left.endRank - right.endRank ||
+        left.sequence - right.sequence
+    );
+
+  return {
+    id: 'timers',
+    kind: 'timer',
+    label: `Timers (${bars.length})`,
+    childWorkflowId: null,
+    bars,
+  };
 }
 
 function sortLanes(lanes: Map<string, SwimlaneLane>): SwimlaneLane[] {

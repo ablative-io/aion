@@ -24,6 +24,8 @@ export type LaneTreeRow =
       workflowId: string;
       depth: number;
       lane: SwimlaneLane;
+      /** Non-null on the timer aggregate, or its first expanded member. */
+      timerGroupExpanded: boolean | null;
     }
   | {
       kind: 'notice';
@@ -49,6 +51,10 @@ export type LaneTree = {
 
 export function childNodePath(parentPath: string, childWorkflowId: string): string {
   return `${parentPath}>${childWorkflowId}`;
+}
+
+export function timerGroupPath(workflowPath: string): string {
+  return `${workflowPath}:timer-group`;
 }
 
 /** An id already in the branch's ancestry must never be fetched or recursed into. */
@@ -81,7 +87,8 @@ export function flattenLaneTree(
       entries: node.entries,
       isRunning: node.isRunning,
     });
-    const layout = layoutSwimlane(node.entries);
+    const timersExpanded = expandedPaths.has(timerGroupPath(node.path));
+    const layout = layoutSwimlane(node.entries, { expandTimers: timersExpanded });
 
     if (layout.lanes.length === 0 && node.depth > 0) {
       rows.push({
@@ -96,6 +103,7 @@ export function flattenLaneTree(
       return;
     }
 
+    let hasTimerGroupToggle = false;
     for (const lane of layout.lanes) {
       rows.push({
         kind: 'lane',
@@ -104,7 +112,11 @@ export function flattenLaneTree(
         workflowId: node.workflowId,
         depth: node.depth,
         lane,
+        timerGroupExpanded: lane.kind === 'timer' && !hasTimerGroupToggle ? timersExpanded : null,
       });
+      if (lane.kind === 'timer') {
+        hasTimerGroupToggle = true;
+      }
 
       const childWorkflowId = lane.childWorkflowId;
       if (childWorkflowId === null) {
