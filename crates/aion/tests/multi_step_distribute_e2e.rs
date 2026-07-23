@@ -341,7 +341,7 @@ async fn assert_durable_child_histories(
                 // never the raw error record's term-to-JSON array image.
                 assert_eq!(
                     serde_json::from_slice::<Value>(details.bytes())?,
-                    json!({ "tag": "AwlActivityFailed", "message": "activity failed" }),
+                    json!({ "tag": "AwlActivityFailed", "message": "activity engine failure: intentional-b" }),
                     "item b must hold the generated child workflow's durable activity failure"
                 );
                 durable_slots.push(None);

@@ -20,7 +20,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// Pinned digest of the committed SDK closure (names, lengths, bytes, in
 /// canonical order). A silent edit to the embedded bundle fails here; a
 /// deliberate regeneration updates this pin in the same commit.
-const BUNDLE_CHECKSUM: &str = "8b7b4991068622f3189b7846775612d7c886f633861b884c5d58a54170b3d922";
+const BUNDLE_CHECKSUM: &str = "a9572a8d5264b557c0c6c2f78a68febb7b09a0370ac079c902ee5f04cb81cb7b";
 const BUNDLE_MODULE_COUNT: usize = 46;
 const BUNDLE_SDK_VERSION: &str = "0.7.0";
 
@@ -86,12 +86,11 @@ fn assembling_twice_yields_byte_identical_archives() -> TestResult {
 /// timestamp, environment read, or ordering instability anywhere in the
 /// assembly path changes these bytes and fails this test. A deliberate SDK
 /// closure regeneration updates this pin in the same commit, exactly like
-/// `BUNDLE_CHECKSUM`. Updated when the manifest timeout became
-/// `Option<Duration>`: the fixed input declares no timeout, so `manifest.json`
-/// now omits the `timeout` key entirely (rather than a defaulted 1h value),
-/// which deterministically changes these bytes.
+/// `BUNDLE_CHECKSUM`. Last updated for the `aion_flow` error-mapper change
+/// (failure messages carry the underlying reason), which regenerated the
+/// embedded closure.
 const FIXED_INPUT_ARCHIVE_SHA256: &str =
-    "7f1229b338a81d34e5b06bf40c30781071c4beac4c78018144c1aadba5a6762e";
+    "92193c67b047eba3fe3eb62b3ca09cfd1bf48c6d39c27889f58e4a30a6255a15";
 
 /// Proof 1b — cross-process determinism: a fully fixed input assembles to
 /// pinned archive bytes.

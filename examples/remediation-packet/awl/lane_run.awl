@@ -121,21 +121,26 @@ type LaneResult {
   verification: VerifyOutcome?,
 }
 
+// Retry policies arm ONLY for failures the worker itself classifies as
+// retryable (transient provider/infra errors); a terminal report never
+// retries. Agent turns retry generously — the norn session persists, so a
+// retried attempt resumes where the blip cut it off (2026-07-23: one
+// provider stream error killed a whole packet run for want of this line).
 worker dev_brief
   action provision_workspace(repo_root: String, base_branch: String, branch: String, workspace_path: String) -> WorkspaceInfo
-    node shell
+    node shell, retry 3 every 30s
   action developer(brief: Brief, gate: GateOutcome?, verdicts: [LensVerdict], workspace_path: String, gates: [GateCommand]) -> DevReport
-    node developer
+    node developer, retry 5 backoff 30s..10m
   action run_gates(workspace_path: String, base_commit: String, gates: [GateCommand]) -> GateOutcome
-    node shell
+    node shell, retry 3 every 30s
   action reset_workspace(repo_root: String, workspace_path: String) -> ResetOutcome
-    node shell
+    node shell, retry 3 every 30s
   action fold_round(report: DevReport, gate: GateOutcome, verdicts: [LensVerdict], prior_evidence: String, droppings: [String]) -> RoundState
-    node shell
+    node shell, retry 3 every 30s
   action verify_gates(workspace_path: String, base_commit: String, gates: [GateCommand], log_path: String) -> VerifyOutcome
-    node shell
+    node shell, retry 3 every 30s
   action cleanup_workspace(repo_root: String, workspace_path: String) -> CleanupOutcome
-    node shell
+    node shell, retry 3 every 30s
 
 child review_round(lens: Lens, brief: Brief, report: DevReport, gate: GateOutcome, workspace_path: String, base_commit: String) -> LensVerdict
 

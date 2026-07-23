@@ -185,15 +185,15 @@ type PacketHalt   { reason: String, summary: String }
 
 worker general
   action select_wave(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> WaveSelection
-    node agent
+    node agent, retry 5 backoff 30s..10m
   action land_wave(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> LandReport
-    node agent
+    node agent, retry 5 backoff 30s..10m
   action apply_rulings(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> AppliedReport
-    node agent
+    node agent, retry 5 backoff 30s..10m
   action close_packet(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> ClosingReport
-    node agent
+    node agent, retry 5 backoff 30s..10m
   action run_command(workspace_path: String, name: String, argv: [String]) -> CommandResult
-    node shell
+    node shell, retry 3 every 30s
 
 child lane_run(lane_id: String, brief: Brief, config: RunConfig) -> LaneResult
 

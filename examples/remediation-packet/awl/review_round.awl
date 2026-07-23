@@ -61,7 +61,7 @@ type LensVerdict {
 
 worker dev_brief
   action review_lens(lens: Lens, brief: Brief, diff: String, report: DevReport, gate_runs: [GateRun], workspace_path: String, base_commit: String) -> LensVerdict
-    node reviewer
+    node reviewer, retry 5 backoff 30s..10m
 
 step decide
   outcome red: when not gate.pass,

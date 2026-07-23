@@ -130,23 +130,60 @@ fn decoder() -> decode.Decoder(AwlError) {
   }
 }
 
-/// Collapse an activity dispatch failure to a step failure.
+/// Collapse an activity dispatch failure to a step failure, carrying the
+/// underlying reason. A failure whose only trail is "activity failed" is
+/// undiagnosable from the workflow record (2026-07-23: a provider stream
+/// error surfaced to the operator as "workflow 5 returned error").
 pub fn map_activity_error(
   result: Result(a, error.ActivityError),
 ) -> Result(a, AwlError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(_) -> Error(AwlActivityFailed("activity failed"))
+    Error(activity_error) ->
+      Error(AwlActivityFailed(describe_activity_error(activity_error)))
   }
 }
 
-/// Collapse a signal receive failure to a step failure.
+fn describe_activity_error(activity_error: error.ActivityError) -> String {
+  case activity_error {
+    error.Retryable(message, _) -> "activity failed (retryable): " <> message
+    error.Terminal(message, _) -> "activity failed (terminal): " <> message
+    error.ActivityDecodeFailed(codec.DecodeError(reason, _)) ->
+      "activity output decode failed: " <> reason
+    error.ActivityTimedOut(error.TimedOut(message)) ->
+      "activity timed out: " <> message
+    error.ActivityCancelled(error.Cancelled(reason)) ->
+      "activity cancelled: " <> reason
+    error.ActivityNonDeterministic(error.NonDeterminismViolation(message)) ->
+      "activity non-deterministic: " <> message
+    error.ActivityEngineFailure(message) ->
+      "activity engine failure: " <> message
+  }
+}
+
+/// Collapse a signal receive failure to a step failure, carrying the
+/// underlying reason.
 pub fn map_receive_error(
   result: Result(a, error.ReceiveError),
 ) -> Result(a, AwlError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(_) -> Error(AwlSignalFailed("signal receive failed"))
+    Error(receive_error) ->
+      Error(AwlSignalFailed(describe_receive_error(receive_error)))
+  }
+}
+
+fn describe_receive_error(receive_error: error.ReceiveError) -> String {
+  case receive_error {
+    error.ReceiveDecodeFailed(codec.DecodeError(reason, _)) ->
+      "signal payload decode failed: " <> reason
+    error.UnknownSignal(name) -> "unknown signal: " <> name
+    error.ReceiveCancelled(error.Cancelled(reason)) ->
+      "signal receive cancelled: " <> reason
+    error.ReceiveNonDeterministic(error.NonDeterminismViolation(message)) ->
+      "signal receive non-deterministic: " <> message
+    error.ReceiveEngineFailure(message) ->
+      "signal receive engine failure: " <> message
   }
 }
 

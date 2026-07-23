@@ -1095,14 +1095,25 @@ pub struct LiminalConnectionNotifier {
     heartbeat_tracker: Option<super::heartbeat::HeartbeatTracker>,
 }
 
-/// The observability-drain leg of the notifier: the transcript sequencer to publish
-/// into and the runtime handle used to spawn the async publish from the synchronous
-/// `on_channel_publish` callback (which runs on the beamr connection-process thread).
+/// The observability-drain leg of the notifier: a bounded, ORDERED queue into
+/// the one drain task that publishes transcript events sequentially.
+///
+/// One consumer is load-bearing, not an implementation detail: a spawned task
+/// per event (the pre-2026-07-23 shape) made every in-flight frame a
+/// concurrent writer racing the same stream head, turning the sequencer's
+/// optimistic-append loop into an O(N²) conflict stampede under load — and
+/// destroyed `worker_seq` order on the durable transcript. Sequential
+/// draining preserves arrival order and leaves the conflict-retry loop to
+/// handle only genuine cross-process races (failover adoption).
 #[derive(Clone)]
 struct TranscriptTap {
-    publisher: crate::activity_publisher::ActivityEventPublisher,
-    runtime: tokio::runtime::Handle,
+    queue: tokio::sync::mpsc::Sender<aion_core::ActivityEvent>,
 }
+
+/// Bound on the transcript drain queue: events a slow durable append cannot
+/// keep up with are dropped (with a warning) rather than buffered without
+/// limit. Live streaming is best-effort; the bound protects server memory.
+const TRANSCRIPT_QUEUE_CAPACITY: usize = 4096;
 
 impl std::fmt::Debug for LiminalConnectionNotifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1164,10 +1175,19 @@ impl LiminalConnectionNotifier {
         mut self,
         publisher: crate::activity_publisher::ActivityEventPublisher,
     ) -> Self {
-        self.transcript = Some(TranscriptTap {
-            publisher,
-            runtime: tokio::runtime::Handle::current(),
+        let (queue, mut events) =
+            tokio::sync::mpsc::channel::<aion_core::ActivityEvent>(TRANSCRIPT_QUEUE_CAPACITY);
+        // The ONE drain task: transcript events publish sequentially in
+        // arrival order (see the `TranscriptTap` docs for why one consumer is
+        // load-bearing). It lives as long as any queue sender does.
+        tokio::runtime::Handle::current().spawn(async move {
+            while let Some(event) = events.recv().await {
+                if let Err(error) = publisher.publish(&event).await {
+                    tracing::warn!(%error, "observability tap: transcript publish failed");
+                }
+            }
         });
+        self.transcript = Some(TranscriptTap { queue });
         self
     }
 
@@ -1414,15 +1434,13 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
                 return true;
             }
         };
-        // Bridge the synchronous connection-process callback onto the async
-        // append+fan-out. The commit-allocated store_seq loop lives in `publish`;
-        // a failed persist is logged, never retried (best-effort live streaming).
-        let publisher = tap.publisher.clone();
-        tap.runtime.spawn(async move {
-            if let Err(error) = publisher.publish(&event).await {
-                tracing::warn!(%error, "observability tap: transcript publish failed");
-            }
-        });
+        // Hand the event to the ordered drain queue (the synchronous
+        // connection-process callback never blocks). A full queue means the
+        // durable append cannot keep up: the event is dropped with a warning,
+        // never buffered without bound.
+        if let Err(error) = tap.queue.try_send(event) {
+            tracing::warn!(%error, "observability tap: transcript queue rejected event");
+        }
         true
     }
 }

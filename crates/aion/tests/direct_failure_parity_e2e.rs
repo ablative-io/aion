@@ -349,7 +349,7 @@ async fn failure_details_converge_between_direct_and_gleam_paths() -> TestResult
     assert_eq!(direct.child_details, reference.child_details);
     assert_eq!(
         direct.parent_details,
-        json!({ "tag": "AwlActivityFailed", "message": "activity failed" }),
+        json!({ "tag": "AwlActivityFailed", "message": "activity engine failure: intentional" }),
         "strict abort must surface the child's typed activity failure"
     );
     assert_eq!(direct.parent_details, direct.child_details);

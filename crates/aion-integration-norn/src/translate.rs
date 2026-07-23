@@ -334,8 +334,29 @@ fn classify_event(method: &str, params: &Value) -> (ActivityEventKind, bool) {
         "event/toolResult" => (tool_result_kind(params), false),
         "event/progress" => progress_kind(event_type, params),
         "event/stop" => (stop_kind(params), false),
+        _ if is_per_token_type(event_type) => {
+            // A provider-native per-token frame surfacing through an
+            // unclassified method (e.g. `event/raw` carrying
+            // `response.function_call_arguments.delta`): same class as the
+            // `event/progress` delta arms, so same treatment — an ephemeral
+            // note with the payload dropped. Persisting these wrote the
+            // finalized turn's content thousands of times over.
+            let detail = ProgressDetail::Note {
+                text: event_type.unwrap_or_default().to_owned(),
+            };
+            (ActivityEventKind::Progress { detail }, true)
+        }
         _ => (raw_kind(method, params), false),
     }
+}
+
+/// Whether a native event `type` label names a per-token streaming frame.
+///
+/// Providers stream deltas under dotted `*.delta` labels (`response.output_text.delta`,
+/// `response.function_call_arguments.delta`, ...). One frame per token: never
+/// worth persisting, whatever method it arrived under.
+fn is_per_token_type(event_type: Option<&str>) -> bool {
+    event_type.is_some_and(|label| label.contains('.') && label.rsplit('.').next() == Some("delta"))
 }
 
 /// A required string field, or an empty string when absent — string fields are never fatal.
@@ -591,6 +612,48 @@ mod tests {
                 detail: ProgressDetail::Note { text },
             } => assert_eq!(text, "tool_call_delta"),
             other => panic!("expected Progress::Note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_per_token_delta_notification_is_ephemeral_and_drops_its_payload() {
+        // The 2026-07-23 remediation-packet flood: provider-native per-token
+        // frames arriving under `event/raw` were persisted whole (payload and
+        // all), writing gigabytes per hour. They are the same class as the
+        // `event/progress` delta arms and get the same ephemeral-note fate.
+        let p = params(
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "delta": "{\"pa",
+                "obfuscation": "xK9dQ2"
+            }),
+            "root",
+        );
+        let event = notification_to_event(&identity(), 3, "event/raw", &p);
+        assert!(
+            event.ephemeral,
+            "per-token provider frames must never be persisted, whatever method they arrive under"
+        );
+        assert_eq!(event.store_seq, None);
+        match event.kind {
+            ActivityEventKind::Progress {
+                detail: ProgressDetail::Note { text },
+            } => assert_eq!(text, "response.function_call_arguments.delta"),
+            other => panic!("expected Progress::Note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_non_delta_notification_stays_durable() {
+        let p = params(json!({ "type": "response.completed", "id": "r1" }), "root");
+        let event = notification_to_event(&identity(), 3, "event/raw", &p);
+        assert!(
+            !event.ephemeral,
+            "unclassified non-delta frames keep the durable Raw passthrough"
+        );
+        match event.kind {
+            ActivityEventKind::Raw { source, .. } => assert_eq!(source, "event/raw"),
+            other => panic!("expected Raw, got {other:?}"),
         }
     }
 

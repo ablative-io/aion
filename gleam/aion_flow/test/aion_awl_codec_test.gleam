@@ -291,14 +291,16 @@ pub fn awl_error_unknown_tag_fails_to_decode_test() {
 
 pub fn map_activity_error_maps_failure_test() {
   error.map_activity_error(Error(aion_error.terminal("boom")))
-  |> should.equal(Error(AwlActivityFailed("activity failed")))
+  |> should.equal(Error(AwlActivityFailed("activity failed (terminal): boom")))
+  error.map_activity_error(Error(aion_error.retryable("blip")))
+  |> should.equal(Error(AwlActivityFailed("activity failed (retryable): blip")))
   error.map_activity_error(Ok(7))
   |> should.equal(Ok(7))
 }
 
 pub fn map_receive_error_maps_failure_test() {
   error.map_receive_error(Error(aion_error.UnknownSignal("s")))
-  |> should.equal(Error(AwlSignalFailed("signal receive failed")))
+  |> should.equal(Error(AwlSignalFailed("unknown signal: s")))
 }
 
 pub fn map_child_error_maps_failure_test() {

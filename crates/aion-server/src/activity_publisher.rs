@@ -86,11 +86,14 @@ impl std::fmt::Debug for ActivityEventPublisher {
 }
 
 /// The maximum number of `SequenceConflict` retries before a single `publish`
-/// gives up. Under real single-deployment contention only a handful of writers
-/// ever race one stream, so the bound is generous; exceeding it signals a
-/// pathological hot loop rather than normal contention and is surfaced as an
-/// error rather than spun on forever.
-const MAX_SEQUENCE_CONFLICT_RETRIES: usize = 1024;
+/// gives up. In-process publishers serialize per tap (the liminal drain
+/// queue), so conflicts only come from genuine cross-process races — failover
+/// adoption, a dying worker racing its adopter — where a handful of writers
+/// contend. Exceeding this signals a pathological hot loop and must FAIL
+/// CHEAP: the 2026-07-23 flood burned a core spinning 1024-retry loops (each
+/// failed backend append also leaving orphaned store nodes behind), so the
+/// budget is sized to real contention, not to hope.
+const MAX_SEQUENCE_CONFLICT_RETRIES: usize = 16;
 
 impl ActivityEventPublisher {
     /// Build a publisher over `store` with a live broadcast of `capacity`.
