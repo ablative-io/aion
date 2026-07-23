@@ -735,9 +735,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beamr"
-version = "0.16.0"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e6413f8490d7d088158c3eb71aa5d78e02626a72f76359cfda6bf36cb93dd2b"
+checksum = "c4860a45d64945648c6cf64c5a44e09e0f52b40df67fca0635014253e48d4d60"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",

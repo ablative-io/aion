@@ -79,11 +79,14 @@ fs4 = "1.1"
 notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
+# 0.16.2 carries the REVIEW-23-07 C1+C2 memory-safety patch — C1 is the GC
+# release-walk misread behind the 2026-07-23 workflow crash (badarg in
+# json:encode_binary on valid content) and the unbounded-residency growth;
 # 0.15.2 routes `make_fun`/`put_map` allocation through the GC safety net and
 # fixes DOWN reservation arithmetic (heap-full fix for the 2026-07-14 live AWL
 # child failure); 0.14.0 added `loader/encode` (the `.beam` container writer
 # behind the `encode` feature) consumed by aion-awl's BC-3 bytecode emitter.
-beamr = { version = "0.16.0", features = ["json", "encode"] }
+beamr = { version = "0.16.2", features = ["json", "encode"] }
 haematite = "0.7.0"
 # 0.2.4 carries the park-flip (idle connections park on fd readiness — retires
 # the embedded front door's per-connection busy-spin measured 2026-07-13) and
