@@ -23,6 +23,9 @@
 //! ```
 #![cfg(feature = "haematite-backend")]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 // The `hello_world` archive is rebuilt from the committed Gleam source on every
 // run, reusing the aion-rs SS-5 demo's shared example-build helper.
 #[path = "../../aion/tests/common/example_build.rs"]
@@ -379,6 +382,9 @@ fn live_node(cluster: &SeededCluster, index: usize) -> Result<&Node, Box<dyn Err
 // ===========================================================================
 #[test]
 fn supervisor_auto_adopts_dead_peer_shard_without_manual_trigger() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

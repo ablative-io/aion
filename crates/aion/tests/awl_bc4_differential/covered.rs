@@ -142,6 +142,9 @@ const EXPECTED_SUCCEEDED: &[&str] = &[
 /// path with a byte-identical trail across both backends.
 #[tokio::test(flavor = "multi_thread")]
 async fn flagship_awl_hello_matches() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let names = vec![String::from("flagship/valid/awl_hello")];
     let report = run_differential(&names, "flagship", &[]).await?;
     assert!(
@@ -163,6 +166,9 @@ async fn flagship_awl_hello_matches() -> TestResult {
 /// pin the EXACT name inventory of every outcome bucket.
 #[tokio::test(flavor = "multi_thread")]
 async fn covered_set_is_byte_identical() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let names = fixtures::covered_paths()?;
     assert_eq!(
         names.len(),

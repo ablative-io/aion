@@ -47,6 +47,9 @@
 //! cargo test -p aion-rs --test aion_on_haematite_showcase -- --nocapture
 //! ```
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 // The `hello_world` archive is rebuilt from the committed Gleam source on every
 // run (see `common/example_build.rs`); this gate never skips on a missing CLI.
 #[path = "common/example_build.rs"]
@@ -107,6 +110,9 @@ fn render_history(history: &[Event]) -> String {
 #[tokio::test]
 async fn aion_workflow_survives_restart_recovered_from_haematite()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // A real on-disk directory is the heart of the demo: this is where
     // haematite commits the workflow's durable state, and it is the ONLY thing
     // that crosses the restart boundary. A `TempDir` keeps it real (a genuine

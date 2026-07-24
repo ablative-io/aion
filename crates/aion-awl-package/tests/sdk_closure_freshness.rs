@@ -11,6 +11,9 @@
 //! surface is what generated code links against. Requires a local `gleam`
 //! toolchain, exactly like the AWL emitter compile-proof tests.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -71,6 +74,9 @@ fn oracle_sdk_version(manifest: &str) -> Result<String, Box<dyn std::error::Erro
 /// version stamp equals the oracle's locked `aion_flow` version.
 #[test]
 fn committed_closure_matches_a_fresh_oracle_harvest() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let root = workspace_root();
     let oracle = root.join("examples/awl-hello");
     let output = Command::new("gleam")

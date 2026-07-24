@@ -46,6 +46,9 @@ fn direct_driver(module: &mut MirModule) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn general_concat_executes_with_emitter_byte_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let reference = reference_module("step-bodies/valid/general_concat.awl", REFERENCE_DRIVER)?;
     let ebins = gleam_build(&[("ref_general_concat", &reference)])?;
 

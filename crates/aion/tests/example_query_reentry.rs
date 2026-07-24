@@ -15,6 +15,9 @@
 //! flipped back to the full `finish_and_assert_summary` completion
 //! assertions.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -206,6 +209,9 @@ async fn finish_and_assert_summary(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn control_never_queried_batch_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
@@ -222,6 +228,9 @@ async fn control_never_queried_batch_completes() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn live_query_while_parked_in_sdk_child_await_then_resume() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let packages = example_packages()?;
     let gates = GateBoard::new();
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());

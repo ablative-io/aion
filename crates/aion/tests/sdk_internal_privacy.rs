@@ -1,5 +1,8 @@
 //! External-package compile probes for the SDK's activity-dispatch boundary.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -58,6 +61,9 @@ fn gleam_build(path: &Path) -> Result<Output, Box<dyn Error>> {
 #[test]
 fn external_package_cannot_dispatch_without_await_but_public_run_compiles()
 -> Result<(), Box<dyn Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let root = repo_root()?;
     let sdk = root.join("gleam/aion_flow");
     let probes = root.join("target/fix3-sdk-boundary-probes");

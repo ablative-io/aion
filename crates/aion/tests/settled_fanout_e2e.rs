@@ -15,6 +15,9 @@
 //!    zero prefix re-dispatch, reopens exactly the unresolved members, and
 //!    leaves the durable prefix byte-identical.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -306,6 +309,9 @@ fn result_json(payload: &Payload) -> Result<serde_json::Value, Box<dyn std::erro
 /// three awaits purely from the recorded per-ordinal terminals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gates = GateBoard::new();
     let engine = engine_over(&store, &gates).await?;
@@ -387,6 +393,9 @@ async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> Tes
 /// completes once they settle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn settled_failure_never_cancels_outstanding_siblings() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gates = GateBoard::new();
     let engine = engine_over(&store, &gates).await?;

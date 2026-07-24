@@ -113,6 +113,9 @@ fn entry_bytes<'a>(fixtures: &'a [SplicedFixture], entry_module: &str) -> Option
 /// Every static IR row, asserted against the RELOADED SPLICED entry beam.
 #[tokio::test(flavor = "multi_thread")]
 async fn abi_static_rows_over_spliced_entry() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixtures = build_spliced(&abi_fixtures(), "abi_static").await?;
 
     // The spliced entry bytes MUST be exactly the direct beam the package
@@ -228,6 +231,9 @@ async fn abi_static_rows_over_spliced_entry() -> TestResult {
 /// `WorkflowFailed` (the `{error, AwlErrorTerm}` path).
 #[tokio::test(flavor = "multi_thread")]
 async fn abi_entry_result_recording_through_the_trail() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixtures = build_spliced(&abi_fixtures(), "abi_run").await?;
 
     let hello = fixtures
@@ -299,6 +305,9 @@ async fn abi_entry_result_recording_through_the_trail() -> TestResult {
 /// for `assert_code_stream_fully_consumed`.
 #[tokio::test(flavor = "multi_thread")]
 async fn int_code_end_terminator_is_rejected() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let fixtures = build_spliced(&abi_fixtures(), "abi_mutation").await?;
     let hello = entry_bytes(&fixtures, "awl_hello").ok_or("no awl_hello entry")?;
 

@@ -71,6 +71,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
 #![allow(clippy::panic, clippy::doc_markdown, clippy::doc_lazy_continuation)]
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 // The `hello_world` archive is rebuilt from the committed Gleam source on every
 // run (see `common/example_build.rs`); this gate never skips on a missing CLI.
 #[path = "common/example_build.rs"]
@@ -378,6 +381,9 @@ async fn record_start(
 
 #[test]
 fn multi_shard_active_active_failover_demo() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // ONE long-lived runtime drives EVERY async engine call (its worker threads
     // outlive each `block_on`); the blocking haematite elections run on the bare
     // test thread BETWEEN `block_on`s. See the module docs for the full rationale.

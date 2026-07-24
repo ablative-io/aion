@@ -12,6 +12,9 @@
 //! completes with "slept" when it fires. Every test here derives its verdict
 //! from that completion, not from history shape.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -160,6 +163,9 @@ fn assert_teardown_then_rearm(history: &[Event]) -> TestResult {
 /// from the truth pass, as a permanent gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reopened_cancelled_sleeper_fires_its_deadline_and_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = build_engine(&store).await?;
 
@@ -183,6 +189,9 @@ async fn reopened_cancelled_sleeper_fires_its_deadline_and_completes() -> TestRe
 /// must fire immediately (timeout-branch semantics), not silently never.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reopen_after_the_deadline_passed_fires_immediately() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = build_engine(&store).await?;
 
@@ -208,6 +217,9 @@ async fn reopen_after_the_deadline_passed_fires_immediately() -> TestResult {
 /// the re-recorded `TimerStarted`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_after_rearm_replays_cleanly_and_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine_a = build_engine(&store).await?;
 

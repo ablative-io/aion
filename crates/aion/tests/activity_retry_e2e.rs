@@ -19,6 +19,9 @@
 //! The archive is rebuilt from the committed example source on every run —
 //! see `common/example_build.rs` for why this gate must never skip.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -113,6 +116,9 @@ fn count_retryable_failures(history: &[Event]) -> usize {
 /// trail durably recorded.
 #[tokio::test]
 async fn retryable_flakes_cost_retries_not_the_run() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let dispatcher = FlakyDispatcher::new(3);
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with(Arc::clone(&dispatcher), &store).await?;
@@ -176,6 +182,9 @@ async fn retryable_flakes_cost_retries_not_the_run() -> Result<(), Box<dyn std::
 #[tokio::test]
 async fn exhausted_retries_fail_the_run_and_reopen_continues_the_trail()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // Succeeds only from attempt 4 — one past the policy budget of 3, so the
     // first run exhausts, and the reopened re-dispatch (attempt 4) succeeds.
     let dispatcher = FlakyDispatcher::new(4);

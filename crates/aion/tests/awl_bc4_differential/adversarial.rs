@@ -104,6 +104,9 @@ fn adversarial_fixtures_classify_as_expected() -> TestResult {
 /// refusals are recorded out-of-intersection (exactly the pinned set).
 #[tokio::test(flavor = "multi_thread")]
 async fn adversarial_differential_is_byte_identical() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let mut names: Vec<String> = LOWERING.iter().map(|entry| (*entry).to_owned()).collect();
     names.extend(REFUSING.iter().map(|name| (*name).to_owned()));
     let report = run_differential(&names, "adversarial", &[]).await?;

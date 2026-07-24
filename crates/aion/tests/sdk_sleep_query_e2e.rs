@@ -8,6 +8,9 @@
 //! suspending await crashed on wake with `bad function term {ok, <<...>>}`
 //! (and a query delivered to a suspended workflow killed the run).
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -103,6 +106,9 @@ async fn assert_completes_with_slept(
 /// `bad function term {ok, <<"fired">>}` → `WorkflowFailed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn minimal_sleep_workflow_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with_fixture(&store).await?;
     let (workflow_id, run_id) = start_sleeper(&engine, 500).await?;
@@ -132,6 +138,9 @@ async fn minimal_sleep_workflow_completes() -> TestResult {
 /// caller saw `QueryReplyDropped`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn query_to_sleeping_workflow_answers_and_run_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with_fixture(&store).await?;
     let (workflow_id, run_id) = start_sleeper(&engine, 3000).await?;
@@ -163,6 +172,9 @@ async fn query_to_sleeping_workflow_answers_and_run_completes() -> TestResult {
 /// caller and must NEVER kill the run: the workflow still completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failing_query_handler_never_kills_the_run() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = engine_with_fixture(&store).await?;
     let (workflow_id, run_id) = start_sleeper(&engine, 3000).await?;

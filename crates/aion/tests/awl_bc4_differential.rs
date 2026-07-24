@@ -15,6 +15,9 @@
 //! failed. The submodules fan out via `#[path]` (the `runtime_codecs.rs`
 //! idiom); every file stays under the 500-code-line law.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/trail_norm.rs"]
 mod trail_norm;
 

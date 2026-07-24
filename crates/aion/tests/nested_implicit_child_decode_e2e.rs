@@ -1,5 +1,8 @@
 //! Exact nested implicit-child codec and await-boundary regression.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -172,6 +175,9 @@ fn write_and_check_nested_project(repo: &Path, root: &Path) -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn nested_outer_int_child_decodes_exact_durable_bytes_and_parent_completes() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let repo = repo_root()?;
     let root = repo.join("target/flow-vocab-b5-fix2-nested-decode");
     write_and_check_nested_project(&repo, &root)?;

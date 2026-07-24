@@ -167,6 +167,9 @@ fn assert_input_order(result: &str) -> Result<(), Box<dyn Error>> {
 #[test]
 fn real_child_outcome_envelope_completes_parent_fold_on_both_backends() -> Result<(), Box<dyn Error>>
 {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let reference = reference_ebins()?;
     let (direct_parent, direct_child) = direct_modules()?;
 
@@ -194,6 +197,9 @@ fn real_child_outcome_envelope_completes_parent_fold_on_both_backends() -> Resul
 
 #[test]
 fn child_output_codec_is_strict_and_symmetric_on_both_backends() -> Result<(), Box<dyn Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let reference = reference_ebins()?;
     let (direct_parent, direct_child) = direct_modules()?;
     let host = with_host(reference.clone(), "direct_strict", "sit_one", false)?;

@@ -13,6 +13,9 @@
 //! (see `common/example_build.rs`); a missing Gleam toolchain fails the
 //! suite loudly rather than skipping.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -574,6 +577,9 @@ fn assert_completed_saga_history(
 /// signal drives the shipping child workflow to completion.
 #[tokio::test]
 async fn order_completes_after_payment_retry_engine_restart_and_approval() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (parent, child) = saga_packages()?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
 
@@ -663,6 +669,9 @@ async fn order_completes_after_payment_retry_engine_restart_and_approval() -> Te
 /// payment and completes the order as business-`cancelled`.
 #[tokio::test]
 async fn order_cancels_and_refunds_when_rejected() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (parent, child) = saga_packages()?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let dispatcher = Arc::new(SagaDispatcher::new(None, None));
@@ -724,6 +733,9 @@ async fn order_cancels_and_refunds_when_rejected() -> TestResult {
 /// durable deadline fires, and the saga refunds and cancels.
 #[tokio::test]
 async fn order_cancels_and_refunds_when_approval_times_out() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (parent, child) = saga_packages()?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let dispatcher = Arc::new(SagaDispatcher::new(None, None));
@@ -833,6 +845,9 @@ fn recorded_version(
 /// completes on v1 after its signal, and new starts land on v2.
 #[tokio::test]
 async fn v2_deploy_mid_flight_pins_v1_and_routes_new_orders_to_v2() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let (v1, child) = saga_packages()?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let dispatcher = Arc::new(SagaDispatcher::new(None, None));

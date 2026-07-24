@@ -18,6 +18,9 @@
 //! because a Gleam `workflow.toml` package does NOT opt into the timeout-bearing
 //! identity (the D1 conservative advisory), so it reads as not-declared.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -191,6 +194,9 @@ impl ActivityDispatcher for GreetDispatcher {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_declared_timeout_arms_nothing() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // hello-world has no authored timeout AND no timers, so LAW 1 is literal:
     // the run's whole history contains zero TimerStarted and no WorkflowTimedOut.
     let package = example_build::built_package("examples/hello-world", "hello_world")?;
@@ -247,6 +253,9 @@ async fn no_declared_timeout_arms_nothing() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn legacy_defaulted_manifest_never_arms() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // The manifest carries a 300ms timeout, but it is NOT bound into the
     // package identity (no `with_explicit_timeout_identity`), exactly like a
     // legacy archive written with the old defaulted 1h value. The run must
@@ -293,6 +302,9 @@ async fn legacy_defaulted_manifest_never_arms() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn declared_timeout_fires_to_timed_out() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = sleep_query_with_timeout(Duration::from_millis(400), true)?;
     assert!(
         package.has_declared_timeout(),
@@ -358,6 +370,9 @@ async fn declared_timeout_fires_to_timed_out() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn continue_as_new_cancels_the_predecessor_deadline() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     // A comfortably long deadline so neither run times out during the test; we
     // only inspect the recorded transition.
     let package = sleep_query_with_timeout(Duration::from_secs(120), true)?;
@@ -428,6 +443,10 @@ async fn continue_as_new_cancels_the_predecessor_deadline() -> TestResult {
 async fn timed_out_terminal_is_delivered_on_the_live_event_stream() -> TestResult {
     use futures::StreamExt;
 
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
+
     let package = sleep_query_with_timeout(Duration::from_millis(400), true)?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()
@@ -483,6 +502,9 @@ async fn timed_out_terminal_is_delivered_on_the_live_event_stream() -> TestResul
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adopted_deadline_fires_after_shard_adoption() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let dir = tempfile::tempdir()?;
     let concrete = Arc::new(HaematiteStore::create_with_shard_count(
         dir.path().join("db"),

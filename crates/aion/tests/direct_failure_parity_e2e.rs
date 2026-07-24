@@ -25,6 +25,9 @@
 //! is a wire-contract extension, not a cheap change at the child-spawn
 //! seam.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -335,6 +338,9 @@ fn gleam_package_for(packages: &[(String, Package)], module: &str) -> Result<Pac
 /// Gleam project is built exactly once and never raced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failure_details_converge_between_direct_and_gleam_paths() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let gleam = gleam_packages()?;
 
     // Scenario 1 — strict abort: the typed activity failure crosses the

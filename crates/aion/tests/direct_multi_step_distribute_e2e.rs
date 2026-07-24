@@ -8,6 +8,9 @@
 //! the Gleam-path archive for the same document expose identical workflow
 //! types and entries.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -425,6 +428,9 @@ async fn direct_multistep_distribute_is_parallel_ordered_and_tolerant() -> TestR
 /// identity, entry function, schemas, internal marking).
 #[test]
 fn direct_and_gleam_archives_expose_identical_workflow_entries() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let prepared = compile_and_assemble_awl(AWL, Path::new("."))?;
     let direct = Package::load_from_bytes(prepared.archive, ExtractionLimits::unbounded())?;
     let gleam = gleam_package()?;

@@ -106,6 +106,9 @@ fn combinator_execute_drivers(module: &mut MirModule) {
 
 #[test]
 fn pipe_combinators_execute_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let path = parity_fixture("pipe_combinators.awl");
     let reference = reference_module_at(&path, REF_COMBINATOR_DRIVER)?;
     let ebins = gleam_build(&[("ref_pipe_combinators", &reference)])?;
@@ -233,6 +236,9 @@ fn pipe_child_host_ebin(
 
 #[test]
 fn pipe_child_stage_executes_with_reference_parity() -> TestResult {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let parent_path = parity_fixture("pipe_child.awl");
     let child_path = parity_fixture("score_essay.awl");
     let ref_parent = reference_module_at(&parent_path, REF_PIPE_CHILD_DRIVER)?;

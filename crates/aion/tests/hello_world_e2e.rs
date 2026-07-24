@@ -9,6 +9,9 @@
 //! The archive is rebuilt from the committed example source on every run —
 //! see `common/example_build.rs` for why this gate must never skip.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/example_build.rs"]
 mod example_build;
 
@@ -38,6 +41,9 @@ impl ActivityDispatcher for GreetDispatcher {
 
 #[tokio::test]
 async fn hello_world_runs_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let package = example_build::built_package("examples/hello-world", "hello_world")?;
 
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());

@@ -3,6 +3,9 @@
 //! of distinct versions; every start must be internally consistent between
 //! its recorded `package_version`, its registry pin, and its output.
 
+#[path = "test_support/gleam.rs"]
+mod gleam_test_support;
+
 #[path = "common/reload_fixture.rs"]
 mod reload_fixture;
 
@@ -25,6 +28,10 @@ async fn parallel_starters_racing_sequential_loads_stay_version_consistent() -> 
     const STARTERS: usize = 4;
     const STARTS_PER_TASK: usize = 12;
     const VERSIONS: u32 = 4;
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
 
     let mut packages = Vec::new();
     for version in 1..=VERSIONS {
@@ -125,6 +132,10 @@ async fn parallel_starters_racing_sequential_loads_stay_version_consistent() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_flip_in_a_rapid_load_sequence_is_visible_to_subsequent_starts() -> TestResult {
     const VERSIONS: u32 = 6;
+
+    if crate::gleam_test_support::skip_if_unavailable() {
+        return Ok(());
+    }
     let mut packages = Vec::new();
     for version in 1..=VERSIONS {
         packages.push(reload_package(&compile_reload_beam(version)?, "run")?);
