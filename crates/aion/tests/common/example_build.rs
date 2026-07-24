@@ -7,9 +7,13 @@
 //! gate now rebuilds its archive from the committed Gleam source on each
 //! run: `gleam build` followed by [`aion_package::package_project`].
 //!
-//! A missing `gleam` CLI FAILS the gate with an explicit error. It must
-//! never be downgraded to a skip: a silently skipped gate is exactly how
-//! unvalidated artifacts shipped.
+//! Gates that reach this builder without a `gleam` CLI fail with an
+//! explicit error. Callers may skip-with-notice BEFORE building when the
+//! toolchain is absent (see `test_support/gleam.rs`) because these gates
+//! never load prebuilt archives — a skipped gate validates nothing but can
+//! no longer go green against a stale artifact, which was the 0.2.0
+//! failure. CI installs the toolchain and executes every gate; that is the
+//! release-integrity backstop, and it must stay that way.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
